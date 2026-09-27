@@ -6,8 +6,14 @@
 
 import { markPageEdges } from './ui/scroll-edges.js';
 import { installQuietTouch } from './ui/quiet-touch.js';
+import { initRoleExtras } from './ui/install-share.js';
 
 installQuietTouch(document.getElementById('host-screen'), document.getElementById('controller-screen'));
+initRoleExtras();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
 
 const screens = {
   role: document.getElementById('role-screen'),
