@@ -1227,6 +1227,15 @@ input[type='range'] {
   z-index: 3;
 }
 
+.roll__note.is-remote {
+  border-style: dashed;
+  opacity: 0.78;
+}
+
+.roll__note.is-remote .roll__resize {
+  display: none;
+}
+
 .roll__marquee {
   position: absolute;
   z-index: 5;

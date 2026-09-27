@@ -229,6 +229,7 @@ export async function createControllerView({ code, name } = {}) {
         socket.sendControl({ eraseNote: voiceId });
       },
       instrument: state.instrument,
+      owner: state.peerId,
       selectMode: guestSelectMode,
       onMoveGroup: (changes) => {
         socket.sendControl({
@@ -559,17 +560,24 @@ export async function createControllerView({ code, name } = {}) {
       setIconLabel(el.bars, barCountLabel(state.noteSteps));
       if (guestStep != null) paintGuestBar(guestStep);
     }
-    if (payload?.loopNotes?.playerId && payload.loopNotes.playerId === state.peerId) {
-      state.marks = payload.loopNotes.notes || [];
-      if (Number.isFinite(Number(payload.loopNotes.noteSteps))) {
-        state.noteSteps = Number(payload.loopNotes.noteSteps);
+    if (payload?.loopNotes && typeof payload.loopNotes === 'object') {
+      const pack = payload.loopNotes;
+      if (Number.isFinite(Number(pack.noteSteps))) {
+        state.noteSteps = Number(pack.noteSteps);
         setIconLabel(el.bars, barCountLabel(state.noteSteps));
         if (guestStep != null) paintGuestBar(guestStep);
       }
-      state.canUndo = Boolean(payload.loopNotes.canUndo);
-      state.canRedo = Boolean(payload.loopNotes.canRedo);
-      if (typeof payload.loopNotes.clearUndo === 'boolean') {
-        state.clearUndo = payload.loopNotes.clearUndo;
+      const players = pack.players && typeof pack.players === 'object' ? pack.players : {};
+      const marks = [];
+      for (const [owner, entry] of Object.entries(players)) {
+        for (const note of entry?.notes || []) marks.push({ ...note, owner });
+      }
+      state.marks = marks;
+      const mine = players[state.peerId];
+      state.canUndo = Boolean(mine?.canUndo);
+      state.canRedo = Boolean(mine?.canRedo);
+      if (typeof mine?.clearUndo === 'boolean') {
+        state.clearUndo = mine.clearUndo;
         paintGuestClear();
       }
       syncGuestHistory();
@@ -683,7 +691,7 @@ export async function createControllerView({ code, name } = {}) {
       socket.sendControl({ loop: 'undo-clear' });
       return;
     }
-    state.marks = [];
+    state.marks = state.marks.filter((note) => note.owner !== state.peerId);
     state.clearUndo = true;
     paintGuestClear();
     if (!el.notesSheet.hidden) paintGuestNotes();

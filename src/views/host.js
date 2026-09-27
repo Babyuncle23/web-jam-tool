@@ -962,7 +962,7 @@ export async function createHostView() {
       recorder.stop();
       el.loop.classList.remove('is-on');
       el.loop.setAttribute('aria-pressed', 'false');
-      if (!el.notesSheet.hidden) paintHostRoll();
+      refreshLoops();
       log(`${recorder.length} events`, 'loop');
     }
   }
@@ -980,13 +980,13 @@ export async function createHostView() {
     const origin = litStep >= 0 ? litStep % Math.max(1, state.noteSteps) : -1;
     clearUndos.set(playerId, { events, leftBar: origin > 0 });
     if (playerId === 'host') paintHostClear(true);
-    else shareLoop(playerId);
+    refreshLoops();
   }
 
   function finishClearUndo(playerId) {
     if (!clearUndos.delete(playerId)) return;
     if (playerId === 'host') paintHostClear(false);
-    else shareLoop(playerId);
+    refreshLoops();
   }
 
   function restoreClearUndo(playerId) {
@@ -994,7 +994,6 @@ export async function createHostView() {
     if (!pending) return false;
     recorderFor(playerId)?.restoreEvents(pending.events);
     finishClearUndo(playerId);
-    if (playerId === 'host' && !el.notesSheet.hidden) paintHostRoll();
     return true;
   }
 
@@ -1019,7 +1018,6 @@ export async function createHostView() {
     const events = recorder.exportEvents();
     recorder.clear();
     armClearUndo('host', events);
-    if (!el.notesSheet.hidden) paintHostRoll();
     log('host loop cleared', 'loop');
   });
 
@@ -1114,8 +1112,7 @@ export async function createHostView() {
         midi: change.midi,
       });
     }
-    if (playerId === 'host') paintHostRoll();
-    else shareLoop(playerId);
+    refreshLoops();
   }
 
   function syncHostHistory() {
@@ -1133,20 +1130,20 @@ export async function createHostView() {
   }
 
   function paintHostRoll() {
-    const recorder = recorderFor('host');
     renderPianoRoll(el.noteTape, {
-      notes: recorder?.notes() ?? [],
-      steps: recorder?.loopSteps ?? state.noteSteps,
+      notes: allLoopNotes(),
+      steps: state.noteSteps,
       stepPx: hostNoteStepPx(),
       pitchesFor,
       colorFor: (note) => INSTRUMENT_COLORS[normalizeInstrument(note.instrument)] || '#e0a12e',
       onDelete: (voiceId) => {
         rememberNotes('host');
         recorderFor('host')?.removeNote(voiceId);
-        paintHostRoll();
+        refreshLoops();
         log('note removed from the loop', 'loop');
       },
       instrument: state.instrument,
+      owner: 'host',
       selectMode,
       onMoveGroup: (changes) => moveHostGroup('host', changes),
       onResize: (voiceId, change) => {
@@ -1159,7 +1156,7 @@ export async function createHostView() {
           degree: note.degree,
           duration: change.duration,
         });
-        paintHostRoll();
+        refreshLoops();
       },
       focusMidi: rollFocusMidi(),
       inScale: (midi) => midiInScale(midi, state.root, state.scale),
@@ -1171,7 +1168,7 @@ export async function createHostView() {
         rememberNotes('host');
         writePlacedNotes(recorderFor('host'), { step, instrument, x: choice.x, y: 0.55, degree: choice.degree, midi });
         ensureTransport();
-        paintHostRoll();
+        refreshLoops();
       },
     });
     syncHostHistory();
@@ -1195,7 +1192,7 @@ export async function createHostView() {
     else renderSequencer();
     if (audio) {
       for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
-      for (const playerId of audio.loops.keys()) shareLoop(playerId);
+      shareLoop();
     }
     setIconLabel(el.bars, barCountLabel(next));
     paintBar(audio?.engine.transportRunning ? litStep % Math.max(1, next) : parkedLoopStep());
@@ -1213,26 +1210,43 @@ export async function createHostView() {
     const next = direction === 'redo' ? history.redo(recorder.exportEvents()) : history.undo(recorder.exportEvents());
     if (!next) return false;
     recorder.restoreEvents(next);
-    if (playerId === 'host') {
-      if (!el.notesSheet.hidden) paintHostRoll();
-      else syncHostHistory();
-    } else shareLoop(playerId);
+    if (!el.notesSheet.hidden) paintHostRoll();
+    else if (playerId === 'host') syncHostHistory();
+    shareLoop();
     return true;
   }
 
-  function shareLoop(playerId) {
-    const recorder = audio?.loops.get(playerId);
-    const history = histories.get(playerId);
-    socket.broadcastState({
-      loopNotes: {
-        playerId,
-        notes: recorder?.notes() ?? [],
-        noteSteps: recorder?.loopSteps ?? LOOP_STEPS,
+  /** Every player's loop, broadcast as one map so all editors see all notes. */
+  function shareLoop() {
+    if (!audio) return;
+    const players = {};
+    for (const [playerId, recorder] of audio.loops) {
+      const history = histories.get(playerId);
+      players[playerId] = {
+        notes: recorder.notes(),
+        noteSteps: recorder.loopSteps,
         canUndo: Boolean(history?.canUndo),
         canRedo: Boolean(history?.canRedo),
         clearUndo: clearUndos.has(playerId),
-      },
-    });
+      };
+    }
+    socket.broadcastState({ loopNotes: { noteSteps: state.noteSteps, players } });
+  }
+
+  /** Notes from every recorder, tagged with the owning player. */
+  function allLoopNotes() {
+    const rows = [];
+    if (!audio) return rows;
+    for (const [playerId, recorder] of audio.loops) {
+      for (const note of recorder.notes()) rows.push({ ...note, owner: playerId });
+    }
+    return rows;
+  }
+
+  /** Any loop changed: repaint the open sheet and push the map to the guests. */
+  function refreshLoops() {
+    if (!el.notesSheet.hidden) paintHostRoll();
+    shareLoop();
   }
 
   function renderFxSliders() {
@@ -1357,7 +1371,7 @@ export async function createHostView() {
     if (!audio) return;
     rememberNotes('host');
     recorderFor('host').clearInstrument(state.instrument);
-    paintHostRoll();
+    refreshLoops();
     log(`cleared ${state.instrument} from the loop`, 'loop');
   });
 
@@ -1661,10 +1675,7 @@ export async function createHostView() {
     }
     const playerId = playerIdFromTouch(payload.id);
     const wrote = recorderFor(playerId)?.capture(payload);
-    if (wrote === 'chord' || wrote === 'note') {
-      if (playerId === 'host' && !el.notesSheet.hidden) paintHostRoll();
-      else if (playerId && playerId !== 'host') shareLoop(playerId);
-    }
+    if (wrote === 'chord' || wrote === 'note') refreshLoops();
   }
 
   const hostPad = new TouchPad(el.pad, {
@@ -1785,7 +1796,7 @@ export async function createHostView() {
       if (recorder?.notes().some((note) => note.voiceId === voiceId)) {
         rememberNotes(data.peerId);
         recorder.removeNote(voiceId);
-        shareLoop(data.peerId);
+        refreshLoops();
       }
     }
     if (Array.isArray(data.moveGroup) && data.moveGroup.length && audio) {
@@ -1804,7 +1815,7 @@ export async function createHostView() {
           midi: move.midi,
           duration: move.duration,
         });
-        shareLoop(data.peerId);
+        refreshLoops();
       }
     }
     if (data.addNote && audio) {
@@ -1821,14 +1832,14 @@ export async function createHostView() {
           midi: add.midi,
         });
         ensureTransport();
-        shareLoop(data.peerId);
+        refreshLoops();
       }
     }
     if ((data.history === 'undo' || data.history === 'redo') && audio) applyHistory(data.peerId, data.history);
     if ((data.loopBars === 'cycle' || data.noteLoop === 'cycle') && audio) {
       cycleSharedLength();
     }
-    if (data.erase === 'show' && audio) shareLoop(data.peerId);
+    if (data.erase === 'show' && audio) refreshLoops();
     const instrument = namedInstrument(data.instrument);
     if (instrument) {
       state.lastRemote = { peerId: data.peerId, name: data.name, instrument };
@@ -1844,12 +1855,12 @@ export async function createHostView() {
     }
     if (data.loop === 'stop') {
       recorder.stop();
-      shareLoop(data.peerId);
+      refreshLoops();
       log(`${data.name ?? 'guest'} loop paused, ${recorder.length} events`, 'loop');
     }
     if (data.loop === 'undo-clear') {
       const restored = restoreClearUndo(data.peerId);
-      if (!restored) shareLoop(data.peerId);
+      if (!restored) refreshLoops();
       log(`${data.name ?? 'guest'} ${restored ? 'restored the loop' : 'undo missed'}`, 'loop');
     }
     if (data.loop === 'clear') {
@@ -1858,7 +1869,7 @@ export async function createHostView() {
         rememberNotes(data.peerId);
         if (instrument) recorder.clearInstrument(instrument);
         else recorder.clear();
-        shareLoop(data.peerId);
+        refreshLoops();
       } else {
         const events = recorder.exportEvents();
         recorder.clear();
