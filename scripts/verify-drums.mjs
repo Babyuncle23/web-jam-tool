@@ -92,9 +92,10 @@ try {
   })`);
   console.log('guest tap wasOn(before):', wasOn, 'after:', JSON.stringify(localMirror));
   const hostMirror = await pollExpr(host, `(() => {
-    const a = document.querySelector('#sequencer .step[data-track="kick"][data-step="8"]')?.classList.contains('is-on');
-    const b = document.querySelector('#sequencer .step[data-track="kick"][data-step="24"]')?.classList.contains('is-on');
-    return { ok: ${!wasOn} === a && a === b, a, b };
+    const on = [8, 9, 24, 25].map((s) => document.querySelector('#sequencer .step[data-track="kick"][data-step="'+s+'"]')?.classList.contains('is-on'));
+    // Repeat mirrors onto 8 and 24 only — the cells between must stay untouched.
+    const expected = ${JSON.stringify([!wasOn, false, !wasOn, false])};
+    return { ok: JSON.stringify(on) === JSON.stringify(expected), on };
   })()`);
   console.log('host mirror write:', JSON.stringify(hostMirror));
 

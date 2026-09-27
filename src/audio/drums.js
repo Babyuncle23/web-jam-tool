@@ -163,7 +163,7 @@ export function repeatTargets(mode, length, step) {
   const span = repeatSpanSteps(mode, length);
   if (!span) return [step];
   const targets = [];
-  for (let s = step % span; s < length; s += 1) targets.push(s);
+  for (let s = step % span; s < length; s += span) targets.push(s);
   return targets;
 }
 
