@@ -6,7 +6,7 @@
 
 import { createMasterFx } from './effects.js';
 
-const DEFAULT_BPM = 96;
+const DEFAULT_BPM = 120;
 
 export class AudioEngine {
   #tone;

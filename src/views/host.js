@@ -175,7 +175,7 @@ export async function createHostView() {
     root: 'C',
     scale: 'major',
     instrument: 'pad',
-    bpm: 96,
+    bpm: 120,
     peers: new Map(),
     effects: defaultFxState(),
     levels: defaultLevels(),
@@ -190,10 +190,10 @@ export async function createHostView() {
     lastRemote: null,
     drumSteps: STEPS,
     noteSteps: LOOP_STEPS,
-    drumPreset: 'four',
+    drumPreset: 'break',
   };
   for (const track of TRACKS) {
-    const on = new Set(tileHits(DRUM_PRESETS.four.pattern[track.id] ?? [], state.drumSteps));
+    const on = new Set(tileHits(DRUM_PRESETS[state.drumPreset].pattern[track.id] ?? [], state.drumSteps));
     for (const step of on) state.grid[track.id][step] = { on: true, division: 1 };
   }
 
@@ -662,7 +662,7 @@ export async function createHostView() {
   function renderDrumPresets() {
     el.drumPresets.replaceChildren();
     for (const preset of Object.values(DRUM_PRESETS)) {
-      const button = pressable(`chip${preset.id === 'four' ? ' is-picked' : ''}`);
+      const button = pressable(`chip${preset.id === state.drumPreset ? ' is-picked' : ''}`);
       button.dataset.preset = preset.id;
       button.textContent = preset.label;
       button.addEventListener('click', () => {

@@ -133,6 +133,11 @@ export const DRUM_PRESETS = {
     label: 'Offbeat',
     pattern: { kick: [0, 8], snare: [4, 12], hat: [2, 6, 10, 14], clap: [12], openhat: [6, 14], tom: [10], cowbell: [] },
   },
+  jersey: {
+    id: 'jersey',
+    label: 'Jersey Club',
+    pattern: { kick: [0, 3, 6, 8, 11, 14], snare: [4, 12], hat: [2, 6, 10, 14], clap: [4, 12], openhat: [], tom: [], cowbell: [] },
+  },
   clear: {
     id: 'clear',
     label: 'Empty',
@@ -140,7 +145,7 @@ export const DRUM_PRESETS = {
   },
 };
 
-const DEFAULT_PATTERN = DRUM_PRESETS.four.pattern;
+const DEFAULT_PATTERN = DRUM_PRESETS.break.pattern;
 
 function cell(on = false, division = 1) {
   return { on: Boolean(on), division: division === 3 ? 3 : 1 };

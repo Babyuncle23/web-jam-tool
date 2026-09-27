@@ -66,7 +66,7 @@ export async function createControllerView({ code, name } = {}) {
     recording: false,
     marks: [],
     noteSteps: LOOP_STEPS,
-    bpm: 96,
+    bpm: 120,
     masterFx: { division: '16n', cutoff: 0, grit: 0, wah: 0, hold: false },
     canUndo: false,
     canUndoAll: false,

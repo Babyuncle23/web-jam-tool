@@ -480,7 +480,7 @@ export function defaultFxState() {
     organ: { chorus: 0, vibrato: 0, room: 1 },
     kalimba: { delay: 0, reverb: 0.5, reverse: 0 },
     synth: { room: 0.5, delay: 0.5, chorus: 0 },
-    drums: { drive: 0, cutoff: 0, room: 0 },
+    drums: { drive: 0.5, cutoff: 0, room: 0.5 },
   };
 }
 
