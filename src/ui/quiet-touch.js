@@ -39,7 +39,12 @@ function softenButtons(root) {
 }
 
 function quietTarget(node) {
-  return node?.closest?.('.pad, .btn, .chip, .step, .mix-flag, .stutter-hold, .roll__note, .roll__key, input[type="range"], [role="button"]') || null;
+  const el =
+    node?.closest?.('.pad, .btn, .chip, .mix-flag, .stutter-hold, .roll__note, .roll__key, input[type="range"], [role="button"]') ||
+    null;
+  // .step is left out: drum cells write on their own pointer path, and the
+  // touchstart veto would block pan-y scrolling of the sheet over the grid.
+  return el?.closest?.('.step') ? null : el;
 }
 
 /**
@@ -205,7 +210,8 @@ export function installQuietTouch(...roots) {
   );
 
   const blockMenu = (event) => {
-    if (quietTarget(event.target) && inJamScreen(event.target)) event.preventDefault();
+    const guarded = quietTarget(event.target) || event.target?.closest?.('.step');
+    if (guarded && inJamScreen(event.target)) event.preventDefault();
   };
   document.addEventListener('contextmenu', blockMenu, true);
   document.addEventListener('selectstart', blockMenu, true);

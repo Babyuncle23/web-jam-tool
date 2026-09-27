@@ -1148,6 +1148,25 @@ input[type='range'] {
   flex: 0 0 auto;
 }
 
+/* Brush owns horizontal drags on cells; vertical drags scroll the tape. */
+.seq-row__steps .step {
+  touch-action: pan-y;
+}
+
+/* Cells paint on drag, so sideways travel gets a dedicated slider. */
+.seq-scroll {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 136px);
+  margin: 8px 4px 0 132px;
+  min-height: 18px;
+  height: 18px;
+}
+
+.seq-scroll.is-empty {
+  visibility: hidden;
+}
+
 .step {
   width: 44px;
   height: 48px;

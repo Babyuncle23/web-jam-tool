@@ -14,8 +14,10 @@ import { pressable } from './quiet-touch.js';
 import { markScrollEdges } from './scroll-edges.js';
 
 const STEP_GAP = 3;
-/** A pointerdown on a cell always writes, so the trailing click is a dup. */
+/** A tap writes on release; any click that follows a real write is a dup. */
 const CLICK_SUPPRESS_MS = 800;
+/** A stroke only becomes a brush past this distance — below it is a tap. */
+const ARM_PX2 = 8 * 8;
 
 function paintCellButton(button, slot, mirrored) {
   const on = Boolean(slot?.on);
@@ -64,6 +66,7 @@ export function createDrumGrid(container, options) {
   } = options;
 
   let tape = null;
+  let resizer = null;
   let litStep = -1;
   let suppressUntil = 0;
   const buttons = new Map();
@@ -75,14 +78,41 @@ export function createDrumGrid(container, options) {
     return span > 0 && step >= span;
   }
 
-  function strokeHit(stroke, button) {
-    const key = `${button.dataset.track}:${button.dataset.step}`;
+  function paintStep(stroke, track, step) {
+    const key = `${track}:${step}`;
     if (stroke.visited.has(key)) return;
     stroke.visited.add(key);
-    applyCell(button.dataset.track, Number(button.dataset.step), stroke.value);
+    applyCell(track, step, stroke.value);
     stroke.dirty = true;
   }
 
+  function strokeHit(stroke, button) {
+    const track = button.dataset.track;
+    const step = Number(button.dataset.step);
+    const last = stroke.last;
+    if (last && last.track === track && last.step !== step) {
+      // Fill the cells a fast swipe skipped between the last hit and this one.
+      const lo = Math.min(last.step, step);
+      const hi = Math.max(last.step, step);
+      for (let s = lo; s <= hi; s += 1) paintStep(stroke, track, s);
+    } else {
+      paintStep(stroke, track, step);
+    }
+    stroke.last = { track, step };
+  }
+
+  function stepAt(x, y) {
+    const under = document.elementFromPoint(x, y);
+    const button = under?.closest?.('.step');
+    return button && tape?.contains(button) ? button : null;
+  }
+
+  /**
+   * Nothing writes on pointerdown: a tap commits on release, a brush commits
+   * once the pointer clearly started moving. Between those, the browser may
+   * still steal the gesture for scrolling (pointercancel) — then nothing was
+   * written and the tap is not a fake note.
+   */
   function onPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const button = event.target.closest?.('.step');
@@ -90,41 +120,62 @@ export function createDrumGrid(container, options) {
     event.preventDefault();
     const track = button.dataset.track;
     const step = Number(button.dataset.step);
-    const stroke = {
+    strokes.set(event.pointerId, {
       id: event.pointerId,
+      button,
       value: strokeValue(writeMode(), cell(track, step)),
       visited: new Set(),
       dirty: false,
-    };
-    strokes.set(stroke.id, stroke);
-    suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
+      armed: false,
+      travel: 0,
+      x: event.clientX,
+      y: event.clientY,
+      last: null,
+    });
     onGesture('start');
-    strokeHit(stroke, button);
-    if (stroke.dirty) {
-      stroke.dirty = false;
-      onGesture('flush');
-    }
+  }
+
+  function flush(stroke) {
+    if (!stroke.dirty) return;
+    stroke.dirty = false;
+    suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
+    onGesture('flush');
   }
 
   function onPointerMove(event) {
     const stroke = strokes.get(event.pointerId);
     if (!stroke) return;
+    if (!stroke.armed) {
+      const dx = event.clientX - stroke.x;
+      const dy = event.clientY - stroke.y;
+      const dist = dx * dx + dy * dy;
+      if (dist > stroke.travel) stroke.travel = dist;
+      if (dist < ARM_PX2) return;
+      // On touch/pen a vertical drag belongs to scrolling (the browser cancels
+      // the stroke anyway), so the brush only arms on a horizontal pull.
+      if (event.pointerType !== 'mouse' && Math.abs(dy) > Math.abs(dx)) return;
+      stroke.armed = true;
+      strokeHit(stroke, stroke.button);
+    }
     // A click that follows the release must stay suppressed however long
     // the finger was held, so the window refreshes through the stroke.
     suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
-    const under = document.elementFromPoint(event.clientX, event.clientY);
-    const button = under?.closest?.('.step');
-    if (!button || !tape?.contains(button)) return;
-    strokeHit(stroke, button);
-    if (stroke.dirty) {
-      stroke.dirty = false;
-      onGesture('flush');
-    }
+    const button = stepAt(event.clientX, event.clientY);
+    if (button) strokeHit(stroke, button);
+    flush(stroke);
   }
 
   function endStroke(event) {
-    if (!strokes.delete(event.pointerId)) return;
+    const stroke = strokes.get(event.pointerId);
+    if (!stroke) return;
+    strokes.delete(event.pointerId);
     suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
+    // Cancelled means the browser took the gesture for scrolling — only a
+    // small-move release still counts as a tap.
+    if (event.type === 'pointerup' && !stroke.armed && stroke.travel < ARM_PX2) {
+      strokeHit(stroke, stroke.button);
+    }
+    flush(stroke);
     onGesture('end');
   }
 
@@ -240,6 +291,32 @@ export function createDrumGrid(container, options) {
     tape.append(gridlines);
     container.append(tape);
 
+    // The brush owns every drag on cells, so sideways travel lives on its own
+    // slider — mirroring tape.scrollLeft in both directions.
+    const scroll = document.createElement('input');
+    scroll.type = 'range';
+    scroll.className = 'seq-scroll';
+    scroll.min = '0';
+    scroll.step = '1';
+    scroll.value = '0';
+    scroll.setAttribute('aria-label', 'Scroll the drum grid');
+    scroll.addEventListener('input', () => {
+      tape.scrollLeft = Number(scroll.value);
+    });
+    tape.addEventListener('scroll', () => {
+      scroll.value = String(tape.scrollLeft);
+    });
+    container.append(scroll);
+    const syncScroll = () => {
+      const room = Math.max(0, tape.scrollWidth - tape.clientWidth);
+      scroll.max = String(room);
+      scroll.value = String(Math.min(tape.scrollLeft, room));
+      scroll.classList.toggle('is-empty', room <= 0);
+    };
+    resizer?.disconnect();
+    resizer = new ResizeObserver(syncScroll);
+    resizer.observe(tape);
+
     const lastRow = [...tape.querySelectorAll('.seq-row')].at(-1);
     if (lastRow) {
       gridlines.style.bottom = 'auto';
@@ -247,6 +324,7 @@ export function createDrumGrid(container, options) {
     }
     tape.scrollLeft = previousLeft;
     tape.scrollTop = previousTop;
+    syncScroll();
     markScrollEdges(tape, 'both');
   }
 
@@ -275,6 +353,7 @@ export function createDrumGrid(container, options) {
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', endStroke);
     window.removeEventListener('pointercancel', endStroke);
+    resizer?.disconnect();
     strokes.clear();
     buttons.clear();
     columns.length = 0;
