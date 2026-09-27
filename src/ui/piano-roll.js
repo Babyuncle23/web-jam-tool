@@ -425,10 +425,15 @@ function bindAudition(el, midi, onAudition) {
       if (ev.pointerId !== event.pointerId) return;
       el.removeEventListener('pointerup', end);
       el.removeEventListener('pointercancel', end);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
       onAudition?.({ down: false, midi, pointerId: event.pointerId });
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
+    // If pointer capture fails, a release outside the strip would never reach it.
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
   });
   const quiet = (event) => event.preventDefault();
   el.addEventListener('contextmenu', quiet);

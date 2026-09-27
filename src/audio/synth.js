@@ -1091,8 +1091,11 @@ export class PerformanceRecorder {
       return true;
     });
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
+    // Chord takes key #attackStep by the finger id, which never appears as an
+    // event voiceId — keep steps for every take that is still open.
+    const openTakes = new Set([...this.#line.keys(), ...this.#line.values(), ...this.#chordTakes.keys()]);
     for (const voiceId of [...this.#attackStep.keys()]) {
-      if (!sounding.has(voiceId)) this.#attackStep.delete(voiceId);
+      if (!sounding.has(voiceId) && !openTakes.has(voiceId)) this.#attackStep.delete(voiceId);
     }
     for (const [finger, members] of this.#chordTakes) {
       const kept = members.filter((id) => this.#events.some((event) => event.voiceId === id));
@@ -1133,38 +1136,17 @@ export class PerformanceRecorder {
     const ticksPerStep = (transport.PPQ || 192) / 4;
     let step = Math.round(transport.ticks / ticksPerStep) % this.#loopSteps;
     if (step < 0) step += this.#loopSteps;
-    const upStepFor = (start) => {
-      let upStep = step;
-      if (upStep === start) upStep = (start + 1) % this.#loopSteps;
-      return upStep;
-    };
-    for (const [voiceId, segment] of this.#line) {
-      const ons = this.#events.filter((event) => event.voiceId === segment && event.type === 'on');
-      const last = ons[ons.length - 1];
-      if (!last) continue;
-      const attackStep = this.#attackStep.get(segment) ?? this.#attackStep.get(voiceId) ?? last.step;
-      this.#put(this.#noteEvent(segment, upStepFor(attackStep), 'up', last));
+    for (const voiceId of [...this.#line.keys()]) {
+      const segment = this.#line.get(voiceId) ?? voiceId;
+      const last = this.#events.filter((event) => event.voiceId === segment && event.type === 'on').pop();
+      if (last) this.#closeSingleTake(voiceId, step, last);
     }
     this.#line.clear();
-    for (const [voiceId, members] of this.#chordTakes) {
-      const attackStep = this.#attackStep.get(voiceId);
-      const upStep = upStepFor(attackStep ?? step);
-      for (const member of members) {
-        const on = this.#events.find((event) => event.voiceId === member && event.type === 'on');
-        if (!on) continue;
-        this.#put({
-          voiceId: member,
-          step: upStep,
-          type: 'up',
-          x: on.x,
-          y: on.y,
-          mode: 'single',
-          instrument: on.instrument,
-          direction: 'down',
-          degree: on.degree,
-          group: on.group,
-        });
-      }
+    for (const voiceId of [...this.#chordTakes.keys()]) {
+      const member = this.#chordTakes.get(voiceId)?.[0];
+      const on = member && this.#events.find((event) => event.voiceId === member && event.type === 'on');
+      if (on) this.#closeChordTake(voiceId, step, on);
+      else this.#chordTakes.delete(voiceId);
     }
     this.#chordTakes.clear();
   }
@@ -1185,36 +1167,31 @@ export class PerformanceRecorder {
     }
     const take = this.#takes.get(event.id) ?? 1;
     const voiceId = `${event.id}#${take}`;
-    const chord = this.#chordDegrees(event);
-    if (chord) return this.#captureChord(event, step, voiceId, chord);
 
     const heard = typeof this.#synth.describe === 'function' ? this.#synth.describe(event) : null;
     const degree = heard?.degree ?? event.degree;
     const pitched = { ...event, degree };
-    if (event.type === 'up') {
-      const segment = this.#line.get(voiceId) ?? voiceId;
-      const attackStep = this.#attackStep.get(segment) ?? this.#attackStep.get(voiceId);
-      let upStep = step;
-      if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
-      const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
-      const last = ons[ons.length - 1];
-      if (last && storedPitchKey(last) !== storedPitchKey(pitched) && last.step !== upStep) {
-        this.#put(this.#noteEvent(segment, upStep, 'up', last));
-        const next = `${voiceId}~n${upStep}`;
-        this.#line.set(voiceId, next);
-        this.#attackStep.set(next, upStep);
-        this.#put(this.#noteEvent(next, upStep, 'on', pitched));
-        this.#put(this.#noteEvent(next, (upStep + 1) % this.#loopSteps, 'up', pitched));
-        this.#line.delete(voiceId);
-        return 'note';
-      }
-      if (last && storedPitchKey(last) !== storedPitchKey(pitched)) {
-        this.#put(this.#noteEvent(segment, last.step, 'on', pitched));
-      }
-      this.#put(this.#noteEvent(segment, upStep, 'up', pitched));
-      this.#line.delete(voiceId);
-      return 'note';
+
+    // A re-press whose previous note-off never arrived must not orphan it.
+    if (event.type === 'down' && take > 1) {
+      const stale = `${event.id}#${take - 1}`;
+      if (this.#chordTakes.has(stale)) this.#closeChordTake(stale, step, pitched);
+      if (this.#line.has(stale)) this.#closeSingleTake(stale, step, pitched);
     }
+
+    // The 'up' closes whichever kind of take is open — its own mode may
+    // differ after a Notes/Chords flip while the finger is held.
+    if (event.type === 'up') {
+      if (this.#chordTakes.has(voiceId)) return this.#closeChordTake(voiceId, step, pitched);
+      return this.#closeSingleTake(voiceId, step, pitched);
+    }
+
+    const chord = this.#chordDegrees(event);
+    if (chord) {
+      if (this.#line.has(voiceId)) this.#closeSingleTake(voiceId, step, pitched);
+      return this.#captureChord(event, step, voiceId, chord);
+    }
+    if (this.#chordTakes.has(voiceId)) this.#closeChordTake(voiceId, step, pitched);
 
     const segment = this.#line.get(voiceId) ?? voiceId;
     const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
@@ -1251,6 +1228,67 @@ export class PerformanceRecorder {
     };
   }
 
+  /**
+   * Write the note-off for whatever strip this finger's take is playing. `pitched`
+   * describes where the note ended, so a release pitch differing from the last
+   * recorded position is stored as its own tiny segment — same as the old 'up' path.
+   */
+  #closeSingleTake(voiceId, step, pitched) {
+    const segment = this.#line.get(voiceId) ?? voiceId;
+    const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
+    const last = ons[ons.length - 1];
+    // Fallback to the recorded on-step: a zero-length on/up pair would ring
+    // almost forever — every cycle the 'up' fires just before the 'on'.
+    const attackStep = this.#attackStep.get(segment) ?? this.#attackStep.get(voiceId) ?? last?.step;
+    let upStep = step;
+    if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
+    if (last && storedPitchKey(last) !== storedPitchKey(pitched) && last.step !== upStep) {
+      this.#put(this.#noteEvent(segment, upStep, 'up', last));
+      const next = `${voiceId}~n${upStep}`;
+      this.#line.set(voiceId, next);
+      this.#attackStep.set(next, upStep);
+      this.#put(this.#noteEvent(next, upStep, 'on', pitched));
+      this.#put(this.#noteEvent(next, (upStep + 1) % this.#loopSteps, 'up', pitched));
+      this.#line.delete(voiceId);
+      return 'note';
+    }
+    if (last && storedPitchKey(last) !== storedPitchKey(pitched)) {
+      this.#put(this.#noteEvent(segment, last.step, 'on', pitched));
+    }
+    this.#put(this.#noteEvent(segment, upStep, 'up', pitched));
+    this.#line.delete(voiceId);
+    return 'note';
+  }
+
+  #closeChordTake(voiceId, step, event) {
+    const members = this.#chordTakes.get(voiceId) || [];
+    if (!members.length) return false;
+    const memberStarts = members
+      .map((member) => this.#events.find((item) => item.voiceId === member && item.type === 'on')?.step)
+      .filter((item) => item !== undefined);
+    const attackStep = this.#attackStep.get(voiceId) ?? (memberStarts.length ? Math.min(...memberStarts) : undefined);
+    let upStep = step;
+    if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
+    const instrument = normalizeInstrument(event.instrument);
+    for (const member of members) {
+      const on = this.#events.find((item) => item.voiceId === member && item.type === 'on');
+      this.#put({
+        voiceId: member,
+        step: upStep,
+        type: 'up',
+        x: event.x,
+        y: event.y,
+        mode: 'single',
+        instrument: on?.instrument ?? instrument,
+        direction: event.direction === 'up' ? 'up' : 'down',
+        degree: on?.degree,
+        group: on?.group,
+      });
+    }
+    this.#chordTakes.delete(voiceId);
+    return 'chord';
+  }
+
   #chordDegrees(event) {
     if (event.mode !== 'chords' || normalizeInstrument(event.instrument) === 'bass') return null;
     if (typeof this.#synth.describe !== 'function') return null;
@@ -1261,31 +1299,8 @@ export class PerformanceRecorder {
   }
 
   #captureChord(event, step, voiceId, degrees) {
+    if (event.type === 'up') return this.#closeChordTake(voiceId, step, event);
     const instrument = normalizeInstrument(event.instrument);
-    if (event.type === 'up') {
-      const members = this.#chordTakes.get(voiceId) || [];
-      if (!members.length) return false;
-      const attackStep = this.#attackStep.get(voiceId);
-      let upStep = step;
-      if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
-      for (const member of members) {
-        const on = this.#events.find((item) => item.voiceId === member && item.type === 'on');
-        this.#put({
-          voiceId: member,
-          step: upStep,
-          type: 'up',
-          x: event.x,
-          y: event.y,
-          mode: 'single',
-          instrument,
-          direction: event.direction === 'up' ? 'up' : 'down',
-          degree: on?.degree,
-          group: on?.group,
-        });
-      }
-      this.#chordTakes.delete(voiceId);
-      return 'chord';
-    }
     const current = this.#chordTakes.get(voiceId) || [];
     const currentDegrees = [];
     for (const id of current) {
@@ -1293,6 +1308,9 @@ export class PerformanceRecorder {
       if (on?.degree != null) currentDegrees.push(on.degree);
     }
     if (current.length && sameDegreeSet(currentDegrees, degrees)) return false;
+    // The chord shape changed mid-hold: give the previous members their
+    // note-offs before this take starts tracking the new set.
+    if (current.length) this.#closeChordTake(voiceId, step, event);
     const sounding = this.#degreesCovering(instrument, step);
     if (!sameDegreeSet(sounding, degrees)) this.#chopChords(instrument, step);
     const generation = (this.#chordGen.get(voiceId) ?? 0) + 1;

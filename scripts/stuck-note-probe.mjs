@@ -260,7 +260,73 @@ record('shrink loop below note end (organ)', await page.evaluate(stuckVoices));
 await page.evaluate(() => document.getElementById('btn-loop-clear').click());
 await sleep(300);
 
-// --- Scenario 6: transport stop right after a loop attack --------------
+// --- Scenario 6: record, flip Notes→Chords while the finger is down -----
+await pickInstrument(page, 'organ');
+await page.evaluate(() => document.getElementById('btn-loop').click());
+await sleep(200);
+await page.evaluate(firePointer, 'pointerdown', 1, 0.5, 0.5);
+await sleep(250);
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="chords"]')?.click());
+await sleep(250);
+await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]')?.click());
+// The orphaned take rings while the loop keeps playing — check before stop.
+await sleep(2600);
+record('mode flip mid-hold (organ)', await page.evaluate(stuckVoices));
+await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
+await sleep(300);
+await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await sleep(300);
+
+// --- Scenario 7: record, flip Chords→Notes while the finger is down -----
+await pickInstrument(page, 'organ');
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="chords"]')?.click());
+await page.evaluate(() => document.getElementById('btn-loop').click());
+await sleep(200);
+await page.evaluate(firePointer, 'pointerdown', 1, 0.5, 0.5);
+await sleep(250);
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]')?.click());
+await sleep(250);
+await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
+await sleep(2600);
+record('mode flip chord→note (organ)', await page.evaluate(stuckVoices));
+await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
+await sleep(300);
+await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await sleep(300);
+
+// --- Scenario 8: hold a note across the loop boundary while recording ---
+await pickInstrument(page, 'organ');
+await page.evaluate(() => document.getElementById('btn-loop').click());
+await sleep(200);
+await page.evaluate(firePointer, 'pointerdown', 1, 0.5, 0.5);
+// Loop is 2 bars at ~120bpm ≈ 4s — hold past the wrap point.
+await sleep(4600);
+await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
+await sleep(2600);
+record('hold across loop boundary (organ)', await page.evaluate(stuckVoices));
+await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
+await sleep(300);
+await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await sleep(300);
+
+// --- Scenario 9: switch instrument while the finger is down, recording --
+await pickInstrument(page, 'organ');
+await page.evaluate(() => document.getElementById('btn-loop').click());
+await sleep(200);
+await page.evaluate(firePointer, 'pointerdown', 1, 0.5, 0.5);
+await sleep(250);
+await pickInstrument(page, 'pad');
+await sleep(250);
+await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
+await sleep(2600);
+record('instrument flip mid-hold', await page.evaluate(stuckVoices));
+await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
+await sleep(300);
+await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await sleep(300);
+
+// --- Scenario 10: transport stop right after a loop attack --------------
 await pickInstrument(page, 'organ');
 await page.evaluate(() => document.getElementById('btn-loop').click());
 await sleep(200);
