@@ -141,6 +141,9 @@ export async function createHostView() {
     noteUndoAll: document.getElementById('host-undo-all'),
     noteRedo: document.getElementById('host-redo'),
     noteClear: document.getElementById('host-note-clear'),
+    instPrev: document.getElementById('host-inst-prev'),
+    instName: document.getElementById('host-inst-name'),
+    instNext: document.getElementById('host-inst-next'),
     bars: document.getElementById('btn-bars'),
     fxDetail: document.getElementById('fx-detail'),
     fxSheet: document.getElementById('host-fx-sheet'),
@@ -980,14 +983,35 @@ export async function createHostView() {
     }
   });
 
-  el.instruments.addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-instrument]');
-    if (!chip) return;
-    state.instrument = normalizeInstrument(chip.dataset.instrument);
+  /** Paint the carousel label; re-paint and re-center the open roll. */
+  function paintRollInstrument() {
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    el.instName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    paintIconButton(el.instName, state.instrument, spec?.label || state.instrument);
+    if (!el.notesSheet.hidden) {
+      paintHostRoll();
+      revealRoll();
+    }
+  }
+
+  function pickInstrument(instrument) {
+    state.instrument = normalizeInstrument(instrument);
     paintInstruments(el.instruments, state.instrument);
     renderInstrumentFx();
     if (!el.fxSheet.hidden) renderFxSliders();
     syncModeChrome();
+    paintRollInstrument();
+  }
+
+  function cycleRollInstrument(direction) {
+    const index = INSTRUMENT_IDS.indexOf(state.instrument);
+    pickInstrument(INSTRUMENT_IDS[(index + direction + INSTRUMENT_IDS.length) % INSTRUMENT_IDS.length]);
+  }
+
+  el.instruments.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-instrument]');
+    if (!chip) return;
+    pickInstrument(chip.dataset.instrument);
   });
 
   el.hostScreen.querySelector('#bpm-presets').addEventListener('click', (event) => {
@@ -1456,6 +1480,11 @@ export async function createHostView() {
   el.noteUndo.addEventListener('click', () => undoOwn('host'));
   el.noteUndoAll.addEventListener('click', () => undoAll());
   el.noteRedo.addEventListener('click', () => redoShared());
+  el.instPrev.addEventListener('click', () => cycleRollInstrument(-1));
+  el.instNext.addEventListener('click', () => cycleRollInstrument(1));
+  el.instPrev.replaceChildren(chipIcon('prev'));
+  el.instNext.replaceChildren(chipIcon('next'));
+  paintRollInstrument();
   el.noteClear.addEventListener('click', () => {
     if (!audio) return;
     rememberEdit('host', [...audio.loops.keys()]);

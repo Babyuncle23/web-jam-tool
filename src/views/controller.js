@@ -5,10 +5,10 @@
  */
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
-import { INSTRUMENT_COLORS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, barCountLabel, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
+import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, barCountLabel, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
 import { FX_COLORS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz } from '../audio/effects.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
-import { paintIconButton, setIconLabel } from '../ui/icons.js';
+import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -40,6 +40,9 @@ export async function createControllerView({ code, name } = {}) {
     noteUndoAll: document.getElementById('controller-undo-all'),
     noteRedo: document.getElementById('controller-redo'),
     noteClear: document.getElementById('controller-note-clear'),
+    instPrev: document.getElementById('controller-inst-prev'),
+    instName: document.getElementById('controller-inst-name'),
+    instNext: document.getElementById('controller-inst-next'),
     bars: document.getElementById('controller-bars'),
     fxDetail: document.getElementById('controller-fx-detail'),
     fxSheet: document.getElementById('controller-fx-sheet'),
@@ -654,13 +657,33 @@ export async function createControllerView({ code, name } = {}) {
       return;
     }
     if (chip.dataset.mode && !(state.instrument === 'bass' && chip.dataset.mode === 'chords')) state.mode = chip.dataset.mode;
-    if (chip.dataset.instrument) {
-      state.instrument = normalizeInstrument(chip.dataset.instrument);
-      socket.sendControl({ instrument: state.instrument });
-      renderGuestFx();
-      if (!el.fxSheet.hidden) renderGuestSliders();
-    }
+    if (chip.dataset.instrument) pickGuestInstrument(chip.dataset.instrument);
     syncChrome();
+  }
+
+  /** Same instrument switch as the main chips, plus the open roll follows. */
+  function pickGuestInstrument(instrument) {
+    state.instrument = normalizeInstrument(instrument);
+    socket.sendControl({ instrument: state.instrument });
+    renderGuestFx();
+    if (!el.fxSheet.hidden) renderGuestSliders();
+    syncChrome();
+    paintRollInstrument();
+  }
+
+  function paintRollInstrument() {
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    el.instName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    paintIconButton(el.instName, state.instrument, spec?.label || state.instrument);
+    if (!el.notesSheet.hidden) {
+      paintGuestNotes();
+      revealRoll();
+    }
+  }
+
+  function cycleGuestInstrument(direction) {
+    const index = INSTRUMENT_IDS.indexOf(state.instrument);
+    pickGuestInstrument(INSTRUMENT_IDS[(index + direction + INSTRUMENT_IDS.length) % INSTRUMENT_IDS.length]);
   }
 
   el.screen.addEventListener('click', onChipClick);
@@ -720,6 +743,11 @@ export async function createControllerView({ code, name } = {}) {
   el.noteUndo.addEventListener('click', () => socket.sendControl({ history: 'undo' }));
   el.noteUndoAll.addEventListener('click', () => socket.sendControl({ history: 'undo-all' }));
   el.noteRedo.addEventListener('click', () => socket.sendControl({ history: 'redo' }));
+  el.instPrev.addEventListener('click', () => cycleGuestInstrument(-1));
+  el.instNext.addEventListener('click', () => cycleGuestInstrument(1));
+  el.instPrev.replaceChildren(chipIcon('prev'));
+  el.instNext.replaceChildren(chipIcon('next'));
+  paintRollInstrument();
   el.noteClear.addEventListener('click', () => {
     if (!state.audioReady) return;
     socket.sendControl({ loop: 'clear', fromEditor: true, instrument: state.instrument });

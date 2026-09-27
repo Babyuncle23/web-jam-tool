@@ -246,6 +246,11 @@
             <span>Zoom</span>
             <input id="host-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
           </label>
+          <div class="inst-carousel" role="group" aria-label="Instrument">
+            <button id="host-inst-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous instrument"></button>
+            <div id="host-inst-name" class="inst-carousel__name chip has-swatch" aria-live="polite"></div>
+            <button id="host-inst-next" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Next instrument"></button>
+          </div>
           <div id="host-note-tape" class="roll" aria-label="Notes"></div>
           <div class="stage-bar">
             <button id="host-select-move" class="btn btn--ghost select-move" type="button" aria-pressed="false">select and move</button>
@@ -380,6 +385,11 @@
             <span>Zoom</span>
             <input id="controller-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
           </label>
+          <div class="inst-carousel" role="group" aria-label="Instrument">
+            <button id="controller-inst-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous instrument"></button>
+            <div id="controller-inst-name" class="inst-carousel__name chip has-swatch" aria-live="polite"></div>
+            <button id="controller-inst-next" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Next instrument"></button>
+          </div>
           <div id="controller-note-tape" class="roll" aria-label="Notes"></div>
           <div class="stage-bar">
             <button id="controller-select-move" class="btn btn--ghost select-move" type="button" aria-pressed="false">select and move</button>

@@ -132,6 +132,19 @@ try {
     all: document.querySelectorAll('#controller-note-tape .roll__note').length,
   }))()`);
 
+  // The carousel switches what guest B edits: pad → bass, roll follows, back to pad.
+  await clickSelector(guestB, '#controller-inst-next');
+  await pollExpr(guestB, `(() => ({
+    ok: document.querySelector('#controller-inst-name .chip-label')?.textContent.trim() === 'Bass'
+      && document.getElementById('controller-note-tape').__instrument === 'bass'
+      && document.querySelector('#controller-instruments [data-instrument="bass"]')?.classList.contains('is-on'),
+  }))()`);
+  await clickSelector(guestB, '#controller-inst-prev');
+  await pollExpr(guestB, `(() => ({
+    ok: document.querySelector('#controller-inst-name .chip-label')?.textContent.trim() === 'Pad'
+      && document.getElementById('controller-note-tape').__instrument === 'pad',
+  }))()`);
+
   // Guest B edits guest A's note: a tap deletes it.
   if (!(await tapFirstStrip(guestB, '#controller-note-tape'))) throw new Error('guest B found no strip to tap');
   await pollExpr(host, `(() => ({ ok: ${loopTotal} === 0, total: ${loopTotal} }))()`);
