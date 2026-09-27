@@ -192,8 +192,9 @@ export async function createHostView() {
     noteSteps: LOOP_STEPS,
     drumPreset: 'break',
   };
+  const initialPreset = DRUM_PRESETS[state.drumPreset];
   for (const track of TRACKS) {
-    const on = new Set(tileHits(DRUM_PRESETS[state.drumPreset].pattern[track.id] ?? [], state.drumSteps));
+    const on = new Set(tileHits(initialPreset.pattern[track.id] ?? [], state.drumSteps, initialPreset.span));
     for (const step of on) state.grid[track.id][step] = { on: true, division: 1 };
   }
 
@@ -641,11 +642,11 @@ export async function createHostView() {
     }
   }
 
-  function applyPattern(pattern) {
+  function applyPattern(pattern, span) {
     const length = state.drumSteps;
     ensureDrumRows(length);
     for (const track of TRACKS) {
-      const on = new Set(tileHits(pattern[track.id] ?? [], length));
+      const on = new Set(tileHits(pattern[track.id] ?? [], length, span));
       for (let i = 0; i < length; i += 1) {
         const slot = { on: on.has(i), division: 1 };
         state.grid[track.id][i] = slot;
@@ -667,7 +668,7 @@ export async function createHostView() {
       button.textContent = preset.label;
       button.addEventListener('click', () => {
         state.drumPreset = preset.id;
-        applyPattern(preset.pattern);
+        applyPattern(preset.pattern, preset.span);
         markDrumPreset(preset.id);
       });
       el.drumPresets.append(button);
@@ -1305,7 +1306,10 @@ export async function createHostView() {
     state.noteSteps = next;
     state.drumSteps = audio?.drums.setLength(next) ?? next;
     fitDrumRows(next);
-    if (state.drumPreset && DRUM_PRESETS[state.drumPreset]) applyPattern(DRUM_PRESETS[state.drumPreset].pattern);
+    if (state.drumPreset && DRUM_PRESETS[state.drumPreset]) {
+      const preset = DRUM_PRESETS[state.drumPreset];
+      applyPattern(preset.pattern, preset.span);
+    }
     else renderSequencer();
     if (audio) {
       for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
