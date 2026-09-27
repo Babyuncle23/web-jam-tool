@@ -2,23 +2,39 @@
  * Network layer. Guests emit touches, the host receives them and sounds them.
  * Thin wrapper over the Socket.io client so the UI never touches raw events.
  *
- * Local pages talk to this same machine. A public page (GitHub Pages) talks
- * to PUBLIC_BACKEND_URL once that Render/Railway address exists.
+ * Local pages talk to this same machine. A public page (GitHub Pages) has no
+ * backend, so it talks to the Socket.io server hosted on Render.
  */
 
-/** Render/Railway Socket.io origin. Empty until that host exists. */
-export const PUBLIC_BACKEND_URL = '';
+/**
+ * Cloud Socket.io origin (Render). Keep it in sync with the Render service
+ * name: https://<service>.onrender.com
+ */
+export const PUBLIC_BACKEND_URL = 'https://web-jam-tool.onrender.com';
 
 export function isLocalHostname(hostname) {
   const host = String(hostname || '');
   return host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.');
 }
 
-/** Where the browser opens the Socket.io connection. */
+/**
+ * Where the browser opens the Socket.io connection. Local dev and LAN jams
+ * talk to the server that served the page; the public build on GitHub Pages
+ * switches to the Render backend instead.
+ */
 export function socketServerUrl(page = globalThis.location) {
   if (!page?.origin) return PUBLIC_BACKEND_URL;
-  if (isLocalHostname(page.hostname) || !PUBLIC_BACKEND_URL) return page.origin;
-  return PUBLIC_BACKEND_URL;
+  if (isLocalHostname(page.hostname)) return page.origin;
+  return PUBLIC_BACKEND_URL || page.origin;
+}
+
+const SERVER_FULL_MESSAGE = 'Server is full';
+const SERVER_FULL_RETRY_MS = 2500;
+
+/** True when a connect_error came from the server's capacity gate. */
+export function isServerFullError(error) {
+  const text = `${error?.message ?? ''} ${error?.data?.message ?? ''}`.toLowerCase();
+  return text.includes(SERVER_FULL_MESSAGE.toLowerCase());
 }
 
 export const EVENTS = {
@@ -40,11 +56,15 @@ export class JamSocket {
   #role = null;
   #code = null;
   #shared = {};
+  #waitingForSlot = false;
+  #slotTimer = 0;
 
   constructor({ io = globalThis.io, url } = {}) {
     if (!io) throw new Error('Socket.io client is not loaded');
     this.#io = io;
     this.url = url === undefined ? socketServerUrl() : url;
+    const retry = this.#waitingOverlay()?.querySelector('#server-full-retry');
+    retry?.addEventListener('click', () => this.#retryNow());
   }
 
   get socket() {
@@ -66,10 +86,34 @@ export class JamSocket {
   connect() {
     if (this.#socket) return this.#socket;
     this.#socket = this.url ? this.#io(this.url) : this.#io();
+    this.#socket.on('connect', () => this.#setWaitingForSlot(false));
+    this.#socket.on('connect_error', (error) => {
+      if (isServerFullError(error)) this.#setWaitingForSlot(true);
+    });
     for (const [event, callbacks] of this.#listeners) {
       for (const callback of callbacks) this.#socket.on(event, callback);
     }
     return this.#socket;
+  }
+
+  /** Full-screen "server is full" gate from index.html, if this page has it. */
+  #waitingOverlay() {
+    return typeof document === 'undefined' ? null : document.getElementById('server-full');
+  }
+
+  #setWaitingForSlot(on) {
+    this.#waitingForSlot = on;
+    const overlay = this.#waitingOverlay();
+    if (overlay) overlay.hidden = !on;
+    clearTimeout(this.#slotTimer);
+    // Every failed attempt reschedules one manual retry — this keeps the
+    // queue moving even where the manager would not reconnect on its own.
+    if (on) this.#slotTimer = setTimeout(() => this.#retryNow(), SERVER_FULL_RETRY_MS);
+  }
+
+  #retryNow() {
+    if (!this.#waitingForSlot || !this.#socket || this.#socket.connected) return;
+    this.#socket.connect();
   }
 
   on(event, callback) {
@@ -141,6 +185,7 @@ export class JamSocket {
   }
 
   disconnect() {
+    this.#setWaitingForSlot(false);
     this.#socket?.disconnect();
     this.#socket = null;
     this.#role = null;

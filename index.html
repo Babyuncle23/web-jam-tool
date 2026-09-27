@@ -414,6 +414,18 @@
       </div>
     </section>
 
+    <!-- Capacity gate: socket.js reveals it when the backend reports "Server is full" -->
+    <div id="server-full" class="splash splash--full" role="alertdialog" aria-live="assertive" hidden>
+      <div class="splash__card">
+        <div class="splash__spinner"></div>
+        <h2>Server is full</h2>
+        <p id="server-full-detail">
+          Too many players are connected right now. Please wait — this page retries automatically until a slot frees up.
+        </p>
+        <button id="server-full-retry" class="btn btn--primary btn--xl" type="button">Try again now</button>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

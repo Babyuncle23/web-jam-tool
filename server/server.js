@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 43117);
 const HOST = '0.0.0.0';
+const MAX_CONNECTIONS = Math.max(1, Number(process.env.MAX_CONNECTIONS) || 10);
 
 function lanIPv4() {
   const found = [];
@@ -31,6 +32,16 @@ app.use(express.static(ROOT, { extensions: ['html'] }));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: process.env.CLIENT_ORIGIN || true } });
+
+// Hard capacity gate: refuse the handshake before the socket joins the
+// namespace map, so io.of('/').sockets.size is the true number of players.
+io.use((socket, next) => {
+  if (io.of('/').sockets.size >= MAX_CONNECTIONS) {
+    next(new Error('Server is full'));
+    return;
+  }
+  next();
+});
 
 /** @type {Map<string, { hostId: string, controllers: Set<string>, createdAt: number }>} */
 const sessions = new Map();
