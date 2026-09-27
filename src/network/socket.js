@@ -84,7 +84,12 @@ export class JamSocket {
   }
 
   connect() {
-    if (this.#socket) return this.#socket;
+    if (this.#socket) {
+      // A dropped socket that will not auto-reconnect (e.g. the server closed
+      // it) must be poked, or the next request just sits in the emit buffer.
+      if (!this.#socket.connected && !this.#socket.active) this.#socket.connect();
+      return this.#socket;
+    }
     this.#socket = this.url ? this.#io(this.url) : this.#io();
     this.#socket.on('connect', () => this.#setWaitingForSlot(false));
     this.#socket.on('connect_error', (error) => {

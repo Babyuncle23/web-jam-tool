@@ -21,6 +21,23 @@ const screens = {
   controller: document.getElementById('controller-screen'),
 };
 
+/**
+ * Pristine copies of the two app screens, taken before any view attaches
+ * listeners or fills them in. Re-entering a role starts from this DOM — the
+ * same state a fresh page load would have — so leftover listeners from a
+ * destroyed view cannot fire twice (or fight the new view's state).
+ */
+const pristineScreens = {
+  host: screens.host.cloneNode(true),
+  controller: screens.controller.cloneNode(true),
+};
+
+function resetScreen(name) {
+  const fresh = pristineScreens[name].cloneNode(true);
+  screens[name].replaceWith(fresh);
+  screens[name] = fresh;
+}
+
 let activeView = null;
 
 function showScreen(name) {
@@ -32,6 +49,7 @@ function showScreen(name) {
 async function enterHost() {
   const { createHostView } = await import('./views/host.js');
   activeView?.destroy?.();
+  resetScreen('host');
   showScreen('host');
   activeView = await createHostView();
 }
@@ -39,6 +57,7 @@ async function enterHost() {
 async function enterController(code) {
   const { createControllerView } = await import('./views/controller.js');
   activeView?.destroy?.();
+  resetScreen('controller');
   showScreen('controller');
   activeView = await createControllerView({ code });
 }
@@ -50,12 +69,21 @@ function backToRolePicker() {
   history.replaceState(null, '', location.pathname);
 }
 
-document.getElementById('btn-role-host').addEventListener('click', () => {
-  enterHost().catch((error) => console.error('[host]', error));
-});
-
 const joinForm = document.getElementById('join-form');
 const joinError = document.getElementById('join-error');
+
+function hostOpenFailed(error) {
+  console.error('[host]', error);
+  activeView?.destroy?.();
+  activeView = null;
+  showScreen('role');
+  joinError.textContent = `Could not open the host: ${error.message}`;
+  joinError.hidden = false;
+}
+
+document.getElementById('btn-role-host').addEventListener('click', () => {
+  enterHost().catch(hostOpenFailed);
+});
 
 joinForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -78,9 +106,10 @@ joinForm.addEventListener('submit', async (event) => {
   }
 });
 
-for (const button of document.querySelectorAll('[data-action="back"]')) {
-  button.addEventListener('click', backToRolePicker);
-}
+// Delegated: the back buttons live inside screens that resetScreen replaces.
+document.addEventListener('click', (event) => {
+  if (event.target.closest('[data-action="back"]')) backToRolePicker();
+});
 
 document.addEventListener('gesturestart', (event) => event.preventDefault());
 document.addEventListener(
@@ -94,7 +123,7 @@ document.addEventListener(
 
 const params = new URLSearchParams(location.search);
 if (params.get('role') === 'host') {
-  enterHost().catch((error) => console.error('[host]', error));
+  enterHost().catch(hostOpenFailed);
 } else if (params.get('role') === 'controller' && params.get('code')) {
   document.getElementById('join-code').value = params.get('code').toUpperCase();
   enterController(params.get('code').toUpperCase()).catch((error) => {

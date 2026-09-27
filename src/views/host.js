@@ -2056,14 +2056,76 @@ export async function createHostView() {
 
   /* ---------- Socket ---------- */
 
+  let session = null;
+  let joinUrl = '';
+  let reopening = false;
+
   socket.on('connect', () => {
     el.socketStatus.textContent = 'socket: online';
     el.socketStatus.dataset.state = 'online';
+    // A reconnect is a brand-new server socket — the old session is gone,
+    // so open a fresh room instead of showing a dead join code.
+    if (session && !reopening) reopenSession();
   });
   socket.on('disconnect', () => {
     el.socketStatus.textContent = 'socket: offline';
     el.socketStatus.dataset.state = 'error';
   });
+
+  async function paintJoinQr(url) {
+    try {
+      const QRCode = await loadScript(QR_SRC);
+      el.qr.replaceChildren();
+      const qr = new QRCode(el.qr, {
+        text: url,
+        width: 168,
+        height: 168,
+        colorDark: '#06231d',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M,
+      });
+      qr.makeCode(url);
+    } catch (error) {
+      el.qr.textContent = 'QR unavailable';
+      log(error.message, 'qr');
+    }
+  }
+
+  /** After a reconnect the server has already dropped the room: open a new one. */
+  async function reopenSession() {
+    reopening = true;
+    try {
+      session = await socket.createSession();
+    } catch (error) {
+      log(error.message, 'net');
+      reopening = false;
+      return;
+    }
+    el.code.textContent = session.code;
+    joinUrl = await guestJoinUrl(session.code);
+    el.joinUrl.textContent = joinUrl;
+    el.joinUrl.title = joinUrl;
+    for (const peerId of [...state.peers.keys()]) clearPeer(peerId);
+    state.peers.clear();
+    setPeers();
+    if (masterHolder) {
+      masterHolder = null;
+      state.masterFx.hold = false;
+      audio?.engine.masterFx?.setHold(false);
+      paintMasterHold();
+    }
+    if (audio) {
+      for (const [playerId, recorder] of audio.loops) {
+        if (playerId === 'host') continue;
+        recorder.clear();
+        audio.loops.delete(playerId);
+      }
+    }
+    publishHarmony();
+    paintJoinQr(joinUrl);
+    log(`reconnected — new session ${session.code}`, 'net');
+    reopening = false;
+  }
   socket.on(EVENTS.touch, handleTouch);
   socket.on(EVENTS.control, handleControl);
   socket.on(EVENTS.peerJoin, ({ peerId, name }) => {
@@ -2124,29 +2186,13 @@ export async function createHostView() {
   setPeers();
   requestAnimationFrame(() => renderer.resize());
 
-  const session = await socket.createSession();
+  session = await socket.createSession();
   el.code.textContent = session.code;
-  const joinUrl = await guestJoinUrl(session.code);
+  joinUrl = await guestJoinUrl(session.code);
   el.joinUrl.textContent = joinUrl;
   el.joinUrl.title = joinUrl;
   publishHarmony();
-
-  try {
-    const QRCode = await loadScript(QR_SRC);
-    el.qr.replaceChildren();
-    const qr = new QRCode(el.qr, {
-      text: joinUrl,
-      width: 168,
-      height: 168,
-      colorDark: '#06231d',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M,
-    });
-    qr.makeCode(joinUrl);
-  } catch (error) {
-    el.qr.textContent = 'QR unavailable';
-    log(error.message, 'qr');
-  }
+  await paintJoinQr(joinUrl);
 
   log(`session ${session.code} is open`, 'net');
   markScrollEdges(document.querySelector('.host-tools'), 'y');

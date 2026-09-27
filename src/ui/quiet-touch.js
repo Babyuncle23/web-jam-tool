@@ -42,6 +42,16 @@ function quietTarget(node) {
   return node?.closest?.('.pad, .btn, .chip, .step, .mix-flag, .stutter-hold, .roll__note, .roll__key, input[type="range"], [role="button"]') || null;
 }
 
+/**
+ * The quiet rules only apply inside the two jam screens, where buttons were
+ * softened into div[role="button"]. The role picker and the "server is full"
+ * overlay keep native <button> elements: a suppressed native click with no
+ * synthesized replacement leaves them dead on touch devices.
+ */
+function inJamScreen(node) {
+  return Boolean(node?.closest?.('#host-screen, #controller-screen'));
+}
+
 function wantsClick(el) {
   if (!el || !el.isConnected) return false;
   if (el.getAttribute('aria-disabled') === 'true' || el.disabled) return false;
@@ -138,6 +148,7 @@ export function installQuietTouch(...roots) {
     (event) => {
       let quiet = false;
       for (const touch of event.changedTouches) {
+        if (!inJamScreen(touch.target)) continue;
         const range = rangeInJam(touch.target);
         if (range) {
           armRangeTouch(range, touch);
@@ -194,7 +205,7 @@ export function installQuietTouch(...roots) {
   );
 
   const blockMenu = (event) => {
-    if (quietTarget(event.target)) event.preventDefault();
+    if (quietTarget(event.target) && inJamScreen(event.target)) event.preventDefault();
   };
   document.addEventListener('contextmenu', blockMenu, true);
   document.addEventListener('selectstart', blockMenu, true);
@@ -214,7 +225,7 @@ export function installQuietTouch(...roots) {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const el = event.target?.closest?.('[role="button"]');
-    if (!el || el.closest('#role-screen')) return;
+    if (!el || !inJamScreen(el)) return;
     if (el.getAttribute('aria-disabled') === 'true') return;
     event.preventDefault();
     el.click();
