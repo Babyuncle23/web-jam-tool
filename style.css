@@ -1148,12 +1148,11 @@ input[type='range'] {
   flex: 0 0 auto;
 }
 
-/* Brush owns horizontal drags on cells; vertical drags scroll the tape. */
+/* Taps write cells; vertical drags scroll the tape, sideways travel uses the slider. */
 .seq-row__steps .step {
   touch-action: pan-y;
 }
 
-/* Cells paint on drag, so sideways travel gets a dedicated slider. */
 .seq-scroll {
   display: block;
   box-sizing: border-box;

@@ -1,23 +1,17 @@
 /**
  * One drum-step grid shared by the host sheet and the guest sheet.
- * Tap a cell or drag across cells like a brush: the first touched cell
- * decides the value the whole stroke writes. The view owns the data and any
- * repeat-mirror expansion; the grid owns the DOM, the gestures, and the
- * playhead column.
- *
- * On touch the browser implicitly captures the pointer to the first cell,
- * so per-cell pointerenter never fires — the brush hit-tests with
- * elementFromPoint instead.
+ * A tap on a cell writes or erases a note; drags belong to scrolling, so a
+ * release click after a long pull is swallowed once. The view owns the data
+ * and any repeat-mirror expansion; the grid owns the DOM, the gestures, and
+ * the playhead column.
  */
 
 import { pressable } from './quiet-touch.js';
 import { markScrollEdges } from './scroll-edges.js';
 
 const STEP_GAP = 3;
-/** A tap writes on release; any click that follows a real write is a dup. */
-const CLICK_SUPPRESS_MS = 800;
-/** A stroke only becomes a brush past this distance — below it is a tap. */
-const ARM_PX2 = 8 * 8;
+/** A release this far from the touchdown was a drag, not a tap. */
+const TAP_PX2 = 10 * 10;
 
 function paintCellButton(button, slot, mirrored) {
   const on = Boolean(slot?.on);
@@ -29,10 +23,10 @@ function paintCellButton(button, slot, mirrored) {
 }
 
 /**
- * What a stroke writes. Triplet mode stamps triplets; a stroke that starts
- * on a matching cell erases instead, so paint and erase are one gesture.
+ * What a tap writes. Triplet mode stamps triplets; a tap on a matching cell
+ * erases instead.
  */
-function strokeValue(mode, slot) {
+function tapValue(mode, slot) {
   if (mode === 'triplet') {
     return slot?.on && slot.division === 3 ? { on: false, division: 1 } : { on: true, division: 3 };
   }
@@ -50,7 +44,7 @@ function strokeValue(mode, slot) {
  * @param {() => number} [options.mirrorSpan] active repeat span in steps, 0 = off
  * @param {() => string} [options.writeMode] 'single' | 'triplet'
  * @param {(track: string, step: number, value: {on: boolean, division: number}) => void} options.applyCell
- * @param {(phase: 'start'|'flush'|'end') => void} [options.onGesture] stroke lifecycle for batching sends
+ * @param {(phase: 'end') => void} [options.onGesture] fired after a write so the view can commit
  */
 export function createDrumGrid(container, options) {
   const {
@@ -68,133 +62,53 @@ export function createDrumGrid(container, options) {
   let tape = null;
   let resizer = null;
   let litStep = -1;
-  let suppressUntil = 0;
+  let panDown = null;
+  let blockClick = false;
   const buttons = new Map();
   const columns = [];
-  const strokes = new Map();
 
   function mirrored(step) {
     const span = Number(mirrorSpan()) || 0;
     return span > 0 && step >= span;
   }
 
-  function paintStep(stroke, track, step) {
-    const key = `${track}:${step}`;
-    if (stroke.visited.has(key)) return;
-    stroke.visited.add(key);
-    applyCell(track, step, stroke.value);
-    stroke.dirty = true;
-  }
-
-  function strokeHit(stroke, button) {
-    const track = button.dataset.track;
-    const step = Number(button.dataset.step);
-    const last = stroke.last;
-    if (last && last.track === track && last.step !== step) {
-      // Fill the cells a fast swipe skipped between the last hit and this one.
-      const lo = Math.min(last.step, step);
-      const hi = Math.max(last.step, step);
-      for (let s = lo; s <= hi; s += 1) paintStep(stroke, track, s);
-    } else {
-      paintStep(stroke, track, step);
-    }
-    stroke.last = { track, step };
-  }
-
-  function stepAt(x, y) {
-    const under = document.elementFromPoint(x, y);
-    const button = under?.closest?.('.step');
-    return button && tape?.contains(button) ? button : null;
-  }
-
   /**
-   * Nothing writes on pointerdown: a tap commits on release, a brush commits
-   * once the pointer clearly started moving. Between those, the browser may
-   * still steal the gesture for scrolling (pointercancel) — then nothing was
-   * written and the tap is not a fake note.
+   * Clicks write cells; drags scroll the tape or the sheet. A release click
+   * that follows a long pull is not a tap — swallow it once.
    */
   function onPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    const button = event.target.closest?.('.step');
-    if (!button || !tape?.contains(button)) return;
+    panDown = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  }
+
+  function onPointerUp(event) {
+    if (!panDown || event.pointerId !== panDown.id) return;
+    const dx = event.clientX - panDown.x;
+    const dy = event.clientY - panDown.y;
+    panDown = null;
+    if (dx * dx + dy * dy > TAP_PX2) blockClick = true;
+  }
+
+  function onPointerCancel(event) {
+    if (panDown?.id === event.pointerId) panDown = null;
+  }
+
+  function onTapeClick(event) {
+    if (!blockClick) return;
+    blockClick = false;
     event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function onKeyClick(button) {
     const track = button.dataset.track;
     const step = Number(button.dataset.step);
-    strokes.set(event.pointerId, {
-      id: event.pointerId,
-      button,
-      value: strokeValue(writeMode(), cell(track, step)),
-      visited: new Set(),
-      dirty: false,
-      armed: false,
-      travel: 0,
-      x: event.clientX,
-      y: event.clientY,
-      last: null,
-    });
-    onGesture('start');
-  }
-
-  function flush(stroke) {
-    if (!stroke.dirty) return;
-    stroke.dirty = false;
-    suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
-    onGesture('flush');
-  }
-
-  function onPointerMove(event) {
-    const stroke = strokes.get(event.pointerId);
-    if (!stroke) return;
-    if (!stroke.armed) {
-      const dx = event.clientX - stroke.x;
-      const dy = event.clientY - stroke.y;
-      const dist = dx * dx + dy * dy;
-      if (dist > stroke.travel) stroke.travel = dist;
-      if (dist < ARM_PX2) return;
-      // On touch/pen a vertical drag belongs to scrolling (the browser cancels
-      // the stroke anyway), so the brush only arms on a horizontal pull.
-      if (event.pointerType !== 'mouse' && Math.abs(dy) > Math.abs(dx)) return;
-      stroke.armed = true;
-      strokeHit(stroke, stroke.button);
-    }
-    // A click that follows the release must stay suppressed however long
-    // the finger was held, so the window refreshes through the stroke.
-    suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
-    const button = stepAt(event.clientX, event.clientY);
-    if (button) strokeHit(stroke, button);
-    flush(stroke);
-  }
-
-  function endStroke(event) {
-    const stroke = strokes.get(event.pointerId);
-    if (!stroke) return;
-    strokes.delete(event.pointerId);
-    suppressUntil = performance.now() + CLICK_SUPPRESS_MS;
-    // Cancelled means the browser took the gesture for scrolling — only a
-    // small-move release still counts as a tap.
-    if (event.type === 'pointerup' && !stroke.armed && stroke.travel < ARM_PX2) {
-      strokeHit(stroke, stroke.button);
-    }
-    flush(stroke);
+    applyCell(track, step, tapValue(writeMode(), cell(track, step)));
     onGesture('end');
   }
 
-  function onKeyClick(button, event) {
-    if (performance.now() < suppressUntil) {
-      // The pointerdown already wrote this cell — swallow the follow-up click.
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    const track = button.dataset.track;
-    const step = Number(button.dataset.step);
-    applyCell(track, step, strokeValue(writeMode(), cell(track, step)));
-    onGesture('flush');
-  }
-
-  window.addEventListener('pointermove', onPointerMove);
-  window.addEventListener('pointerup', endStroke);
-  window.addEventListener('pointercancel', endStroke);
+  window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', onPointerCancel);
 
   function render() {
     const length = Math.max(1, steps());
@@ -211,6 +125,7 @@ export function createDrumGrid(container, options) {
     tape = document.createElement('div');
     tape.className = 'seq-tape';
     tape.addEventListener('pointerdown', onPointerDown);
+    tape.addEventListener('click', onTapeClick, true);
 
     const ruler = document.createElement('div');
     ruler.className = 'seq-row seq-ruler';
@@ -263,7 +178,7 @@ export function createDrumGrid(container, options) {
         button.setAttribute('aria-label', `${track.label} step ${step + 1}`);
         paintCellButton(button, cell(track.id, step), mirrored(step));
         if (step === litStep) button.classList.add('is-playing');
-        button.addEventListener('click', (event) => onKeyClick(button, event));
+        button.addEventListener('click', () => onKeyClick(button));
         buttons.set(`${track.id}:${step}`, button);
         if (!columns[step]) columns[step] = [];
         columns[step].push(button);
@@ -350,11 +265,11 @@ export function createDrumGrid(container, options) {
   }
 
   function destroy() {
-    window.removeEventListener('pointermove', onPointerMove);
-    window.removeEventListener('pointerup', endStroke);
-    window.removeEventListener('pointercancel', endStroke);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerCancel);
     resizer?.disconnect();
-    strokes.clear();
+    panDown = null;
+    blockClick = false;
     buttons.clear();
     columns.length = 0;
     tape = null;

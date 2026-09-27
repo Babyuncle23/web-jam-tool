@@ -98,7 +98,7 @@ try {
   })()`);
   console.log('host mirror write:', JSON.stringify(hostMirror));
 
-  // 4. Brush drag on the guest: snare steps 2..5 — horizontal swipe.
+  // 4. A drag across cells writes nothing — drags belong to scrolling now.
   const box = await guest.evaluate(`(() => {
     const first = document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="2"]');
     const last = document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="5"]');
@@ -106,25 +106,21 @@ try {
     const b = last.getBoundingClientRect();
     return { x1: a.x + a.width / 2, y: a.y + a.height / 2, x2: b.x + b.width / 2 };
   })()`);
-  // Ensure the stroke paints: pick cells currently off — snare row, check first.
-  const snare2on = await guest.evaluate(`document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="2"]').classList.contains('is-on')`);
+  const beforeDrag = await guest.evaluate(`[2,3,4,5].map((s) => document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="'+s+'"]').classList.contains('is-on'))`);
   await guest.mouse.move(box.x1, box.y);
   await guest.mouse.down();
   await guest.mouse.move((box.x1 + box.x2) / 2, box.y, { steps: 5 });
   await guest.mouse.move(box.x2, box.y, { steps: 5 });
   await guest.mouse.up();
   await sleep(300);
-  const brushed = await guest.evaluate(`(() => {
-    const cells = [2, 3, 4, 5].map((s) => document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="'+s+'"]').classList.contains('is-on'));
-    return { cells };
-  })()`);
-  console.log('guest brush (startOn=' + snare2on + '):', JSON.stringify(brushed));
-  const hostBrushed = await pollExpr(host, `(() => {
+  const afterDrag = await guest.evaluate(`[2,3,4,5].map((s) => document.querySelector('#controller-sequencer .step[data-track="snare"][data-step="'+s+'"]').classList.contains('is-on'))`);
+  console.log('guest drag wrote nothing:', JSON.stringify(beforeDrag), '→', JSON.stringify(afterDrag));
+  if (JSON.stringify(beforeDrag) !== JSON.stringify(afterDrag)) throw new Error('a drag changed cells');
+  const hostDrag = await pollExpr(host, `(() => {
     const cells = [2, 3, 4, 5].map((s) => document.querySelector('#sequencer .step[data-track="snare"][data-step="'+s+'"]')?.classList.contains('is-on'));
-    const mirror = [18, 19, 20, 21].map((s) => document.querySelector('#sequencer .step[data-track="snare"][data-step="'+s+'"]')?.classList.contains('is-on'));
-    return { ok: cells.every((v, i) => v === ${JSON.stringify(brushed)}.cells[i]) && JSON.stringify(mirror) === JSON.stringify(${JSON.stringify(brushed)}.cells), cells, mirror };
+    return { ok: JSON.stringify(cells) === ${JSON.stringify(JSON.stringify(beforeDrag))}, cells };
   })()`);
-  console.log('host sees brush + mirror:', JSON.stringify(hostBrushed));
+  console.log('host unchanged after drag:', JSON.stringify(hostDrag));
 
   // 5. Triplet write mode on the guest.
   await clickSelector(guest, '#controller-drum-write [data-write="triplet"]');
