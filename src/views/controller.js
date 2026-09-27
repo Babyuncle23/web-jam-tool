@@ -404,8 +404,9 @@ export async function createControllerView({ code, name } = {}) {
   }
 
   function paintGuestTransport() {
-    paintIconButton(el.transport, state.transportRunning ? 'stop' : 'play', state.transportRunning ? 'Stop' : 'Play');
+    el.transport.replaceChildren(chipIcon(state.transportRunning ? 'stop' : 'play'));
     el.transport.classList.toggle('is-on', state.transportRunning);
+    el.transport.setAttribute('aria-pressed', state.transportRunning ? 'true' : 'false');
   }
 
   function syncGuestTransport(running) {

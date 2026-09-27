@@ -2132,6 +2132,18 @@ input[type='range'] {
   min-height: 56px;
 }
 
+#controller-transport {
+  margin-left: auto;
+}
+
+#controller-transport .ico {
+  margin: 0 auto;
+}
+
+#controller-transport.is-on {
+  box-shadow: 0 0 0 2px var(--sun), 0 0 16px var(--sun);
+}
+
 .controller-bar .chip,
 .controller-foot .chip {
   min-height: 52px;
