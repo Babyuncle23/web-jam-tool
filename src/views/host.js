@@ -1784,6 +1784,10 @@ export async function createHostView() {
     if (!audio) return;
     if (audio.engine.transportRunning) {
       audio.engine.stopTransport();
+      audio.synth.releaseMatching('loop:');
+      // The clock reset to tick 0: re-anchor every loop strip into the first
+      // cycle, or a note armed at bar N stays silent for N bars after resume.
+      for (const recorder of audio.loops.values()) recorder.rearm();
       highlightStep(-1);
       if (state.peers.size) {
         const parked = transportAbsoluteStep();

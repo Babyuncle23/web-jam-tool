@@ -942,24 +942,48 @@ input[type='range'] {
     min-width: 0;
   }
 
+  /* On a phone only the room code stays: every status is already surfaced
+     elsewhere (sound overlay, disabled Play), and the pills overflowed the
+     header onto the code. */
   .topbar__eyebrow,
   .topbar__link,
   #host-socket-status,
-  #host-peers {
+  #host-audio-status,
+  #host-peers,
+  #drum-source {
     display: none;
   }
 
   .topbar__status {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+  }
+
+  .qr-card__meta {
+    overflow: hidden;
+  }
+
+  #host-qr img,
+  #host-qr table {
+    width: 56px !important;
+    height: 56px !important;
+  }
+
+  .topbar__code {
+    font-size: 18px;
+    letter-spacing: 0.1em;
+  }
+
+  .topbar__actions .btn {
+    height: 40px;
+    padding: 0 10px;
+    font-size: 13px;
+    white-space: nowrap;
   }
 
   .pill {
     height: 24px;
     font-size: 11px;
-    min-width: 0;
-    max-width: 34vw;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: 0 0 auto;
   }
 
   .host-tools {
