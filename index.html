@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#08090d" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Web Jam Tool</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308090d'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%2378ecd6'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  </head>
+  <body data-view="role">
+    <!-- Role picker -->
+    <section id="role-screen" class="screen screen--center" data-screen="role">
+      <div class="brand">
+        <span class="brand__dot" aria-hidden="true"></span>
+        <h1 class="brand__title">Web Jam Tool</h1>
+        <p class="brand__subtitle">
+          The host holds the sound. Guests play with a finger on the phone XY pad. Same local network, no app to install.
+        </p>
+      </div>
+
+      <div class="role-grid">
+        <article class="role-card">
+          <h2>Join as Host</h2>
+          <p>Laptop or tablet with speakers: drum machine, synth, effects, and guest touches.</p>
+          <button id="btn-role-host" class="btn btn--primary btn--xl" type="button">Open host</button>
+        </article>
+
+        <article class="role-card">
+          <h2>Join as Controller</h2>
+          <p>Guest phone: Dynamic XY touch pad. The page scrolls down. Pinch-zoom is off.</p>
+          <form id="join-form" class="join-form" autocomplete="off">
+            <label class="join-form__label" for="join-code">Session code</label>
+            <input
+              id="join-code"
+              name="code"
+              class="join-form__input"
+              inputmode="latin"
+              maxlength="4"
+              placeholder="XXXX"
+              aria-describedby="join-error"
+            />
+            <button class="btn btn--ghost btn--xl" type="submit">Join</button>
+            <p id="join-error" class="join-form__error" role="alert" hidden></p>
+          </form>
+        </article>
+      </div>
+
+      <p class="role-footnote">
+        Tone.js, Socket.io, and QRCode.js load from their official CDNs (MIT). The instrument itself is written from scratch.
+      </p>
+    </section>
+
+    <!-- Host -->
+    <section id="host-screen" class="screen screen--host" data-screen="host" hidden>
+      <div class="host-app">
+        <header class="topbar">
+          <button class="btn btn--icon" type="button" data-action="back" title="Back to role pick">←</button>
+          <div class="qr-card">
+            <div id="host-qr" role="img" aria-label="QR code: open the guest controller"></div>
+            <div class="qr-card__meta">
+              <p class="topbar__eyebrow">Session · scan the QR</p>
+              <p class="topbar__code" id="host-code">····</p>
+              <p class="topbar__link" id="host-join-url">—</p>
+              <div class="topbar__status">
+                <span class="pill" id="host-socket-status" data-state="offline">socket: offline</span>
+                <span class="pill" id="host-audio-status" data-state="offline">audio: off</span>
+                <span class="pill" id="host-peers">guests: 0</span>
+                <span class="pill" id="drum-source">drums: …</span>
+              </div>
+            </div>
+          </div>
+          <div class="topbar__actions">
+            <button id="btn-export" class="btn btn--ghost" type="button">Export</button>
+            <button id="btn-transport" class="btn btn--primary" type="button" disabled>Play</button>
+          </div>
+        </header>
+
+        <div class="play-bar" id="play-bar">
+          <div class="play-bar__modes" id="mode-row">
+            <button class="chip is-on" type="button" data-mode="single">Notes</button>
+            <button class="chip" type="button" data-mode="chords">Chords</button>
+          </div>
+          <button id="btn-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
+          <button id="btn-loop-clear" class="btn btn--ghost" type="button" disabled>clr all</button>
+        </div>
+
+        <div id="host-pad" class="pad host-pad is-locked">
+          <canvas id="host-pad-canvas" class="pad__canvas"></canvas>
+          <div class="pad__pulse" aria-hidden="true"></div>
+          <div class="bar-readout">
+            <p id="bar-label" class="bar-label">Bar —</p>
+            <div id="beat-dots" class="beat-dots" aria-hidden="true">
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+            </div>
+          </div>
+          <p id="harmony-label" class="harmony-label" aria-live="polite">—</p>
+          <div id="host-y-zones" class="y-zones" hidden>
+            <span>9</span>
+            <span>7</span>
+            <span>sus</span>
+            <span>triad</span>
+          </div>
+          <p class="pad__hint" id="host-pad-hint">Slide on Pad or Bass to move the note.</p>
+        </div>
+
+        <div class="host-tools">
+          <div class="tool-row" id="harmony-row">
+            <button class="chip is-picked" type="button" data-scale="major">Major</button>
+            <button class="chip" type="button" data-scale="minor">Minor</button>
+            <button class="chip" type="button" data-scale="pentatonic">Pentatonic</button>
+          </div>
+
+          <div class="root-picker" id="root-picker">
+            <button id="root-prev" class="chip" type="button" aria-label="Key down">◀</button>
+            <span id="root-name">C</span>
+            <button id="root-next" class="chip" type="button" aria-label="Key up">▶</button>
+          </div>
+          <div class="chips chips--roots" data-group="root" id="root-chips"></div>
+
+          <div class="tempo-row">
+            <div class="tool-row" id="bpm-presets" data-group="bpm">
+              <span class="tool-row__label">BPM</span>
+              <button class="chip" type="button" data-bpm="80">80</button>
+              <button class="chip is-picked" type="button" data-bpm="96">96</button>
+              <button class="chip" type="button" data-bpm="120">120</button>
+              <button class="chip" type="button" data-bpm="140">140</button>
+            </div>
+          </div>
+
+          <button id="btn-drums" class="btn btn--ghost btn--xl" type="button">Drums</button>
+
+          <div class="fx-stack">
+            <section class="fx-panel">
+              <span class="tool-row__label">Sound</span>
+              <div class="fx-tiles">
+                <div class="tool-row fx-row" id="instrument-fx" aria-label="Effects for the selected instrument"></div>
+                <button id="fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
+              </div>
+            </section>
+            <section class="fx-panel">
+              <div class="fx-panel__head">
+                <span class="tool-row__label">Drums</span>
+                <div class="mix-flags">
+                  <button class="mix-flag" type="button" data-mix="solo" data-voice="drums" aria-pressed="false">S</button>
+                  <button class="mix-flag" type="button" data-mix="mute" data-voice="drums" aria-pressed="false">M</button>
+                </div>
+              </div>
+              <div class="fx-tiles">
+                <div class="tool-row fx-row" id="drum-fx" aria-label="Drum machine effects"></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="instrument-grid" id="instrument-row">
+            <div class="instrument-cell">
+              <button class="chip is-on has-swatch" type="button" data-instrument="pad">Pad</button>
+              <div class="mix-flags">
+                <button class="mix-flag" type="button" data-mix="solo" data-voice="pad" aria-pressed="false">S</button>
+                <button class="mix-flag" type="button" data-mix="mute" data-voice="pad" aria-pressed="false">M</button>
+              </div>
+            </div>
+            <div class="instrument-cell">
+              <button class="chip" type="button" data-instrument="bass">Bass</button>
+              <div class="mix-flags">
+                <button class="mix-flag" type="button" data-mix="solo" data-voice="bass" aria-pressed="false">S</button>
+                <button class="mix-flag" type="button" data-mix="mute" data-voice="bass" aria-pressed="false">M</button>
+              </div>
+            </div>
+            <div class="instrument-cell">
+              <button class="chip" type="button" data-instrument="organ">Organ</button>
+              <div class="mix-flags">
+                <button class="mix-flag" type="button" data-mix="solo" data-voice="organ" aria-pressed="false">S</button>
+                <button class="mix-flag" type="button" data-mix="mute" data-voice="organ" aria-pressed="false">M</button>
+              </div>
+            </div>
+            <div class="instrument-cell">
+              <button class="chip" type="button" data-instrument="kalimba">Kalimba</button>
+              <div class="mix-flags">
+                <button class="mix-flag" type="button" data-mix="solo" data-voice="kalimba" aria-pressed="false">S</button>
+                <button class="mix-flag" type="button" data-mix="mute" data-voice="kalimba" aria-pressed="false">M</button>
+              </div>
+            </div>
+            <div class="instrument-cell">
+              <button class="chip" type="button" data-instrument="synth">Synth</button>
+              <div class="mix-flags">
+                <button class="mix-flag" type="button" data-mix="solo" data-voice="synth" aria-pressed="false">S</button>
+                <button class="mix-flag" type="button" data-mix="mute" data-voice="synth" aria-pressed="false">M</button>
+              </div>
+            </div>
+          </div>
+          <button id="btn-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
+
+          <div class="loop-actions">
+            <button id="btn-notes" class="btn btn--ghost btn--xl" type="button" disabled>Notes</button>
+            <button id="btn-bars" class="btn btn--ghost btn--xl" type="button">2 bars</button>
+          </div>
+
+          <ul class="event-log" id="host-log" aria-live="polite"></ul>
+        </div>
+      </div>
+
+      <div id="host-drums-sheet" class="fx-sheet fx-sheet--stage" hidden>
+        <div class="fx-sheet__card">
+          <div class="stage-head">
+            <h2>Drums</h2>
+            <div class="mix-flags">
+              <button class="mix-flag" type="button" data-mix="solo" data-voice="drums" aria-pressed="false">S</button>
+              <button class="mix-flag" type="button" data-mix="mute" data-voice="drums" aria-pressed="false">M</button>
+            </div>
+            <button id="host-drums-close" class="btn btn--primary" type="button">Done</button>
+          </div>
+          <div class="tool-row" id="drum-presets"></div>
+          <label class="zoom-row">
+            <span>Zoom</span>
+            <input id="drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
+          </label>
+          <div class="sequencer" id="sequencer"></div>
+        </div>
+      </div>
+
+      <div id="host-notes-sheet" class="fx-sheet fx-sheet--stage" hidden>
+        <div class="fx-sheet__card">
+          <h2>Notes</h2>
+          <label class="zoom-row">
+            <span>Zoom</span>
+            <input id="host-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
+          </label>
+          <div id="host-note-tape" class="roll" aria-label="Notes"></div>
+          <div class="stage-bar">
+            <button id="host-select-move" class="btn btn--ghost select-move" type="button" aria-pressed="false">select and move</button>
+            <button id="host-undo" class="btn btn--ghost" type="button" disabled>Undo</button>
+            <button id="host-redo" class="btn btn--ghost" type="button" disabled>Redo</button>
+            <button id="host-note-clear" class="btn btn--ghost" type="button">clr curr inst</button>
+            <button id="host-notes-close" class="btn btn--primary" type="button">Done</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="host-master-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Master Effects</h2>
+          <div class="master-repeat">
+            <span class="master-repeat__label">Stutter</span>
+            <div class="stutter-div" id="master-stutter" role="group" aria-label="Stutter hold">
+              <button class="chip stutter-hold" type="button" data-repeat="4n" aria-pressed="false">1/4</button>
+              <button class="chip stutter-hold" type="button" data-repeat="8n" aria-pressed="false">1/8</button>
+              <button class="chip stutter-hold" type="button" data-repeat="16n" aria-pressed="false">1/16</button>
+              <button class="chip stutter-hold" type="button" data-repeat="32n" aria-pressed="false">1/32</button>
+            </div>
+          </div>
+          <div id="host-master-sliders" class="fx-sliders"></div>
+          <button id="host-master-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="host-export-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Export</h2>
+          <label class="fx-slider" for="export-repeats">
+            <span>Repeats</span>
+            <input id="export-repeats" type="number" min="1" step="1" value="1" inputmode="numeric" />
+          </label>
+          <p class="export-hint">The loop, played this many times. MIDI is the layout. WAV is an offline mix.</p>
+          <p id="export-error" class="splash__error" role="alert" hidden></p>
+          <button id="export-midi" class="btn btn--ghost btn--xl" type="button">MIDI</button>
+          <button id="export-wav" class="btn btn--ghost btn--xl" type="button">WAV</button>
+          <button id="export-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="host-fx-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Effect detail</h2>
+          <div id="host-fx-sliders" class="fx-sliders"></div>
+          <button id="host-fx-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="audio-splash" class="splash" data-phase="idle">
+        <div class="splash__card">
+          <div id="splash-spinner" class="splash__spinner" hidden></div>
+          <h2 id="splash-title">Sound is off</h2>
+          <p id="splash-detail">Tap to warm up Tone.js and the drum samples. The pad stays quiet until the engine is ready.</p>
+          <p id="splash-error" class="splash__error" role="alert" hidden></p>
+          <button id="splash-start" class="btn btn--primary btn--xl" type="button">Start sound</button>
+          <button id="splash-continue" class="btn btn--primary btn--xl" type="button" hidden>Play anyway</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Guest controller -->
+    <section id="controller-screen" class="screen screen--controller" data-screen="controller" hidden>
+      <header class="controller-bar">
+        <button class="btn btn--icon" type="button" data-action="back" title="Back to role pick">←</button>
+        <span class="pill" id="controller-status" data-state="offline">not connected</span>
+        <span class="pill" id="controller-key">C · Major</span>
+      </header>
+
+      <div class="play-bar" id="controller-play-bar">
+        <div class="play-bar__modes" data-group="mode">
+          <button class="chip is-on" type="button" data-mode="single">Notes</button>
+          <button class="chip" type="button" data-mode="chords">Chords</button>
+        </div>
+        <button id="controller-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
+        <button id="controller-loop-clear" class="btn btn--ghost" type="button" disabled>clr all</button>
+      </div>
+
+      <main class="pad-wrap">
+        <div id="pad" class="pad is-locked">
+          <canvas id="pad-canvas" class="pad__canvas"></canvas>
+          <div class="pad__pulse" aria-hidden="true"></div>
+          <div class="bar-readout">
+            <p id="controller-bar-label" class="bar-label">Bar —</p>
+            <div id="controller-beat-dots" class="beat-dots" aria-hidden="true">
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+              <span class="beat-dot"></span>
+            </div>
+          </div>
+          <p id="controller-harmony-label" class="harmony-label" aria-live="polite">—</p>
+          <div id="controller-y-zones" class="y-zones" hidden>
+            <span>9</span>
+            <span>7</span>
+            <span>sus</span>
+            <span>triad</span>
+          </div>
+          <p class="pad__hint" id="pad-hint">X is one note in the host key.</p>
+        </div>
+      </main>
+
+      <footer class="controller-foot">
+        <div class="instrument-grid" id="controller-instruments">
+          <button class="chip is-on has-swatch" type="button" data-instrument="pad">Pad</button>
+          <button class="chip" type="button" data-instrument="bass">Bass</button>
+          <button class="chip" type="button" data-instrument="organ">Organ</button>
+          <button class="chip" type="button" data-instrument="kalimba">Kalimba</button>
+          <button class="chip" type="button" data-instrument="synth">Synth</button>
+        </div>
+        <section class="fx-panel">
+          <span class="tool-row__label">Sound</span>
+          <div class="fx-tiles">
+            <div class="tool-row fx-row" id="controller-fx" aria-label="Effects for your instrument"></div>
+            <button id="controller-fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
+          </div>
+        </section>
+        <div class="loop-actions">
+          <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
+          <button id="controller-notes" class="btn btn--ghost btn--xl" type="button" disabled>Notes</button>
+          <button id="controller-bars" class="btn btn--ghost btn--xl" type="button" disabled>2 bars</button>
+        </div>
+      </footer>
+
+      <div id="controller-notes-sheet" class="fx-sheet fx-sheet--stage" hidden>
+        <div class="fx-sheet__card">
+          <h2>Notes</h2>
+          <label class="zoom-row">
+            <span>Zoom</span>
+            <input id="controller-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
+          </label>
+          <div id="controller-note-tape" class="roll" aria-label="Notes"></div>
+          <div class="stage-bar">
+            <button id="controller-select-move" class="btn btn--ghost select-move" type="button" aria-pressed="false">select and move</button>
+            <button id="controller-undo" class="btn btn--ghost" type="button" disabled>Undo</button>
+            <button id="controller-redo" class="btn btn--ghost" type="button" disabled>Redo</button>
+            <button id="controller-note-clear" class="btn btn--ghost" type="button">clr curr inst</button>
+            <button id="controller-notes-close" class="btn btn--primary" type="button">Done</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="controller-master-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Master Effects</h2>
+          <div class="master-repeat">
+            <span class="master-repeat__label">Stutter</span>
+            <div class="stutter-div" id="controller-stutter" role="group" aria-label="Stutter hold">
+              <button class="chip stutter-hold" type="button" data-repeat="4n" aria-pressed="false">1/4</button>
+              <button class="chip stutter-hold" type="button" data-repeat="8n" aria-pressed="false">1/8</button>
+              <button class="chip stutter-hold" type="button" data-repeat="16n" aria-pressed="false">1/16</button>
+              <button class="chip stutter-hold" type="button" data-repeat="32n" aria-pressed="false">1/32</button>
+            </div>
+          </div>
+          <div id="controller-master-sliders" class="fx-sliders"></div>
+          <button id="controller-master-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="controller-fx-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Effect detail</h2>
+          <div id="controller-fx-sliders" class="fx-sliders"></div>
+          <button id="controller-fx-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="controller-splash" class="splash splash--guest" data-phase="waiting">
+        <div class="splash__card">
+          <div class="splash__spinner"></div>
+          <h2>Host is warming up the sound</h2>
+          <p id="controller-splash-detail">Touches turn on when Tone.js and the samples are ready on the host.</p>
+          <p id="controller-splash-error" class="splash__error" role="alert" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

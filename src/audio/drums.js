@@ -1,0 +1,549 @@
+import { normalizeLoopSteps } from './synth.js';
+
+/**
+ * Drum machine — HOST only.
+ * 32-step editable grid. Kick, snare, hi-hat and clap load the Michael Fischer
+ * TR-808 set from the public jsDelivr CDN. If a file cannot be fetched, that
+ * voice stays on the synthesised fallback built below.
+ */
+
+export const STEPS = 32;
+export const DRUM_STEPS_MAX = 64;
+/** Presets are written as one bar of sixteenths and tile to the live drum length. */
+export const PRESET_STEPS = 16;
+
+export function tileHits(hits, length, native = PRESET_STEPS) {
+  const source = new Set(hits || []);
+  const on = [];
+  const span = Math.max(1, native);
+  const total = Math.max(0, length);
+  for (let step = 0; step < total; step += 1) {
+    if (source.has(step % span)) on.push(step);
+  }
+  return on;
+}
+
+export const TRACKS = [
+  { id: 'kick', label: 'Kick', bank: 'main' },
+  { id: 'snare', label: 'Snare', bank: 'main' },
+  { id: 'hat', label: 'Hi-Hat', bank: 'main' },
+  { id: 'clap', label: 'Clap', bank: 'main' },
+  { id: 'openhat', label: 'Open Hat', bank: 'extra' },
+  { id: 'tom', label: 'Tom', bank: 'extra' },
+  { id: 'cowbell', label: 'Cowbell', bank: 'extra' },
+];
+
+/**
+ * Fischer TR-808 via the jsDelivr GitHub CDN.
+ * The scoped npm URL (`npm/@fluid-music/...`) comes back as HTTP 400: browsers
+ * percent-encode `@`, and jsDelivr rejects that. The same files are served from
+ * the open-drums repo path, which has no `@` in it.
+ */
+export const SAMPLE_LIBRARY = {
+  name: 'Roland TR-808 sample set 1.0.0 — Michael Fischer / Technopolis, 1994',
+  cdn: 'https://cdn.jsdelivr.net/gh/fluid-music/open-drums/tr-808/TR808WAV',
+  package: 'https://cdn.jsdelivr.net/npm/@fluid-music/tr-808@0.0.2/README.md',
+  notes: 'https://cdn.jsdelivr.net/gh/fluid-music/open-drums/tr-808/TR808WAV/TR808.TXT',
+  license:
+    'Бесплатный набор без ограничений на использование: Fischer описал его как ABSOLUTELY FREE, пакет @fluid-music/tr-808 фиксирует «no licensing restrictions». Это не лицензия MIT — MIT относится только к коду инструмента.',
+};
+
+const SAMPLE_CDN = SAMPLE_LIBRARY.cdn;
+
+export const SAMPLE_URLS = {
+  kick: `${SAMPLE_CDN}/BD/BD0025.WAV`,
+  snare: `${SAMPLE_CDN}/SD/SD2525.WAV`,
+  hat: `${SAMPLE_CDN}/CH/CH.WAV`,
+  openhat: `${SAMPLE_CDN}/OH/OH75.WAV`,
+  tom: `${SAMPLE_CDN}/MT/MT25.WAV`,
+  cowbell: `${SAMPLE_CDN}/CB/CB.WAV`,
+  clap: `${SAMPLE_CDN}/CP/CP.WAV`,
+};
+
+/** Per-voice gain so the normalised 808 hits sit with the synth, under the limiter. */
+const SAMPLE_GAIN = {
+  kick: 1,
+  snare: 0.82,
+  hat: 0.52,
+  openhat: 0.48,
+  tom: 0.86,
+  cowbell: 0.5,
+  clap: 0.22,
+};
+
+/**
+ * The 808 clap starts with a quiet flam and the loud burst arrives later.
+ * Start playback 3 ms before that burst so the hit sits on the grid.
+ * A file whose peak is already at the start is left alone.
+ */
+export function clapTrimStart(channel, sampleRate) {
+  const window = Math.min(channel.length, Math.floor(sampleRate * 0.08));
+  if (window < 32) return 0;
+  let peakAt = 0;
+  let peak = 0;
+  for (let i = 0; i < window; i += 1) {
+    const value = Math.abs(channel[i]);
+    if (value > peak) {
+      peak = value;
+      peakAt = i;
+    }
+  }
+  if (peak < 0.08) return 0;
+  const lead = Math.floor(sampleRate * 0.003);
+  const start = peakAt - lead;
+  if (start < 16) return 0;
+  return start;
+}
+
+function trimClap(tone, toneBuffer) {
+  const audio = toneBuffer.get?.();
+  if (!audio) return { buffer: toneBuffer, skipped: 0 };
+  const skipped = clapTrimStart(audio.getChannelData(0), audio.sampleRate);
+  if (skipped < 16) return { buffer: toneBuffer, skipped: 0 };
+  const length = audio.length - skipped;
+  const trimmed = new AudioBuffer({
+    length,
+    numberOfChannels: audio.numberOfChannels,
+    sampleRate: audio.sampleRate,
+  });
+  for (let channel = 0; channel < audio.numberOfChannels; channel += 1) {
+    trimmed.copyToChannel(audio.getChannelData(channel).subarray(skipped), channel);
+  }
+  const wrapped = new tone.ToneAudioBuffer();
+  wrapped.set(trimmed);
+  return { buffer: wrapped, skipped };
+}
+
+const POOL_SIZE = 4;
+const LOAD_TIMEOUT_MS = 4000;
+
+export const DRUM_PRESETS = {
+  four: {
+    id: 'four',
+    label: 'Four',
+    pattern: { kick: [0, 4, 8, 12], snare: [4, 12], hat: [0, 2, 4, 6, 8, 10, 12, 14], clap: [], openhat: [], tom: [], cowbell: [] },
+  },
+  break: {
+    id: 'break',
+    label: 'Break',
+    pattern: { kick: [0, 3, 10], snare: [4, 12], hat: [2, 6, 8, 10, 14], clap: [4], openhat: [], tom: [], cowbell: [] },
+  },
+  offbeat: {
+    id: 'offbeat',
+    label: 'Offbeat',
+    pattern: { kick: [0, 8], snare: [4, 12], hat: [2, 6, 10, 14], clap: [12], openhat: [6, 14], tom: [10], cowbell: [] },
+  },
+  clear: {
+    id: 'clear',
+    label: 'Empty',
+    pattern: { kick: [], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
+  },
+};
+
+const DEFAULT_PATTERN = DRUM_PRESETS.four.pattern;
+
+function cell(on = false, division = 1) {
+  return { on: Boolean(on), division: division === 3 ? 3 : 1 };
+}
+
+function emptyGrid() {
+  return Object.fromEntries(TRACKS.map(({ id }) => [id, Array.from({ length: STEPS }, () => cell())]));
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export class DrumMachine {
+  #tone;
+  #voices = {};
+  #pools = {};
+  #cursors = {};
+  #sampleGains = {};
+  #clapLead = 0;
+  #sequence = null;
+  #output;
+  #grid = emptyGrid();
+  #length = STEPS;
+  #running = false;
+  #onStep = null;
+  #currentStep = -1;
+  #paintTimers = new Set();
+  #paintFrame = null;
+  #sampleState = {
+    mode: 'synth',
+    usingSamples: false,
+    fallback: true,
+    tracks: Object.fromEntries(TRACKS.map(({ id }) => [id, 'synth'])),
+    source: SAMPLE_LIBRARY.cdn,
+    license: SAMPLE_LIBRARY.license,
+  };
+
+  constructor(engine, { pattern = DEFAULT_PATTERN } = {}) {
+    this.#tone = engine.tone;
+    this.#output = new this.#tone.Gain(1.35);
+
+    this.#voices.kick = new this.#tone.MembraneSynth({
+      pitchDecay: 0.03,
+      octaves: 6,
+      envelope: { attack: 0.001, decay: 0.34, sustain: 0 },
+    }).connect(this.#output);
+
+    this.#voices.snare = new this.#tone.NoiseSynth({
+      noise: { type: 'white' },
+      envelope: { attack: 0.001, decay: 0.16, sustain: 0 },
+    }).connect(this.#output);
+
+    this.#voices.hat = new this.#tone.MetalSynth({
+      envelope: { attack: 0.001, decay: 0.06, release: 0.01 },
+      harmonicity: 5.1,
+      resonance: 4000,
+      octaves: 1.2,
+      volume: -22,
+    }).connect(this.#output);
+
+    this.#voices.clap = new this.#tone.NoiseSynth({
+      noise: { type: 'pink' },
+      envelope: { attack: 0.002, decay: 0.16, sustain: 0 },
+      volume: -16,
+    }).connect(this.#output);
+
+    this.#voices.openhat = new this.#tone.MetalSynth({
+      envelope: { attack: 0.001, decay: 0.22, release: 0.06 },
+      harmonicity: 5.1,
+      resonance: 2800,
+      octaves: 1.1,
+      volume: -20,
+    }).connect(this.#output);
+
+    this.#voices.tom = new this.#tone.MembraneSynth({
+      pitchDecay: 0.06,
+      octaves: 3,
+      envelope: { attack: 0.001, decay: 0.28, sustain: 0 },
+      volume: -6,
+    }).connect(this.#output);
+
+    this.#voices.cowbell = new this.#tone.MetalSynth({
+      envelope: { attack: 0.001, decay: 0.12, release: 0.02 },
+      harmonicity: 12,
+      resonance: 800,
+      octaves: 0.4,
+      volume: -16,
+    }).connect(this.#output);
+
+    for (const [track, steps] of Object.entries(pattern)) {
+      for (const step of steps) this.setStep(track, step, true);
+    }
+
+    this.#sequence = new this.#tone.Sequence(
+      (time, step) => this.#tick(time, step),
+      Array.from({ length: STEPS }, (_, i) => i),
+      '16n',
+    );
+  }
+
+  /** Node to feed into an EffectChain. */
+  get output() {
+    return this.#output;
+  }
+
+  get grid() {
+    return this.#grid;
+  }
+
+  get length() {
+    return this.#length;
+  }
+
+  /** Extend or shrink the drum loop without building a new voice. */
+  setLength(length) {
+    const next = normalizeLoopSteps(length);
+    if (next === this.#length) return next;
+    for (const row of Object.values(this.#grid)) {
+      while (row.length < next) row.push(cell());
+      if (row.length > next) row.length = next;
+    }
+    const wasRunning = this.#running;
+    try {
+      this.#sequence?.stop();
+    } catch {
+      // The sequence had not been started.
+    }
+    this.#sequence?.dispose();
+    this.#length = next;
+    this.#sequence = new this.#tone.Sequence(
+      (time, step) => this.#tick(time, step),
+      Array.from({ length: next }, (_, i) => i),
+      '16n',
+    );
+    if (wasRunning) this.#sequence.start();
+    return next;
+  }
+
+  get currentStep() {
+    return this.#currentStep;
+  }
+
+  /** Which voices are samples and which fell back to synthesis. */
+  /** How many leading samples were cut from the clap so the hit is not late. */
+  get clapLead() {
+    return this.#clapLead;
+  }
+
+  get sampleState() {
+    return {
+      ...this.#sampleState,
+      tracks: { ...this.#sampleState.tracks },
+    };
+  }
+
+  onStep(callback) {
+    this.#onStep = callback;
+  }
+
+  setStep(track, step, on, division = 1) {
+    const row = this.#grid[track];
+    if (!row || step < 0 || step >= this.#length) return null;
+    row[step] = cell(on, division);
+    return { ...row[step] };
+  }
+
+  /**
+   * Off → one hit → triplet inside this cell only → off.
+   * The triplet is three notes fitted into this step, so the next cell stays put.
+   */
+  cycleStep(track, step) {
+    const current = this.#grid[track]?.[step];
+    if (!current) return null;
+    if (!current.on) return this.setStep(track, step, true, 1);
+    if (current.division !== 3) return this.setStep(track, step, true, 3);
+    return this.setStep(track, step, false, 1);
+  }
+
+  toggleStep(track, step) {
+    const current = this.#grid[track]?.[step];
+    return this.setStep(track, step, !current?.on, current?.division === 3 ? 3 : 1);
+  }
+
+  clear() {
+    this.#grid = emptyGrid();
+  }
+
+  get running() {
+    return this.#running;
+  }
+
+  start() {
+    try {
+      this.#sequence.stop();
+    } catch {
+      // The sequence had not been started.
+    }
+    this.#running = true;
+    this.#sequence.start(0);
+  }
+
+  /** Stop ringing samples and synth drums without touching the pattern. */
+  silence() {
+    const when = Math.max(0, this.#tone.now());
+    for (const pool of Object.values(this.#pools)) {
+      for (const player of pool) {
+        try {
+          player.stop(when);
+        } catch {
+          // That player was already idle.
+        }
+      }
+    }
+    for (const voice of Object.values(this.#voices)) {
+      try {
+        voice.triggerRelease(when);
+      } catch {
+        // The fallback voice was already quiet.
+      }
+    }
+  }
+
+  stop() {
+    this.#running = false;
+    try {
+      this.#sequence.stop();
+    } catch {
+      // Stopping before the transport clock has moved can ask the context for a
+      // time a fraction of a sample below zero. The sequence is still halted.
+    }
+    this.#currentStep = -1;
+    this.#cancelPaints();
+    this.#onStep?.(-1);
+  }
+
+  /**
+   * One frame per sounding step instead of a polling loop: the audio callback
+   * runs ahead of time, so the repaint waits out the lookahead and then asks
+   * for a single animation frame.
+   */
+  #schedulePaint(step, time) {
+    if (!this.#onStep) return;
+    const lead = (time - this.#tone.getContext().currentTime) * 1000;
+    const timer = setTimeout(() => {
+      this.#paintTimers.delete(timer);
+      if (this.#paintFrame) cancelAnimationFrame(this.#paintFrame);
+      this.#paintFrame = requestAnimationFrame(() => {
+        this.#paintFrame = null;
+        this.#onStep?.(step);
+      });
+    }, Math.max(0, lead));
+    this.#paintTimers.add(timer);
+  }
+
+  #cancelPaints() {
+    for (const timer of this.#paintTimers) clearTimeout(timer);
+    this.#paintTimers.clear();
+    if (this.#paintFrame) cancelAnimationFrame(this.#paintFrame);
+    this.#paintFrame = null;
+  }
+
+  /**
+   * Replace synthesised voices with a small pool of Players sharing one buffer.
+   * The pool is allocated once; each hit only calls `start` on the next player.
+   * A track that fails to load keeps its synthesised voice.
+   */
+  async loadSamples(urlsByTrack = SAMPLE_URLS) {
+    const tracks = { ...this.#sampleState.tracks };
+    await Promise.all(
+      TRACKS.map(async ({ id }) => {
+        const url = urlsByTrack[id];
+        if (!url) {
+          tracks[id] = 'synth';
+          return;
+        }
+        try {
+          const buffer = new this.#tone.ToneAudioBuffer();
+          await withTimeout(buffer.load(url), LOAD_TIMEOUT_MS);
+          if (!buffer.loaded || !(buffer.duration > 0)) throw new Error('empty buffer');
+          let playBuffer = buffer;
+          if (id === 'clap') {
+            const trimmed = trimClap(this.#tone, buffer);
+            playBuffer = trimmed.buffer;
+            this.#clapLead = trimmed.skipped;
+          }
+          const gain = new this.#tone.Gain(SAMPLE_GAIN[id] ?? 0.7).connect(this.#output);
+          const pool = Array.from({ length: POOL_SIZE }, () => {
+            const player = new this.#tone.Player();
+            player.buffer = playBuffer;
+            player.fadeOut = 0.008;
+            player.connect(gain);
+            return player;
+          });
+          this.#pools[id] = pool;
+          this.#cursors[id] = 0;
+          this.#sampleGains[id] = gain;
+          this.#voices[id]?.disconnect();
+          this.#voices[id]?.dispose();
+          delete this.#voices[id];
+          tracks[id] = 'sample';
+        } catch {
+          tracks[id] = 'synth';
+        }
+      }),
+    );
+
+    const usingSamples = TRACKS.every(({ id }) => tracks[id] === 'sample');
+    const anySample = TRACKS.some(({ id }) => tracks[id] === 'sample');
+    this.#sampleState = {
+      mode: usingSamples ? 'samples' : anySample ? 'mixed' : 'synth',
+      usingSamples,
+      fallback: !usingSamples,
+      tracks,
+      source: SAMPLE_LIBRARY.cdn,
+      license: SAMPLE_LIBRARY.license,
+    };
+    return this.sampleState;
+  }
+
+  /**
+   * One voice, one sound. Stop every player of this drum at the new hit,
+   * then start a player from the pool that already exists. A triplet cannot
+   * stack tails, and no Player is constructed here.
+   */
+  #triggerSample(track, time) {
+    const pool = this.#pools[track];
+    if (!pool?.length) return false;
+    const when = Math.max(0, Number.isFinite(time) ? time : this.#tone.now());
+    const index = this.#cursors[track] % pool.length;
+    this.#cursors[track] += 1;
+    const next = pool[index];
+    for (const player of pool) {
+      if (player === next) continue;
+      try {
+        player.stop(when);
+      } catch {
+        // That player is already silent.
+      }
+    }
+    try {
+      next.stop(Math.max(0, when - 0.001));
+    } catch {
+      // This player was idle, so the start below is its first hit.
+    }
+    next.start(when);
+    return true;
+  }
+
+  /** Cut the synth fallback of this drum, then attack again on the same node. */
+  #retriggerSynth(voice, time, attack) {
+    if (!voice) return;
+    const when = Math.max(0, Number.isFinite(time) ? time : 0);
+    try {
+      voice.triggerRelease(when);
+    } catch {
+      // The voice was silent. The attack below is the first hit.
+    }
+    attack();
+  }
+
+  #hit(track, time) {
+    if (this.#triggerSample(track, time)) return;
+    const voice = this.#voices[track];
+    if (track === 'kick') this.#retriggerSynth(voice, time, () => voice.triggerAttack('C1', time));
+    else if (track === 'snare') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
+    else if (track === 'hat') this.#retriggerSynth(voice, time, () => voice.triggerAttack('G5', time));
+    else if (track === 'openhat') this.#retriggerSynth(voice, time, () => voice.triggerAttack('A5', time));
+    else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack('A1', time));
+    else if (track === 'cowbell') this.#retriggerSynth(voice, time, () => voice.triggerAttack('G5', time));
+    else if (track === 'clap') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
+  }
+
+  #tick(time, step) {
+    this.#currentStep = step;
+    const slice = this.#tone.Time('16n').toSeconds();
+    for (const { id } of TRACKS) {
+      const slot = this.#grid[id][step];
+      if (!slot?.on) continue;
+      const hits = slot.division === 3 ? 3 : 1;
+      for (let i = 0; i < hits; i += 1) this.#hit(id, time + (slice * i) / hits);
+    }
+    this.#schedulePaint(step, time);
+  }
+
+  dispose() {
+    this.stop();
+    this.#sequence?.dispose();
+    for (const voice of Object.values(this.#voices)) voice.dispose();
+    for (const pool of Object.values(this.#pools)) for (const player of pool) player.dispose();
+    for (const gain of Object.values(this.#sampleGains)) gain.dispose();
+    this.#output.dispose();
+  }
+}

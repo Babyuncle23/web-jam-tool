@@ -1,0 +1,19 @@
+{
+  "name": "web-jam-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-time web jam tool: phones become XY touch controllers, the host machine renders the audio with Tone.js",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node server/server.js",
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}
