@@ -429,6 +429,17 @@ function segmentVoice(voiceId) {
   return { base: voiceId.slice(0, at), step };
 }
 
+/**
+ * PolySynth parks future events on context.setTimeout, and a release that is
+ * processed while its attack is still parked silently finds no voice — the
+ * parked attack then rings forever. Clamp every time to now so a release can
+ * never outrun the attack it is meant to end.
+ */
+function capNow(tone, time) {
+  const now = tone.now();
+  return Number.isFinite(time) ? Math.min(time, now) : now;
+}
+
 function createSustainedVoice(tone, SynthClass, options, destination, polyphony) {
   const synth = new tone.PolySynth(SynthClass, options).connect(destination);
   synth.maxPolyphony = polyphony;
@@ -436,16 +447,17 @@ function createSustainedVoice(tone, SynthClass, options, destination, polyphony)
   return {
     kind: 'sustain',
     trigger(frequencies, time, velocity, strumSeconds) {
+      const base = capNow(tone, time);
       frequencies.forEach((frequency, index) => {
-        synth.triggerAttack(frequency, time + index * strumSeconds, velocity);
+        synth.triggerAttack(frequency, base + index * strumSeconds, velocity);
       });
     },
     release(frequencies, time) {
-      if (frequencies?.length) synth.triggerRelease(frequencies, time ?? tone.now());
+      if (frequencies?.length) synth.triggerRelease(frequencies, capNow(tone, time));
     },
     choke(frequencies, time) {
       if (!frequencies?.length) return;
-      const when = Number.isFinite(time) ? time : tone.now();
+      const when = capNow(tone, time);
       synth.set({ envelope: { release: CHOKE_RELEASE } });
       synth.triggerRelease(frequencies, when);
       synth.set({ envelope: { release: releaseTime } });
@@ -475,7 +487,7 @@ function createMonoVoice(tone, options, destination) {
   return {
     kind: 'mono',
     trigger(frequencies, time, velocity) {
-      const when = Number.isFinite(time) ? time : tone.now();
+      const when = capNow(tone, time);
       const frequency = frequencies.find((value) => value > 0);
       if (!(frequency > 0)) return;
       synth.triggerAttack(frequency, when, velocity);
@@ -483,7 +495,7 @@ function createMonoVoice(tone, options, destination) {
     },
     release(_frequencies, time) {
       if (!on) return;
-      synth.triggerRelease(Number.isFinite(time) ? time : tone.now());
+      synth.triggerRelease(capNow(tone, time));
       on = false;
     },
     silence() {
@@ -537,7 +549,7 @@ function createGlideVoice(tone, options, destination, polyphony) {
   return {
     kind: 'sustain',
     trigger(frequencies, time, velocity, _strum, { id = 'default' } = {}) {
-      const when = Number.isFinite(time) ? time : tone.now();
+      const when = capNow(tone, time);
       let slots = held.get(id);
       if (slots) {
         for (const slot of slots) releaseSlot(slot, when);
@@ -553,14 +565,14 @@ function createGlideVoice(tone, options, destination, polyphony) {
       });
     },
     release(_frequencies, time, id = 'default') {
-      const when = Number.isFinite(time) ? time : tone.now();
+      const when = capNow(tone, time);
       const slots = held.get(id);
       if (!slots) return;
       for (const slot of slots) releaseSlot(slot, when);
       held.delete(id);
     },
     choke(_frequencies, time, id = 'default') {
-      const when = Number.isFinite(time) ? time : tone.now();
+      const when = capNow(tone, time);
       const slots = held.get(id);
       if (!slots) return;
       for (const slot of slots) chokeSlot(slot, when);
@@ -1063,9 +1075,21 @@ export class PerformanceRecorder {
     for (const event of this.#events) {
       if (event.type === 'on' && event.step < next) sounding.add(event.voiceId);
     }
-    this.#events = this.#events.filter(
-      (event) => event.step < next && (event.type === 'on' || sounding.has(event.voiceId)),
-    );
+    // Shrinking must not strand a note-on without its note-off: an 'up' that
+    // fell beyond the new end wraps back into the loop instead of dropping.
+    this.#events = this.#events.filter((event) => {
+      if (event.type === 'on') return event.step < next;
+      if (!sounding.has(event.voiceId)) return false;
+      if (event.step >= next) {
+        const starts = this.#events
+          .filter((item) => item.voiceId === event.voiceId && item.type === 'on' && item.step < next)
+          .map((item) => item.step);
+        const start = Math.min(...starts);
+        event.step = event.step % next;
+        if (event.step === start) event.step = (start + 1) % next;
+      }
+      return true;
+    });
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
     for (const voiceId of [...this.#attackStep.keys()]) {
       if (!sounding.has(voiceId)) this.#attackStep.delete(voiceId);
@@ -1076,6 +1100,10 @@ export class PerformanceRecorder {
       else this.#chordTakes.delete(finger);
     }
     this.#rearmAll();
+    // Live loop voices were armed against the old schedule: the cleared 'up'
+    // callbacks will never fire, so cut whatever is still sounding. Notes that
+    // should keep playing re-attack on their next step.
+    this.#synth.releaseMatching(`loop:${this.#playerId}:`);
     return this.#loopSteps;
   }
 
@@ -1092,7 +1120,53 @@ export class PerformanceRecorder {
   }
 
   stop() {
+    if (this.#recording) this.#closeOpenTakes();
     this.#recording = false;
+  }
+
+  /**
+   * A finger still down when recording stops leaves an 'on' with no 'up', and
+   * the loop would replay that note forever. End every open take now.
+   */
+  #closeOpenTakes() {
+    const transport = this.#tone.getTransport();
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    let step = Math.round(transport.ticks / ticksPerStep) % this.#loopSteps;
+    if (step < 0) step += this.#loopSteps;
+    const upStepFor = (start) => {
+      let upStep = step;
+      if (upStep === start) upStep = (start + 1) % this.#loopSteps;
+      return upStep;
+    };
+    for (const [voiceId, segment] of this.#line) {
+      const ons = this.#events.filter((event) => event.voiceId === segment && event.type === 'on');
+      const last = ons[ons.length - 1];
+      if (!last) continue;
+      const attackStep = this.#attackStep.get(segment) ?? this.#attackStep.get(voiceId) ?? last.step;
+      this.#put(this.#noteEvent(segment, upStepFor(attackStep), 'up', last));
+    }
+    this.#line.clear();
+    for (const [voiceId, members] of this.#chordTakes) {
+      const attackStep = this.#attackStep.get(voiceId);
+      const upStep = upStepFor(attackStep ?? step);
+      for (const member of members) {
+        const on = this.#events.find((event) => event.voiceId === member && event.type === 'on');
+        if (!on) continue;
+        this.#put({
+          voiceId: member,
+          step: upStep,
+          type: 'up',
+          x: on.x,
+          y: on.y,
+          mode: 'single',
+          instrument: on.instrument,
+          direction: 'down',
+          degree: on.degree,
+          group: on.group,
+        });
+      }
+    }
+    this.#chordTakes.clear();
   }
 
   /**

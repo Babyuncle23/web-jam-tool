@@ -197,7 +197,11 @@ export class TouchPad {
     this.#element.removeEventListener('touchstart', this.#bound.touch);
     this.#element.removeEventListener('contextmenu', this.#bound.menu);
     this.#element.removeEventListener('selectstart', this.#bound.menu);
-    for (const pointerId of [...this.#pointers.keys()]) this.#forget(pointerId);
+    for (const pointerId of [...this.#pointers.keys()]) {
+      const point = this.#pointers.get(pointerId);
+      this.#forget(pointerId);
+      this.#handlers.onEnd?.({ id: String(pointerId), ...point, type: 'up' });
+    }
   }
 }
 

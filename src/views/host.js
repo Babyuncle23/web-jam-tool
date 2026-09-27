@@ -2145,6 +2145,9 @@ export async function createHostView() {
     setPeers();
     clearPeer(peerId);
     audio?.synth.releaseMatching(`preview:${peerId}`);
+    // A guest who leaves mid-recording never sends the note-off: close their
+    // open takes so the loop does not replay an endless note.
+    audio?.loops.get(peerId)?.stop();
     if (masterHolder === peerId) {
       masterHolder = null;
       state.masterFx.hold = false;
