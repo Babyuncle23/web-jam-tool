@@ -118,7 +118,10 @@ io.on('connection', (socket) => {
   socket.on('host:pulse', (payload) => {
     const code = socket.data.code;
     if (!code || socket.data.role !== 'host') return;
-    socket.volatile.to(room(code)).emit('host:pulse', { step: Number(payload?.step) || 0 });
+    socket.volatile.to(room(code)).emit('host:pulse', {
+      step: Number(payload?.step) || 0,
+      running: Boolean(payload?.running),
+    });
   });
 
   socket.on('host:state', (payload) => {

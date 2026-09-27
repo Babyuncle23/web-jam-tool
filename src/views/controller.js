@@ -7,8 +7,10 @@
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
 import { FX_COLORS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz } from '../audio/effects.js';
+import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
 import { chipIcon, paintIconButton } from '../ui/icons.js';
+import { createDrumGrid } from '../ui/drum-grid.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -52,6 +54,15 @@ export async function createControllerView({ code, name } = {}) {
     masterSheet: document.getElementById('controller-master-sheet'),
     masterSliders: document.getElementById('controller-master-sliders'),
     masterClose: document.getElementById('controller-master-close'),
+    drumsOpen: document.getElementById('controller-drums'),
+    drumsSheet: document.getElementById('controller-drums-sheet'),
+    drumSequencer: document.getElementById('controller-sequencer'),
+    drumPresets: document.getElementById('controller-drum-presets'),
+    drumsClose: document.getElementById('controller-drums-close'),
+    drumTransport: document.getElementById('controller-drums-transport'),
+    drumZoom: document.getElementById('controller-drum-zoom'),
+    drumWriteRow: document.getElementById('controller-drum-write'),
+    drumRepeatRow: document.getElementById('controller-drum-repeat'),
   };
 
   const state = {
@@ -74,7 +85,12 @@ export async function createControllerView({ code, name } = {}) {
     canRedo: false,
     clearUndo: false,
     peerId: null,
+    drumWrite: 'single',
+    drums: { steps: DRUM_STEPS, preset: 'break', repeat: 1, grid: null },
   };
+  state.drums.grid = Object.fromEntries(
+    TRACKS.map(({ id }) => [id, Array.from({ length: state.drums.steps }, () => ({ on: false, division: 1 }))]),
+  );
   let guestSelectMode = false;
   const socket = new JamSocket();
   const renderer = new TouchPadRenderer(el.canvas, { columns: 12 });
@@ -292,6 +308,218 @@ export async function createControllerView({ code, name } = {}) {
     syncGuestHistory();
   }
 
+  /* ---------- Drums (mirrors the host sheet; edits go over the socket) ---------- */
+
+  let drumZoom = 0;
+  let pendingDrumWrites = [];
+
+  function guestDrumCellPx() {
+    const steps = Math.max(1, state.drums.steps || 16);
+    const view = el.drumSequencer?.clientWidth || 0;
+    const width = view > 80 ? view : Math.max(280, window.innerWidth - 16);
+    const fit = Math.max(8, (width - 128 - 3 * Math.max(0, steps - 1) - 8) / steps);
+    return fit + (Math.max(fit, 46) - fit) * drumZoom;
+  }
+
+  function ensureGuestDrumRows() {
+    for (const { id } of TRACKS) {
+      const row = state.drums.grid[id] || (state.drums.grid[id] = []);
+      while (row.length < state.drums.steps) row.push({ on: false, division: 1 });
+      if (row.length > state.drums.steps) row.length = state.drums.steps;
+    }
+  }
+
+  function setGuestDrumCell(track, step, value) {
+    const row = state.drums.grid[track];
+    if (!row || step < 0 || step >= state.drums.steps) return false;
+    const next = { on: Boolean(value?.on), division: value?.on && Number(value?.division) === 3 ? 3 : 1 };
+    const prev = row[step];
+    if (prev && prev.on === next.on && (prev.division || 1) === next.division) return false;
+    row[step] = next;
+    drumGrid.paintCell(track, step);
+    return true;
+  }
+
+  /** Optimistic write: paint locally now, let the host broadcast confirm. */
+  function applyGuestDrumCell(track, step, value) {
+    const write = {
+      track,
+      step,
+      on: Boolean(value?.on),
+      division: value?.on && Number(value?.division) === 3 ? 3 : 1,
+    };
+    pendingDrumWrites.push(write);
+    let changed = false;
+    for (const s of repeatTargets(state.drums.repeat, state.drums.steps, step)) {
+      changed = setGuestDrumCell(track, s, write) || changed;
+    }
+    if (!changed) return;
+    if (state.drums.preset) {
+      state.drums.preset = '';
+      paintGuestDrumPreset();
+    }
+  }
+
+  function flushGuestDrumWrites() {
+    if (!pendingDrumWrites.length) return;
+    socket.sendControl({ drumSet: pendingDrumWrites.splice(0) });
+  }
+
+  const drumGrid = createDrumGrid(el.drumSequencer, {
+    tracks: TRACKS,
+    steps: () => state.drums.steps,
+    cell: (track, step) => state.drums.grid[track]?.[step],
+    cellPx: guestDrumCellPx,
+    iconFor: (track) => chipIcon(track.id),
+    mirrorSpan: () => repeatSpanSteps(state.drums.repeat, state.drums.steps),
+    writeMode: () => state.drumWrite,
+    applyCell: applyGuestDrumCell,
+    onGesture: (phase) => {
+      if (phase === 'flush' || phase === 'end') flushGuestDrumWrites();
+    },
+  });
+
+  function paintGuestDrumPreset() {
+    el.drumPresets?.querySelectorAll('.chip').forEach((chip) => {
+      chip.classList.toggle('is-picked', chip.dataset.preset === state.drums.preset);
+    });
+    const preset = DRUM_PRESETS[state.drums.preset];
+    if (el.drumsOpen) el.drumsOpen.textContent = preset ? `Drums · ${preset.label}` : 'Drums';
+  }
+
+  function renderGuestDrumPresets() {
+    if (!el.drumPresets) return;
+    el.drumPresets.replaceChildren();
+    for (const preset of Object.values(DRUM_PRESETS)) {
+      const button = pressable(`chip${preset.id === state.drums.preset ? ' is-picked' : ''}`);
+      button.dataset.preset = preset.id;
+      button.textContent = preset.label;
+      button.addEventListener('click', () => pickGuestDrumPreset(preset.id));
+      el.drumPresets.append(button);
+    }
+    paintGuestDrumPreset();
+  }
+
+  function applyGuestPattern(pattern, span) {
+    ensureGuestDrumRows();
+    for (const { id } of TRACKS) {
+      const on = new Set(tileHits(pattern[id] ?? [], state.drums.steps, span));
+      for (let i = 0; i < state.drums.steps; i += 1) {
+        state.drums.grid[id][i] = { on: on.has(i), division: 1 };
+      }
+    }
+  }
+
+  function pickGuestDrumPreset(id) {
+    const preset = DRUM_PRESETS[id];
+    if (!preset) return;
+    state.drums.preset = id;
+    state.drums.repeat = preset.repeat ?? 1;
+    applyGuestPattern(preset.pattern, preset.span);
+    paintGuestDrumPreset();
+    paintGuestDrumEditRows();
+    drumGrid.render();
+    socket.sendControl({ drumPreset: id });
+  }
+
+  function tileGuestDrumRepeat() {
+    const span = repeatSpanSteps(state.drums.repeat, state.drums.steps);
+    if (!span) return;
+    for (const { id } of TRACKS) {
+      const row = state.drums.grid[id];
+      for (let s = span; s < state.drums.steps; s += 1) {
+        const src = row[s % span];
+        row[s] = { on: Boolean(src?.on), division: src?.division === 3 ? 3 : 1 };
+      }
+    }
+  }
+
+  function paintGuestDrumEditRows() {
+    el.drumWriteRow?.querySelectorAll('[data-write]').forEach((chip) => {
+      chip.classList.toggle('is-picked', chip.dataset.write === state.drumWrite);
+    });
+    el.drumRepeatRow?.querySelectorAll('[data-repeat-bars]').forEach((chip) => {
+      const mode = chip.dataset.repeatBars;
+      const picked = String(state.drums.repeat) === mode;
+      const bars = mode === 'off' ? 0 : Number(mode) || 0;
+      setControlEnabled(chip, bars === 0 || bars * 16 < state.drums.steps || picked);
+      chip.classList.toggle('is-picked', picked);
+      chip.setAttribute('aria-pressed', picked ? 'true' : 'false');
+    });
+  }
+
+  function setGuestDrumRepeat(mode) {
+    const next = mode === 'off' || mode === '0' || mode === 0 ? 'off' : Math.min(2, Math.max(1, Number(mode) || 1));
+    state.drums.repeat = next;
+    paintGuestDrumEditRows();
+    if (next !== 'off') tileGuestDrumRepeat();
+    drumGrid.render();
+    socket.sendControl({ drumRepeat: next });
+  }
+
+  function paintGuestBpm() {
+    el.drumsSheet?.querySelectorAll('[data-bpm]').forEach((chip) => {
+      chip.classList.toggle('is-picked', chip.dataset.bpm === String(state.bpm));
+    });
+  }
+
+  /** Host broadcast is the authority: adopt the whole drum state. */
+  function applyHostDrums(d) {
+    const prevSteps = state.drums.steps;
+    const prevRepeat = state.drums.repeat;
+    if (Number.isFinite(Number(d.steps))) state.drums.steps = Math.max(16, Math.round(Number(d.steps)));
+    if (typeof d.preset === 'string' || d.preset === '') state.drums.preset = d.preset || '';
+    if (d.repeat === 'off' || Number(d.repeat) > 0) {
+      state.drums.repeat = d.repeat === 'off' ? 'off' : Math.min(2, Math.max(1, Number(d.repeat)));
+    }
+    if (d.grid && typeof d.grid === 'object') {
+      for (const { id } of TRACKS) {
+        const row = Array.isArray(d.grid[id]) ? d.grid[id] : [];
+        state.drums.grid[id] = row.map((slot) => ({ on: Boolean(slot?.on), division: slot?.division === 3 ? 3 : 1 }));
+      }
+    }
+    ensureGuestDrumRows();
+    paintGuestDrumPreset();
+    paintGuestDrumEditRows();
+    if (el.drumsSheet.hidden) return;
+    if (state.drums.steps !== prevSteps || state.drums.repeat !== prevRepeat) drumGrid.render();
+    else drumGrid.paintAll();
+  }
+
+  el.drumsOpen?.addEventListener('click', () => {
+    el.drumsSheet.hidden = false;
+    drumGrid.render();
+  });
+  el.drumsClose?.addEventListener('click', () => {
+    el.drumsSheet.hidden = true;
+  });
+  el.drumTransport?.addEventListener('click', () => {
+    if (!state.audioReady) return;
+    state.transportRunning = !state.transportRunning;
+    paintGuestTransport();
+    socket.sendControl({ transport: 'toggle' });
+  });
+  el.drumWriteRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-write]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    state.drumWrite = chip.dataset.write === 'triplet' ? 'triplet' : 'single';
+    paintGuestDrumEditRows();
+  });
+  el.drumRepeatRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-repeat-bars]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    setGuestDrumRepeat(chip.dataset.repeatBars);
+  });
+  el.drumsSheet?.querySelector('[data-group="bpm"]')?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-bpm]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    socket.sendControl({ bpm: Number(chip.dataset.bpm) });
+  });
+  el.drumZoom?.addEventListener('input', (event) => {
+    drumZoom = Number(event.target.value) / 100;
+    drumGrid.render();
+  });
+
   function renderGuestSliders() {
     const rows = [];
     const level = clampFx(state.levels[state.instrument] ?? 1);
@@ -407,6 +635,11 @@ export async function createControllerView({ code, name } = {}) {
     el.transport.replaceChildren(chipIcon(state.transportRunning ? 'stop' : 'play'));
     el.transport.classList.toggle('is-on', state.transportRunning);
     el.transport.setAttribute('aria-pressed', state.transportRunning ? 'true' : 'false');
+    if (el.drumTransport) {
+      el.drumTransport.textContent = state.transportRunning ? 'Stop' : 'Play';
+      el.drumTransport.classList.toggle('is-on', state.transportRunning);
+      el.drumTransport.setAttribute('aria-pressed', state.transportRunning ? 'true' : 'false');
+    }
   }
 
   function syncGuestTransport(running) {
@@ -419,8 +652,9 @@ export async function createControllerView({ code, name } = {}) {
   socket.on(EVENTS.pulse, ({ step, running }) => {
     if (!(step >= 0)) return;
     paintGuestBar(step);
-    syncGuestTransport(running);
+    if (typeof running === 'boolean') syncGuestTransport(running);
     syncGuestPulse(Boolean(running), step);
+    if (!el.drumsSheet.hidden) drumGrid.setLit(step % Math.max(1, state.drums.steps));
     if (el.notesSheet.hidden || !(state.noteSteps > 0)) return;
     setRollPlayhead(el.noteTape, step % state.noteSteps);
   });
@@ -574,8 +808,10 @@ export async function createControllerView({ code, name } = {}) {
       if (next !== state.bpm) {
         state.bpm = next;
         syncGuestPulse(el.pad.classList.contains('is-pulsing'), guestStep ?? 0, { retune: true });
+        paintGuestBpm();
       }
     }
+    if (payload?.drums && typeof payload.drums === 'object') applyHostDrums(payload.drums);
     if (typeof payload?.transport === 'boolean') syncGuestTransport(payload.transport);
     if (Number.isFinite(Number(payload?.loopBars))) {
       state.noteSteps = Number(payload.loopBars);
@@ -809,6 +1045,9 @@ export async function createControllerView({ code, name } = {}) {
   paintIconButton(el.fxDetail, 'detail', 'More');
   paintIconButton(el.fxSheetClose, 'done', 'Done');
   renderGuestFx();
+  renderGuestDrumPresets();
+  paintGuestDrumEditRows();
+  paintGuestBpm();
   markScrollEdges(document.querySelector('.controller-foot'), 'y');
   markPageEdges();
 
@@ -818,6 +1057,7 @@ export async function createControllerView({ code, name } = {}) {
     },
     destroy() {
       pad.destroy();
+      drumGrid.destroy();
       renderer.destroy();
       el.screen.removeEventListener('click', onChipClick);
       document.removeEventListener('gesturestart', preventGesture);

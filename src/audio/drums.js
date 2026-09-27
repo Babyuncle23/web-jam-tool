@@ -137,6 +137,7 @@ export const DRUM_PRESETS = {
     id: 'jersey',
     label: 'Jersey Club',
     span: 32,
+    repeat: 2,
     pattern: { kick: [0, 4, 8, 11, 16, 20, 24, 27, 30], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
   },
   clear: {
@@ -145,6 +146,26 @@ export const DRUM_PRESETS = {
     pattern: { kick: [], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
   },
 };
+
+/**
+ * Repeat mode ("Off" / 1 bar / 2 bars) copies the first bars over the rest of
+ * the loop. The span is only real when it is shorter than the grid — a 2-bar
+ * repeat on a 2-bar loop changes nothing until the loop grows to 4 bars.
+ */
+export function repeatSpanSteps(mode, length) {
+  const bars = Number(mode) || 0;
+  const span = bars * PRESET_STEPS;
+  return span > 0 && span < length ? span : 0;
+}
+
+/** Every step a write lands on while repeat is on: the whole mod-span class. */
+export function repeatTargets(mode, length, step) {
+  const span = repeatSpanSteps(mode, length);
+  if (!span) return [step];
+  const targets = [];
+  for (let s = step % span; s < length; s += 1) targets.push(s);
+  return targets;
+}
 
 const DEFAULT_PATTERN = DRUM_PRESETS.break.pattern;
 

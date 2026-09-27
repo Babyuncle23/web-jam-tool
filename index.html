@@ -243,6 +243,18 @@
             <button class="chip is-picked" type="button" data-bpm="120">120</button>
             <button class="chip" type="button" data-bpm="140">140</button>
           </div>
+          <div class="tool-row" id="host-drum-write">
+            <span class="tool-row__label">Add</span>
+            <button class="chip is-picked" type="button" data-write="single">Single</button>
+            <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+          </div>
+          <div class="tool-row" id="host-drum-repeat">
+            <span class="tool-row__label">Repeat</span>
+            <button class="chip" type="button" data-repeat-bars="off">Off</button>
+            <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
+            <button class="chip" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
+          </div>
+          <p class="seq-hint">Tap a cell or drag across cells like a brush. Repeat copies the first bars into the rest — switch it off to make bars differ.</p>
           <label class="zoom-row">
             <span>Zoom</span>
             <input id="drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
@@ -386,6 +398,7 @@
         </section>
         <div class="loop-actions">
           <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
+          <button id="controller-drums" class="btn btn--ghost btn--xl" type="button">Drums</button>
           <button id="controller-notes" class="btn btn--ghost btn--xl" type="button" disabled>Notes</button>
         </div>
       </footer>
@@ -411,6 +424,41 @@
             <button id="controller-note-clear" class="btn btn--ghost" type="button">clr curr inst</button>
             <button id="controller-notes-close" class="btn btn--primary" type="button">Done</button>
           </div>
+        </div>
+      </div>
+
+      <div id="controller-drums-sheet" class="fx-sheet fx-sheet--stage" hidden>
+        <div class="fx-sheet__card">
+          <div class="stage-head">
+            <h2>Drums</h2>
+            <button id="controller-drums-transport" class="btn btn--ghost" type="button">Play</button>
+            <button id="controller-drums-close" class="btn btn--primary" type="button">Done</button>
+          </div>
+          <div class="tool-row" id="controller-drum-presets"></div>
+          <div class="tool-row" data-group="bpm">
+            <span class="tool-row__label">BPM</span>
+            <button class="chip" type="button" data-bpm="80">80</button>
+            <button class="chip" type="button" data-bpm="96">96</button>
+            <button class="chip" type="button" data-bpm="120">120</button>
+            <button class="chip" type="button" data-bpm="140">140</button>
+          </div>
+          <div class="tool-row" id="controller-drum-write">
+            <span class="tool-row__label">Add</span>
+            <button class="chip is-picked" type="button" data-write="single">Single</button>
+            <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+          </div>
+          <div class="tool-row" id="controller-drum-repeat">
+            <span class="tool-row__label">Repeat</span>
+            <button class="chip" type="button" data-repeat-bars="off">Off</button>
+            <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
+            <button class="chip is-picked" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
+          </div>
+          <p class="seq-hint">Tap a cell or drag across cells like a brush. Repeat copies the first bars into the rest — switch it off to make bars differ.</p>
+          <label class="zoom-row">
+            <span>Zoom</span>
+            <input id="controller-drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
+          </label>
+          <div class="sequencer" id="controller-sequencer"></div>
         </div>
       </div>
 

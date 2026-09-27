@@ -6,7 +6,7 @@
 
 import { AudioEngine } from '../audio/engine.js';
 import { buildLoopMidi, readRepeats, renderLoopWav, saveBlob } from '../audio/export-loop.js';
-import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileHits } from '../audio/drums.js';
+import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import {
   INSTRUMENT_COLORS,
   INSTRUMENT_IDS,
@@ -40,6 +40,7 @@ import {
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
+import { createDrumGrid } from '../ui/drum-grid.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 import { JamSocket, EVENTS, isLocalHostname } from '../network/socket.js';
@@ -163,6 +164,8 @@ export async function createHostView() {
     drumPresetNext: document.getElementById('drum-preset-next'),
     drumsSheet: document.getElementById('host-drums-sheet'),
     drumsClose: document.getElementById('host-drums-close'),
+    drumWriteRow: document.getElementById('host-drum-write'),
+    drumRepeatRow: document.getElementById('host-drum-repeat'),
     masterSheet: document.getElementById('host-master-sheet'),
     masterSliders: document.getElementById('host-master-sliders'),
     masterClose: document.getElementById('host-master-close'),
@@ -194,6 +197,8 @@ export async function createHostView() {
     drumSteps: STEPS,
     noteSteps: LOOP_STEPS,
     drumPreset: 'break',
+    drumWrite: 'single',
+    drumRepeat: DRUM_PRESETS.break.repeat ?? 1,
   };
   const initialPreset = DRUM_PRESETS[state.drumPreset];
   for (const track of TRACKS) {
@@ -299,8 +304,6 @@ export async function createHostView() {
 
   /* ---------- Sequencer ---------- */
 
-  const stepButtons = new Map();
-  const stepColumns = [];
   /**
    * Two undo stacks: one per editor (their own changes) and one shared.
    * Entries snapshot every recorder about to change. A single shared redo
@@ -399,8 +402,6 @@ export async function createHostView() {
     return true;
   }
 
-  let seqTapBlocked = false;
-
   function drumCellPx() {
     const steps = Math.max(1, state.drumSteps || 16);
     const view = el.sequencer?.clientWidth || 0;
@@ -409,158 +410,151 @@ export async function createHostView() {
     return fit + (Math.max(fit, DRUM_EDIT_PX) - fit) * drumZoom;
   }
 
-  function renderSequencer() {
-    const tapeNow = el.sequencer.querySelector('.seq-tape');
-    const previousLeft = tapeNow?.scrollLeft ?? 0;
-    const previousTop = tapeNow?.scrollTop ?? 0;
-    el.sequencer.replaceChildren();
-    stepButtons.clear();
-    stepColumns.length = 0;
-
-    const tape = document.createElement('div');
-    tape.className = 'seq-tape';
-
-    const ruler = document.createElement('div');
-    ruler.className = 'seq-row seq-ruler';
-    const spacer = document.createElement('span');
-    spacer.className = 'seq-row__label seq-ruler-spacer';
-    ruler.append(spacer);
-    const marks = document.createElement('div');
-    marks.className = 'seq-ruler__marks';
-    const cellPx = drumCellPx();
-    const barCount = Math.max(1, Math.round(state.drumSteps / 16));
-    const barWidth = 16 * cellPx + 15 * STEP_GAP;
-    for (let bar = 0; bar < barCount; bar += 1) {
-      const mark = document.createElement('span');
-      mark.className = 'seq-ruler__bar';
-      mark.textContent = String(bar + 1);
-      mark.style.width = `${barWidth}px`;
-      marks.append(mark);
-    }
-    ruler.append(marks);
-    tape.append(ruler);
-
-    for (const track of TRACKS) {
-      const row = document.createElement('div');
-      row.className = 'seq-row';
-      row.dataset.track = track.id;
-      const label = document.createElement('span');
-      label.className = 'seq-row__label';
-      label.title = track.label;
-      label.append(chipIcon(track.id));
-      const name = document.createElement('span');
-      name.textContent = track.label;
-      label.append(name);
-      row.append(label);
-
-      const steps = document.createElement('div');
-      steps.className = 'seq-row__steps';
-      for (let step = 0; step < state.drumSteps; step += 1) {
-        const button = pressable('step');
-        button.style.width = `${cellPx}px`;
-        button.style.flexBasis = `${cellPx}px`;
-        button.dataset.step = String(step);
-        button.dataset.track = track.id;
-        button.dataset.beat = String(step % 4 === 0);
-        button.dataset.bar = String(step % 16 === 0);
-        button.setAttribute('aria-label', `${track.label} step ${step + 1}`);
-        paintStepButton(button, state.grid[track.id][step] || { on: false, division: 1 });
-        if (step === litStep) button.classList.add('is-playing');
-        button.addEventListener('click', () => {
-          const index = Number(button.dataset.step);
-          const next = audio?.drums.cycleStep(track.id, index) ?? cycleCell(state.grid[track.id][index]);
-          state.grid[track.id][index] = next;
-          paintStepButton(button, next);
-          state.drumPreset = '';
-          markDrumPreset('');
-        });
-        stepButtons.set(`${track.id}:${step}`, button);
-        if (!stepColumns[step]) stepColumns[step] = [];
-        stepColumns[step].push(button);
-        steps.append(button);
-      }
-      row.append(steps);
-      tape.append(row);
-    }
-
-    const gridlines = document.createElement('div');
-    gridlines.className = 'seq-gridlines';
-    gridlines.style.left = '132px';
-    const pitch = cellPx + STEP_GAP;
-    for (let step = 0; step <= state.drumSteps; step += 4) {
-      if (step === state.drumSteps && state.drumSteps % 16 !== 0) continue;
-      const line = document.createElement('span');
-      const bar = step % 16 === 0;
-      line.className = bar ? 'seq-barline' : 'seq-beatline';
-      line.dataset.step = String(step);
-      const atEnd = step === state.drumSteps;
-      const left = step === 0 ? 0 : atEnd ? state.drumSteps * pitch - STEP_GAP : step * pitch - STEP_GAP / 2;
-      line.style.left = `${left}px`;
-      gridlines.append(line);
-    }
-    tape.append(gridlines);
-
-    el.sequencer.append(tape);
-    const lastRow = [...tape.querySelectorAll('.seq-row')].at(-1);
-    if (lastRow) {
-      gridlines.style.bottom = 'auto';
-      gridlines.style.height = `${lastRow.offsetTop + lastRow.offsetHeight}px`;
-    }
-    bindSeqPan(tape);
-    tape.scrollLeft = previousLeft;
-    tape.scrollTop = previousTop;
-    markScrollEdges(tape, 'both');
-  }
-
-  function bindSeqPan(tape) {
-    if (tape.dataset.pan === '1') return;
-    tape.dataset.pan = '1';
-    let drag = null;
-    tape.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0) return;
-      seqTapBlocked = false;
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
-    });
-    const end = (event) => {
-      if (!drag || event.pointerId !== drag.id) return;
-      const moved = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
-      drag = null;
-      if (moved > 10) seqTapBlocked = true;
+  function drumsPayload() {
+    return {
+      steps: state.drumSteps,
+      preset: state.drumPreset,
+      repeat: state.drumRepeat,
+      grid: Object.fromEntries(
+        TRACKS.map(({ id }) => [
+          id,
+          (state.grid[id] || []).slice(0, state.drumSteps).map((slot) => ({
+            on: Boolean(slot?.on),
+            division: slot?.division === 3 ? 3 : 1,
+          })),
+        ]),
+      ),
     };
-    tape.addEventListener('pointerup', end);
-    tape.addEventListener('pointercancel', end);
-    tape.addEventListener(
-      'click',
-      (event) => {
-        if (!seqTapBlocked) return;
-        seqTapBlocked = false;
-        event.preventDefault();
-        event.stopPropagation();
-      },
-      true,
-    );
   }
 
-  function cycleCell(current) {
-    if (!current?.on) return { on: true, division: 1 };
-    if (current.division !== 3) return { on: true, division: 3 };
-    return { on: false, division: 1 };
+  /** The grid ships inside the shared host state so every guest sees edits. */
+  let drumPushTimer = 0;
+  let drumPushDirty = false;
+  function publishDrums() {
+    socket.broadcastState({ drums: drumsPayload() });
+  }
+  function queueDrumPush() {
+    drumPushDirty = true;
+    if (drumPushTimer) return;
+    drumPushTimer = setTimeout(() => {
+      drumPushTimer = 0;
+      if (!drumPushDirty) return;
+      drumPushDirty = false;
+      publishDrums();
+    }, 60);
+  }
+  function flushDrumPush() {
+    if (drumPushTimer) {
+      clearTimeout(drumPushTimer);
+      drumPushTimer = 0;
+    }
+    if (!drumPushDirty) return;
+    drumPushDirty = false;
+    publishDrums();
   }
 
-  function paintStepButton(button, slot) {
-    const on = Boolean(slot?.on);
-    const triplet = on && slot.division === 3;
-    button.classList.toggle('is-on', on);
-    button.classList.toggle('is-triplet', triplet);
-    button.textContent = triplet ? '3' : '';
+  function setDrumCell(track, step, value) {
+    const row = state.grid[track];
+    if (!row || step < 0 || step >= state.drumSteps) return false;
+    const next = { on: Boolean(value?.on), division: value?.on && Number(value?.division) === 3 ? 3 : 1 };
+    const prev = row[step];
+    if (prev && prev.on === next.on && (prev.division || 1) === next.division) return false;
+    row[step] = next;
+    audio?.drums.setStep(track, step, next.on, next.division);
+    drumGrid.paintCell(track, step);
+    return true;
   }
+
+  function markDrumEdited() {
+    if (!state.drumPreset) return;
+    state.drumPreset = '';
+    markDrumPreset('');
+  }
+
+  /** One write from the grid; repeat mode lands it on every matching bar. */
+  function applyDrumCell(track, step, value) {
+    let changed = false;
+    for (const s of repeatTargets(state.drumRepeat, state.drumSteps, step)) {
+      changed = setDrumCell(track, s, value) || changed;
+    }
+    if (!changed) return;
+    markDrumEdited();
+    queueDrumPush();
+  }
+
+  const drumGrid = createDrumGrid(el.sequencer, {
+    tracks: TRACKS,
+    steps: () => state.drumSteps,
+    cell: (track, step) => state.grid[track]?.[step],
+    cellPx: drumCellPx,
+    iconFor: (track) => chipIcon(track.id),
+    mirrorSpan: () => repeatSpanSteps(state.drumRepeat, state.drumSteps),
+    writeMode: () => state.drumWrite,
+    applyCell: applyDrumCell,
+    onGesture: (phase) => {
+      if (phase === 'end') flushDrumPush();
+    },
+  });
+
+  function renderSequencer() {
+    drumGrid.render();
+  }
+
+  /** Copy the leading bars over the rest of the loop when repeat allows it. */
+  function tileDrumRepeat() {
+    const span = repeatSpanSteps(state.drumRepeat, state.drumSteps);
+    if (!span) return;
+    for (const track of TRACKS) {
+      const row = state.grid[track.id];
+      for (let s = span; s < state.drumSteps; s += 1) {
+        setDrumCell(track.id, s, row[s % span] || { on: false, division: 1 });
+      }
+    }
+  }
+
+  function paintDrumEditRows() {
+    el.drumWriteRow?.querySelectorAll('[data-write]').forEach((chip) => {
+      chip.classList.toggle('is-picked', chip.dataset.write === state.drumWrite);
+    });
+    el.drumRepeatRow?.querySelectorAll('[data-repeat-bars]').forEach((chip) => {
+      const mode = chip.dataset.repeatBars;
+      const picked = String(state.drumRepeat) === mode;
+      const bars = mode === 'off' ? 0 : Number(mode) || 0;
+      // A repeat that spans the whole loop changes nothing — grey it out.
+      setControlEnabled(chip, bars === 0 || bars * 16 < state.drumSteps || picked);
+      chip.classList.toggle('is-picked', picked);
+      chip.setAttribute('aria-pressed', picked ? 'true' : 'false');
+    });
+  }
+
+  function setDrumRepeat(mode) {
+    const next = mode === 'off' || mode === '0' || mode === 0 ? 'off' : Math.min(2, Math.max(1, Number(mode) || 1));
+    state.drumRepeat = next;
+    paintDrumEditRows();
+    if (next !== 'off') tileDrumRepeat();
+    renderSequencer();
+    publishDrums();
+  }
+
+  function setDrumWrite(mode) {
+    state.drumWrite = mode === 'triplet' ? 'triplet' : 'single';
+    paintDrumEditRows();
+  }
+
+  el.drumWriteRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-write]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    setDrumWrite(chip.dataset.write);
+  });
+  el.drumRepeatRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-repeat-bars]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    setDrumRepeat(chip.dataset.repeatBars);
+  });
 
   function highlightStep(step) {
-    if (step !== litStep) {
-      if (litStep >= 0) for (const button of stepColumns[litStep] || []) button.classList.remove('is-playing');
-      litStep = step;
-      if (step >= 0) for (const button of stepColumns[step] || []) button.classList.add('is-playing');
-    }
+    litStep = step;
+    drumGrid.setLit(step);
     const running = Boolean(audio?.engine.transportRunning);
     const shown = running && step >= 0 ? step % Math.max(1, state.noteSteps) : parkedLoopStep();
     if (running && step >= 0) watchClearUndo(step);
@@ -670,8 +664,13 @@ export async function createHostView() {
     const preset = DRUM_PRESETS[id];
     if (!preset) return;
     state.drumPreset = id;
+    // Every pattern ships with a repeat default: one bar everywhere but
+    // Jersey Club, which repeats its two bars over a 4-bar loop.
+    state.drumRepeat = preset.repeat ?? 1;
+    paintDrumEditRows();
     applyPattern(preset.pattern, preset.span);
     markDrumPreset(id);
+    publishDrums();
   }
 
   function cycleDrumPreset(direction) {
@@ -1337,8 +1336,12 @@ export async function createHostView() {
     if (state.drumPreset && DRUM_PRESETS[state.drumPreset]) {
       const preset = DRUM_PRESETS[state.drumPreset];
       applyPattern(preset.pattern, preset.span);
+    } else {
+      tileDrumRepeat();
+      renderSequencer();
     }
-    else renderSequencer();
+    paintDrumEditRows();
+    publishDrums();
     if (audio) {
       for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
       shareLoop();
@@ -1940,9 +1943,35 @@ export async function createHostView() {
     publishHarmony();
   }
 
+  /** Guests write drum cells like the host brush: value + repeat expansion. */
+  function applyGuestDrumSet(data) {
+    const list = Array.isArray(data.drumSet) ? data.drumSet : [data.drumSet];
+    let changed = false;
+    for (const entry of list) {
+      const track = String(entry?.track ?? '');
+      if (!TRACKS.some((item) => item.id === track)) continue;
+      const step = Math.floor(Number(entry?.step));
+      if (!(step >= 0 && step < state.drumSteps)) continue;
+      const value = { on: Boolean(entry?.on), division: Number(entry?.division) === 3 ? 3 : 1 };
+      for (const s of repeatTargets(state.drumRepeat, state.drumSteps, step)) {
+        changed = setDrumCell(track, s, value) || changed;
+      }
+    }
+    if (!changed) return;
+    markDrumEdited();
+    queueDrumPush();
+  }
+
   function handleControl(data) {
     if (data.masterHold) applyGuestHold(data);
     if (data.masterFx) applyGuestMaster(data);
+    if (data.drumSet) applyGuestDrumSet(data);
+    if (typeof data.drumPreset === 'string' && DRUM_PRESETS[data.drumPreset]) {
+      pickDrumPreset(data.drumPreset);
+      log(`${data.name ?? 'guest'} · drums ${DRUM_PRESETS[data.drumPreset].label}`, 'drums');
+    }
+    if (data.drumRepeat !== undefined) setDrumRepeat(data.drumRepeat);
+    if (Number.isFinite(Number(data.bpm))) setSharedBpm(Number(data.bpm));
     if (data.preview) {
       previewRoll(Boolean(data.preview.down), data.preview.midi, data.preview.pointerId, data.peerId || 'guest', data.preview.instrument);
       return;
@@ -2183,8 +2212,10 @@ export async function createHostView() {
 
   renderSequencer();
   paintHostActions();
+  paintDrumEditRows();
   renderRootChips();
   renderDrumPresets();
+  publishDrums();
   renderInstrumentFx();
   renderDrumFx();
   paintInstruments(el.instruments, state.instrument);
@@ -2317,6 +2348,8 @@ export async function createHostView() {
     destroy() {
       document.removeEventListener('visibilitychange', onVisibility);
       clearTimeout(parkTimer);
+      clearTimeout(drumPushTimer);
+      drumGrid.destroy();
       hostPad.destroy();
       if (audio) {
         for (const recorder of audio.loops.values()) recorder.clear();

@@ -1479,6 +1479,23 @@ input[type='range'] {
   border-color: var(--ink);
 }
 
+/* Repeat mode: cells past the source bars are mirror copies. */
+.seq-row[data-track] .step.is-mirror {
+  border-style: dashed;
+}
+
+.seq-ruler__bar.is-mirror {
+  opacity: 0.55;
+}
+
+.seq-hint {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  opacity: 0.65;
+}
+
 .event-log {
   list-style: none;
   margin: 0;
