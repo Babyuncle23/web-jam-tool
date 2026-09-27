@@ -1956,9 +1956,6 @@ export async function createHostView() {
     if (data.history === 'undo' && audio) undoOwn(data.peerId);
     if (data.history === 'undo-all' && audio) undoAll();
     if (data.history === 'redo' && audio) redoShared();
-    if ((data.loopBars === 'cycle' || data.noteLoop === 'cycle') && audio) {
-      cycleSharedLength();
-    }
     if (data.erase === 'show' && audio) refreshLoops();
     const instrument = namedInstrument(data.instrument);
     if (instrument) {

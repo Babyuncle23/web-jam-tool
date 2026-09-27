@@ -5,10 +5,10 @@
  */
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
-import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, barCountLabel, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
+import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
 import { FX_COLORS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz } from '../audio/effects.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
-import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
+import { chipIcon, paintIconButton } from '../ui/icons.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -43,7 +43,6 @@ export async function createControllerView({ code, name } = {}) {
     instPrev: document.getElementById('controller-inst-prev'),
     instName: document.getElementById('controller-inst-name'),
     instNext: document.getElementById('controller-inst-next'),
-    bars: document.getElementById('controller-bars'),
     fxDetail: document.getElementById('controller-fx-detail'),
     fxSheet: document.getElementById('controller-fx-sheet'),
     fxSliders: document.getElementById('controller-fx-sliders'),
@@ -146,7 +145,6 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loop, true);
     setControlEnabled(el.loopClear, true);
     setControlEnabled(el.notes, true);
-    setControlEnabled(el.bars, true);
     el.splash.hidden = true;
     el.splash.dataset.phase = 'ready';
   }
@@ -161,7 +159,6 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loop, false);
     setControlEnabled(el.loopClear, false);
     setControlEnabled(el.notes, false);
-    setControlEnabled(el.bars, false);
   }
 
   function rollFocusMidi() {
@@ -563,14 +560,12 @@ export async function createControllerView({ code, name } = {}) {
     }
     if (Number.isFinite(Number(payload?.loopBars))) {
       state.noteSteps = Number(payload.loopBars);
-      setIconLabel(el.bars, barCountLabel(state.noteSteps));
       if (guestStep != null) paintGuestBar(guestStep);
     }
     if (payload?.loopNotes && typeof payload.loopNotes === 'object') {
       const pack = payload.loopNotes;
       if (Number.isFinite(Number(pack.noteSteps))) {
         state.noteSteps = Number(pack.noteSteps);
-        setIconLabel(el.bars, barCountLabel(state.noteSteps));
         if (guestStep != null) paintGuestBar(guestStep);
       }
       const players = pack.players && typeof pack.players === 'object' ? pack.players : {};
@@ -752,11 +747,6 @@ export async function createControllerView({ code, name } = {}) {
     if (!state.audioReady) return;
     socket.sendControl({ loop: 'clear', fromEditor: true, instrument: state.instrument });
   });
-  el.bars.addEventListener('click', () => {
-    if (!state.audioReady) return;
-    socket.sendControl({ loopBars: 'cycle' });
-  });
-
   el.fxDetail.addEventListener('click', () => {
     renderGuestSliders();
     el.fxSheet.hidden = false;
@@ -784,7 +774,6 @@ export async function createControllerView({ code, name } = {}) {
   paintIconButton(el.loop, 'loop', 'Rec');
   paintGuestClear();
   paintIconButton(el.notes, 'notes', 'Notes');
-  paintIconButton(el.bars, 'bars', barCountLabel(state.noteSteps));
   paintIconButton(el.noteUndo, 'undo', 'Undo');
   paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
   paintIconButton(el.noteRedo, 'redo', 'Redo');
