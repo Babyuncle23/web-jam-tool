@@ -136,7 +136,7 @@ export const DRUM_PRESETS = {
   jersey: {
     id: 'jersey',
     label: 'Jersey Club',
-    pattern: { kick: [0, 3, 6, 8, 11, 14], snare: [4, 12], hat: [2, 6, 10, 14], clap: [4, 12], openhat: [], tom: [], cowbell: [] },
+    pattern: { kick: [0, 3, 6, 8, 11, 14], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
   },
   clear: {
     id: 'clear',
