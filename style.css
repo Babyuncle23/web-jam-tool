@@ -769,6 +769,17 @@ input[type='range'] {
   cursor: default;
 }
 
+.drum-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.drum-picker__open {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .host-pad {
   min-height: 240px;
   height: 46vh;
@@ -793,7 +804,7 @@ input[type='range'] {
 .host-tools > .root-picker,
 .host-tools > .chips--roots,
 .host-tools > .tempo-row,
-.host-tools > #btn-drums,
+.host-tools > .drum-picker,
 .host-tools > .fx-stack,
 .host-tools > .instrument-grid,
 .host-tools > .loop-actions {

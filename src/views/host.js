@@ -107,6 +107,7 @@ export async function createHostView() {
     audioStatus: document.getElementById('host-audio-status'),
     drumSource: document.getElementById('drum-source'),
     transport: document.getElementById('btn-transport'),
+    drumTransport: document.getElementById('host-drums-transport'),
     sequencer: document.getElementById('sequencer'),
     pad: document.getElementById('host-pad'),
     canvas: document.getElementById('host-pad-canvas'),
@@ -158,6 +159,8 @@ export async function createHostView() {
     exportClose: document.getElementById('export-close'),
     exportError: document.getElementById('export-error'),
     drumsOpen: document.getElementById('btn-drums'),
+    drumPresetPrev: document.getElementById('drum-preset-prev'),
+    drumPresetNext: document.getElementById('drum-preset-next'),
     drumsSheet: document.getElementById('host-drums-sheet'),
     drumsClose: document.getElementById('host-drums-close'),
     masterSheet: document.getElementById('host-master-sheet'),
@@ -249,6 +252,7 @@ export async function createHostView() {
       octaves: state.octaves,
       loopBars: state.noteSteps,
       bpm: state.bpm,
+      transport: Boolean(audio?.engine.transportRunning),
       masterFx: {
         division: state.masterFx.division,
         cutoff: state.masterFx.cutoff,
@@ -658,6 +662,23 @@ export async function createHostView() {
 
   function markDrumPreset(id) {
     el.drumPresets.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('is-picked', chip.dataset.preset === id));
+    const preset = DRUM_PRESETS[id];
+    if (el.drumsOpen) el.drumsOpen.textContent = preset ? `Drums · ${preset.label}` : 'Drums';
+  }
+
+  function pickDrumPreset(id) {
+    const preset = DRUM_PRESETS[id];
+    if (!preset) return;
+    state.drumPreset = id;
+    applyPattern(preset.pattern, preset.span);
+    markDrumPreset(id);
+  }
+
+  function cycleDrumPreset(direction) {
+    const ids = Object.keys(DRUM_PRESETS);
+    const index = ids.indexOf(state.drumPreset);
+    const next = index < 0 ? (direction > 0 ? 0 : ids.length - 1) : (index + direction + ids.length) % ids.length;
+    pickDrumPreset(ids[next]);
   }
 
   function renderDrumPresets() {
@@ -666,14 +687,16 @@ export async function createHostView() {
       const button = pressable(`chip${preset.id === state.drumPreset ? ' is-picked' : ''}`);
       button.dataset.preset = preset.id;
       button.textContent = preset.label;
-      button.addEventListener('click', () => {
-        state.drumPreset = preset.id;
-        applyPattern(preset.pattern, preset.span);
-        markDrumPreset(preset.id);
-      });
+      button.addEventListener('click', () => pickDrumPreset(preset.id));
       el.drumPresets.append(button);
     }
+    markDrumPreset(state.drumPreset);
   }
+
+  el.drumPresetPrev?.replaceChildren(chipIcon('prev'));
+  el.drumPresetNext?.replaceChildren(chipIcon('next'));
+  el.drumPresetPrev?.addEventListener('click', () => cycleDrumPreset(-1));
+  el.drumPresetNext?.addEventListener('click', () => cycleDrumPreset(1));
 
   el.drumsOpen?.addEventListener('click', () => {
     el.drumsSheet.hidden = false;
@@ -1015,14 +1038,19 @@ export async function createHostView() {
     pickInstrument(chip.dataset.instrument);
   });
 
-  el.hostScreen.querySelector('#bpm-presets').addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-bpm]');
-    if (!chip) return;
-    state.bpm = Number(chip.dataset.bpm);
+  function setSharedBpm(bpm) {
+    state.bpm = Number(bpm);
     audio?.engine.setBpm(state.bpm);
-    selectInRow(el.hostScreen.querySelector('#bpm-presets'), 'bpm', String(state.bpm));
+    el.hostScreen.querySelectorAll('[data-group="bpm"]').forEach((row) => selectInRow(row, 'bpm', String(state.bpm)));
     syncPadPulse(Boolean(audio?.engine.transportRunning), transportAbsoluteStep(), { retune: true });
     publishHarmony();
+  }
+
+  el.hostScreen.querySelectorAll('[data-group="bpm"]').forEach((row) => {
+    row.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-bpm]');
+      if (chip) setSharedBpm(chip.dataset.bpm);
+    });
   });
 
   function ensureTransport() {
@@ -1548,6 +1576,7 @@ export async function createHostView() {
     setControlEnabled(el.loopClear, true);
     setControlEnabled(el.notes, true);
     setControlEnabled(el.transport, true);
+    setControlEnabled(el.drumTransport, true);
     el.audioStatus.textContent = 'audio: on';
     el.audioStatus.dataset.state = 'online';
   }
@@ -1750,7 +1779,8 @@ export async function createHostView() {
     }
   });
 
-  el.transport.addEventListener('click', () => {
+  /** Play/Stop is shared: the topbar button, the drum machine button, and guest toggles all land here. */
+  function toggleTransport() {
     if (!audio) return;
     if (audio.engine.transportRunning) {
       audio.engine.stopTransport();
@@ -1764,7 +1794,11 @@ export async function createHostView() {
       audio.engine.startTransport();
       paintTransport(true);
     }
-  });
+    publishHarmony();
+  }
+
+  el.transport.addEventListener('click', toggleTransport);
+  el.drumTransport.addEventListener('click', toggleTransport);
 
   /* ---------- One sound path for the host pad and for guests ---------- */
 
@@ -1960,6 +1994,7 @@ export async function createHostView() {
     if (data.history === 'undo' && audio) undoOwn(data.peerId);
     if (data.history === 'undo-all' && audio) undoAll();
     if (data.history === 'redo' && audio) redoShared();
+    if (data.transport === 'toggle' && audio) toggleTransport();
     if (data.erase === 'show' && audio) refreshLoops();
     const instrument = namedInstrument(data.instrument);
     if (instrument) {
@@ -2055,8 +2090,11 @@ export async function createHostView() {
   });
 
   function paintTransport(running) {
-    paintIconButton(el.transport, running ? 'stop' : 'play', running ? 'Stop' : 'Play');
-    el.transport.classList.toggle('is-on', Boolean(running));
+    for (const button of [el.transport, el.drumTransport]) {
+      if (!button) continue;
+      paintIconButton(button, running ? 'stop' : 'play', running ? 'Stop' : 'Play');
+      button.classList.toggle('is-on', Boolean(running));
+    }
   }
 
   function paintHostActions() {

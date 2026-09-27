@@ -30,6 +30,7 @@ export async function createControllerView({ code, name } = {}) {
     splashError: document.getElementById('controller-splash-error'),
     loop: document.getElementById('controller-loop'),
     loopClear: document.getElementById('controller-loop-clear'),
+    transport: document.getElementById('controller-transport'),
     instruments: document.getElementById('controller-instruments'),
     fx: document.getElementById('controller-fx'),
     notes: document.getElementById('controller-notes'),
@@ -63,6 +64,7 @@ export async function createControllerView({ code, name } = {}) {
     octaves: defaultOctaves(),
     audioReady: false,
     recording: false,
+    transportRunning: false,
     marks: [],
     noteSteps: LOOP_STEPS,
     bpm: 120,
@@ -145,6 +147,7 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loop, true);
     setControlEnabled(el.loopClear, true);
     setControlEnabled(el.notes, true);
+    setControlEnabled(el.transport, true);
     el.splash.hidden = true;
     el.splash.dataset.phase = 'ready';
   }
@@ -159,6 +162,7 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loop, false);
     setControlEnabled(el.loopClear, false);
     setControlEnabled(el.notes, false);
+    setControlEnabled(el.transport, false);
   }
 
   function rollFocusMidi() {
@@ -399,9 +403,22 @@ export async function createControllerView({ code, name } = {}) {
     }
   }
 
+  function paintGuestTransport() {
+    paintIconButton(el.transport, state.transportRunning ? 'stop' : 'play', state.transportRunning ? 'Stop' : 'Play');
+    el.transport.classList.toggle('is-on', state.transportRunning);
+  }
+
+  function syncGuestTransport(running) {
+    const next = Boolean(running);
+    if (next === state.transportRunning) return;
+    state.transportRunning = next;
+    paintGuestTransport();
+  }
+
   socket.on(EVENTS.pulse, ({ step, running }) => {
     if (!(step >= 0)) return;
     paintGuestBar(step);
+    syncGuestTransport(running);
     syncGuestPulse(Boolean(running), step);
     if (el.notesSheet.hidden || !(state.noteSteps > 0)) return;
     setRollPlayhead(el.noteTape, step % state.noteSteps);
@@ -558,6 +575,7 @@ export async function createControllerView({ code, name } = {}) {
         syncGuestPulse(el.pad.classList.contains('is-pulsing'), guestStep ?? 0, { retune: true });
       }
     }
+    if (typeof payload?.transport === 'boolean') syncGuestTransport(payload.transport);
     if (Number.isFinite(Number(payload?.loopBars))) {
       state.noteSteps = Number(payload.loopBars);
       if (guestStep != null) paintGuestBar(guestStep);
@@ -698,6 +716,13 @@ export async function createControllerView({ code, name } = {}) {
     setRollSelectMode(el.noteTape, guestSelectMode);
   });
 
+  el.transport.addEventListener('click', () => {
+    if (!state.audioReady) return;
+    state.transportRunning = !state.transportRunning;
+    paintGuestTransport();
+    socket.sendControl({ transport: 'toggle' });
+  });
+
   el.loop.addEventListener('click', () => {
     if (!state.audioReady) return;
     setRecording(!state.recording);
@@ -772,6 +797,7 @@ export async function createControllerView({ code, name } = {}) {
     }
   }
   paintIconButton(el.loop, 'loop', 'Rec');
+  paintGuestTransport();
   paintGuestClear();
   paintIconButton(el.notes, 'notes', 'Notes');
   paintIconButton(el.noteUndo, 'undo', 'Undo');

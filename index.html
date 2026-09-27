@@ -148,7 +148,11 @@
             </div>
           </div>
 
-          <button id="btn-drums" class="btn btn--ghost btn--xl" type="button">Drums</button>
+          <div class="drum-picker">
+            <button id="drum-preset-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous drum pattern"></button>
+            <button id="btn-drums" class="btn btn--ghost btn--xl drum-picker__open" type="button">Drums</button>
+            <button id="drum-preset-next" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Next drum pattern"></button>
+          </div>
 
           <div class="fx-stack">
             <section class="fx-panel">
@@ -228,9 +232,17 @@
               <button class="mix-flag" type="button" data-mix="solo" data-voice="drums" aria-pressed="false">S</button>
               <button class="mix-flag" type="button" data-mix="mute" data-voice="drums" aria-pressed="false">M</button>
             </div>
+            <button id="host-drums-transport" class="btn btn--ghost" type="button" disabled>Play</button>
             <button id="host-drums-close" class="btn btn--primary" type="button">Done</button>
           </div>
           <div class="tool-row" id="drum-presets"></div>
+          <div class="tool-row" data-group="bpm">
+            <span class="tool-row__label">BPM</span>
+            <button class="chip" type="button" data-bpm="80">80</button>
+            <button class="chip" type="button" data-bpm="96">96</button>
+            <button class="chip is-picked" type="button" data-bpm="120">120</button>
+            <button class="chip" type="button" data-bpm="140">140</button>
+          </div>
           <label class="zoom-row">
             <span>Zoom</span>
             <input id="drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
@@ -372,6 +384,7 @@
           </div>
         </section>
         <div class="loop-actions">
+          <button id="controller-transport" class="btn btn--ghost btn--xl" type="button" disabled>Play</button>
           <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
           <button id="controller-notes" class="btn btn--ghost btn--xl" type="button" disabled>Notes</button>
         </div>
