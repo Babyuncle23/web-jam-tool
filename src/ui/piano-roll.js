@@ -21,7 +21,7 @@ const OCTAVE = 12;
  * Only the left-hand keys preview a pitch, and that preview writes nothing.
  * Pitches outside the current scale are dimmed and do not accept new notes.
  * A drag moves one note. The whole selection moves only while select and move is on.
- * Notes owned by other players render dashed and are read-only.
+ * Notes owned by other players render dashed and edit like any other note.
  * A mouse drag on empty space draws a selection marquee only in that mode.
  * The playhead is a div, not a frame loop.
  */
@@ -128,8 +128,9 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
       strip.dataset.owner = note.owner || '';
       if (note.owner && owner && note.owner !== owner) strip.classList.add('is-remote');
       if (scrollEl.__selected?.has(note.voiceId)) strip.classList.add('is-selected');
+      const width = Math.max(stepPx - 2, duration * stepPx - 2);
       strip.style.left = `${note.step * stepPx + 1}px`;
-      strip.style.width = `${Math.max(stepPx - 2, duration * stepPx - 2)}px`;
+      strip.style.width = `${width}px`;
       strip.style.top = `${row * ROW_PX + 3}px`;
       strip.style.background = colorFor(note);
       strip.textContent = midiToName(midi);
@@ -137,6 +138,7 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
       const grip = document.createElement('span');
       grip.className = 'roll__resize';
       grip.setAttribute('aria-hidden', 'true');
+      grip.style.width = `${Math.min(22, Math.max(8, Math.round(width * 0.3)))}px`;
       strip.append(grip);
       bindStrip(strip, scrollEl, safeSteps);
       bindResize(grip, strip, note, duration, safeSteps, onResize);
@@ -167,7 +169,6 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   scrollEl.__onMoveGroup = onMoveGroup || onMove || null;
   scrollEl.__inScale = inScale || null;
   scrollEl.__instrument = selectionKey;
-  scrollEl.__owner = owner || null;
   scrollEl.__selectMode = Boolean(selectMode);
   scrollEl.__midis = rows;
   scrollEl.__steps = safeSteps;
@@ -334,7 +335,6 @@ function bindPan(scrollEl) {
       const ids = [];
       grid.querySelectorAll('.roll__note').forEach((strip) => {
         if (strip.dataset.instrument !== scrollEl.__instrument) return;
-        if (isRemote(scrollEl, strip)) return;
         if (intersects(noteBox(strip), rect)) ids.push(strip.dataset.voice);
       });
       setSelected(scrollEl, ids);
@@ -366,10 +366,6 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
   grip.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     event.stopPropagation();
-    if (isRemote(grip.closest('.roll'), strip)) {
-      event.preventDefault();
-      return;
-    }
     event.preventDefault();
     try {
       grip.setPointerCapture?.(event.pointerId);
@@ -400,11 +396,6 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', up);
   });
-}
-
-/** True when the strip belongs to a different player than the roll's owner. */
-function isRemote(scrollEl, strip) {
-  return Boolean(scrollEl?.__owner && strip.dataset.owner && strip.dataset.owner !== scrollEl.__owner);
 }
 
 function midiAtEvent(scrollEl, event) {
@@ -446,14 +437,7 @@ function bindAudition(el, midi, onAudition) {
 
 function bindStrip(strip, scrollEl, steps) {
   strip.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    if (isRemote(scrollEl, strip)) {
-      // Another player's note: absorb the tap so it neither edits nor spawns a note.
-      event.stopPropagation();
-      event.preventDefault();
-      return;
-    }
-    if (event.target.closest('.roll__resize')) return;
+    if (event.button !== 0 || event.target.closest('.roll__resize')) return;
     if (strip.dataset.instrument !== scrollEl.__instrument) return;
     event.stopPropagation();
     event.preventDefault();

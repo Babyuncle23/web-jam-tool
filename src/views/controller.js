@@ -37,6 +37,7 @@ export async function createControllerView({ code, name } = {}) {
     noteTape: document.getElementById('controller-note-tape'),
     notesClose: document.getElementById('controller-notes-close'),
     noteUndo: document.getElementById('controller-undo'),
+    noteUndoAll: document.getElementById('controller-undo-all'),
     noteRedo: document.getElementById('controller-redo'),
     noteClear: document.getElementById('controller-note-clear'),
     bars: document.getElementById('controller-bars'),
@@ -65,6 +66,7 @@ export async function createControllerView({ code, name } = {}) {
     bpm: 96,
     masterFx: { division: '16n', cutoff: 0, grit: 0, wah: 0, hold: false },
     canUndo: false,
+    canUndoAll: false,
     canRedo: false,
     clearUndo: false,
     peerId: null,
@@ -205,6 +207,7 @@ export async function createControllerView({ code, name } = {}) {
 
   function syncGuestHistory() {
     setControlEnabled(el.noteUndo, state.canUndo);
+    setControlEnabled(el.noteUndoAll, state.canUndoAll);
     setControlEnabled(el.noteRedo, state.canRedo);
   }
 
@@ -575,7 +578,8 @@ export async function createControllerView({ code, name } = {}) {
       state.marks = marks;
       const mine = players[state.peerId];
       state.canUndo = Boolean(mine?.canUndo);
-      state.canRedo = Boolean(mine?.canRedo);
+      state.canUndoAll = Boolean(pack.canUndoAll);
+      state.canRedo = Boolean(pack.canRedo);
       if (typeof mine?.clearUndo === 'boolean') {
         state.clearUndo = mine.clearUndo;
         paintGuestClear();
@@ -691,7 +695,7 @@ export async function createControllerView({ code, name } = {}) {
       socket.sendControl({ loop: 'undo-clear' });
       return;
     }
-    state.marks = state.marks.filter((note) => note.owner !== state.peerId);
+    state.marks = [];
     state.clearUndo = true;
     paintGuestClear();
     if (!el.notesSheet.hidden) paintGuestNotes();
@@ -714,6 +718,7 @@ export async function createControllerView({ code, name } = {}) {
     el.notesSheet.hidden = true;
   });
   el.noteUndo.addEventListener('click', () => socket.sendControl({ history: 'undo' }));
+  el.noteUndoAll.addEventListener('click', () => socket.sendControl({ history: 'undo-all' }));
   el.noteRedo.addEventListener('click', () => socket.sendControl({ history: 'redo' }));
   el.noteClear.addEventListener('click', () => {
     if (!state.audioReady) return;
@@ -753,6 +758,7 @@ export async function createControllerView({ code, name } = {}) {
   paintIconButton(el.notes, 'notes', 'Notes');
   paintIconButton(el.bars, 'bars', barCountLabel(state.noteSteps));
   paintIconButton(el.noteUndo, 'undo', 'Undo');
+  paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
   paintIconButton(el.noteRedo, 'redo', 'Redo');
   paintIconButton(el.noteClear, 'erase', 'clr curr inst');
   paintIconButton(el.notesClose, 'done', 'Done');

@@ -1,6 +1,7 @@
 /**
  * Shared-notes check: a note a guest places in its roll must render in the
- * host's roll and in another guest's roll, marked read-only (is-remote).
+ * host's roll and in another guest's roll, be editable from anywhere, and
+ * clr all must wipe every player's loop (drums aside) with an undo path.
  */
 import puppeteer from 'puppeteer-core';
 
@@ -39,6 +40,44 @@ async function clickSelector(page, selector) {
   await page.mouse.click(point.x, point.y);
 }
 
+/** Tap an empty in-scale cell of an open roll to place a note. */
+async function placeNote(page, tapeSelector, step = 4) {
+  const tap = await page.evaluate(`(() => {
+    const tape = document.querySelector(${JSON.stringify(tapeSelector)});
+    const grid = tape.querySelector('.roll__grid');
+    const midis = tape.__midis;
+    const row = midis.findIndex((m) => m % 12 === 0);
+    tape.scrollTop = 26 + row * 28 - tape.clientHeight / 2;
+    tape.scrollLeft = 0;
+    const rect = grid.getBoundingClientRect();
+    return { x: rect.left + ${step} * tape.__stepPx + tape.__stepPx / 2, y: rect.top + row * 28 + 14, midi: midis[row] };
+  })()`);
+  await page.mouse.click(tap.x, tap.y);
+  return tap.midi;
+}
+
+/** Tap the first note strip of an open roll (deletes it). */
+async function tapFirstStrip(page, tapeSelector) {
+  const point = await page.evaluate(`(() => {
+    const strip = document.querySelector(${JSON.stringify(tapeSelector)} + ' .roll__note');
+    if (!strip) return null;
+    strip.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = strip.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  })()`);
+  if (!point) return false;
+  await page.mouse.click(point.x, point.y);
+  return true;
+}
+
+const loopTotal = `(() => {
+  const loops = window.__jam.audio?.loops;
+  if (!loops) return 0;
+  let total = 0;
+  for (const recorder of loops.values()) total += recorder.notes().length;
+  return total;
+})()`;
+
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
@@ -75,63 +114,53 @@ try {
   await guestB.goto(`${BASE}/?role=controller&code=${code}`, { waitUntil: 'domcontentloaded' });
   await pollExpr(guestB, '({ ok: document.getElementById("controller-splash").hidden })');
 
-  // Guest A opens the notes sheet and taps one in-scale cell (a C row).
+  // Guest A places a note; host and guest B must see it.
   await clickSelector(guestA, '#controller-notes');
-  await pollExpr(guestA, `(() => {
-    const tape = document.getElementById('controller-note-tape');
-    return { ok: Boolean(tape?.__midis?.length), rows: tape?.__midis?.length || 0 };
-  })()`);
-  const tap = await guestA.evaluate(`(() => {
-    const tape = document.getElementById('controller-note-tape');
-    const grid = tape.querySelector('.roll__grid');
-    const midis = tape.__midis;
-    const row = midis.findIndex((m) => m % 12 === 0);
-    tape.scrollTop = 26 + row * 28 - tape.clientHeight / 2;
-    tape.scrollLeft = 0;
-    const rect = grid.getBoundingClientRect();
-    return {
-      x: rect.left + 4 * tape.__stepPx + tape.__stepPx / 2,
-      y: rect.top + row * 28 + 14,
-      midi: midis[row],
-    };
-  })()`);
-  await guestA.mouse.click(tap.x, tap.y);
-
-  // Host sees the guest note in its recorder and in the open roll.
-  await pollExpr(host, `(() => {
-    const loops = window.__jam.audio?.loops;
-    if (!loops) return { ok: false };
-    let total = 0;
-    for (const recorder of loops.values()) total += recorder.notes().length;
-    return { ok: total >= 1, total };
-  })()`);
+  await pollExpr(guestA, '({ ok: Boolean(document.getElementById("controller-note-tape")?.__midis?.length) })');
+  const midi = await placeNote(guestA, '#controller-note-tape');
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 1, total: ${loopTotal} }))()`);
 
   await clickSelector(host, '#btn-notes');
-  const hostRoll = await pollExpr(host, `(() => {
-    const all = document.querySelectorAll('#host-note-tape .roll__note');
-    const remote = document.querySelectorAll('#host-note-tape .roll__note.is-remote');
-    return { ok: all.length >= 1 && remote.length >= 1, all: all.length, remote: remote.length };
-  })()`);
+  const hostSees = await pollExpr(host, `(() => ({
+    ok: document.querySelectorAll('#host-note-tape .roll__note').length >= 1,
+    all: document.querySelectorAll('#host-note-tape .roll__note').length,
+  }))()`);
 
-  // Guest B sees the same strip in its own roll, read-only.
   await clickSelector(guestB, '#controller-notes');
-  const guestBRoll = await pollExpr(guestB, `(() => {
-    const all = document.querySelectorAll('#controller-note-tape .roll__note');
-    const remote = document.querySelectorAll('#controller-note-tape .roll__note.is-remote');
-    return { ok: all.length >= 1 && remote.length === all.length, all: all.length, remote: remote.length };
-  })()`);
+  const guestBSees = await pollExpr(guestB, `(() => ({
+    ok: document.querySelectorAll('#controller-note-tape .roll__note').length >= 1,
+    all: document.querySelectorAll('#controller-note-tape .roll__note').length,
+  }))()`);
 
-  // Guest A sees it as its own (editable, not remote).
-  const guestARoll = await pollExpr(guestA, `(() => {
-    const all = document.querySelectorAll('#controller-note-tape .roll__note');
-    const remote = document.querySelectorAll('#controller-note-tape .roll__note.is-remote');
-    return { ok: all.length >= 1 && remote.length === 0, all: all.length, remote: remote.length };
-  })()`);
+  // Guest B edits guest A's note: a tap deletes it.
+  if (!(await tapFirstStrip(guestB, '#controller-note-tape'))) throw new Error('guest B found no strip to tap');
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} === 0, total: ${loopTotal} }))()`);
+
+  // The host's Undo all brings it back on every screen.
+  await clickSelector(host, '#host-undo-all');
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 1, total: ${loopTotal} }))()`);
+  await pollExpr(guestA, `(() => ({
+    ok: document.querySelectorAll('#controller-note-tape .roll__note').length >= 1,
+  }))()`);
+
+  // Host also places a note, then guest B's clr all wipes every loop.
+  await placeNote(host, '#host-note-tape', 8);
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 2, total: ${loopTotal} }))()`);
+  await clickSelector(guestB, '#controller-notes-close');
+  await clickSelector(guestB, '#controller-loop-clear');
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} === 0, total: ${loopTotal} }))()`);
+  await pollExpr(guestA, `(() => ({
+    ok: document.querySelectorAll('#controller-note-tape .roll__note').length === 0,
+  }))()`);
+
+  // clr all is undoable: the button turns into undo until the next bar wrap.
+  await clickSelector(guestB, '#controller-loop-clear');
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 2, total: ${loopTotal} }))()`);
 
   const serious = errors.filter((line) => /pageerror|TypeError|ReferenceError|is not a function/i.test(line));
   if (serious.length) throw new Error(serious.join('\n'));
 
-  console.log(JSON.stringify({ ok: true, code, midi: tap.midi, hostRoll, guestARoll, guestBRoll, errors }, null, 2));
+  console.log(JSON.stringify({ ok: true, code, midi, hostSees, guestBSees, errors }, null, 2));
 } finally {
   await browser.close();
 }

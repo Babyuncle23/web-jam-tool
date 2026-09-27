@@ -24,7 +24,6 @@ import {
   pitchChoice,
   resolveGesture,
 } from '../audio/synth.js';
-import { createNoteHistory } from '../audio/note-history.js';
 import {
   DRUM_FX,
   FX_COLORS,
@@ -139,6 +138,7 @@ export async function createHostView() {
     noteTape: document.getElementById('host-note-tape'),
     notesClose: document.getElementById('host-notes-close'),
     noteUndo: document.getElementById('host-undo'),
+    noteUndoAll: document.getElementById('host-undo-all'),
     noteRedo: document.getElementById('host-redo'),
     noteClear: document.getElementById('host-note-clear'),
     bars: document.getElementById('btn-bars'),
@@ -293,24 +293,102 @@ export async function createHostView() {
 
   const stepButtons = new Map();
   const stepColumns = [];
-  const histories = new Map();
+  /**
+   * Two undo stacks: one per editor (their own changes) and one shared.
+   * Entries snapshot every recorder about to change. A single shared redo
+   * stack serves both undos and knows which stack to push back onto.
+   */
+  const ownPast = new Map();
+  const globalPast = [];
+  const sharedFuture = [];
   /** One-shot restore for the transport Clear button. Dropped on the next loop downbeat. */
   const clearUndos = new Map();
   let litStep = -1;
 
-  function historyFor(playerId) {
-    let history = histories.get(playerId);
-    if (!history) {
-      history = createNoteHistory();
-      histories.set(playerId, history);
-    }
-    return history;
+  function pushCapped(stack, entry) {
+    stack.push(entry);
+    if (stack.length > 40) stack.shift();
   }
 
-  function rememberNotes(playerId) {
-    const recorder = recorderFor(playerId);
-    if (!recorder) return;
-    historyFor(playerId).push(recorder.exportEvents());
+  /** Pre-change state of every recorder that is about to be touched. */
+  function snapshotOf(playerIds) {
+    return [...playerIds].map((id) => ({ playerId: id, events: audio?.loops.get(id)?.exportEvents() ?? null }));
+  }
+
+  function pushEdit(editorId, targets) {
+    const entry = { targets };
+    let own = ownPast.get(editorId);
+    if (!own) {
+      own = [];
+      ownPast.set(editorId, own);
+    }
+    pushCapped(own, entry);
+    pushCapped(globalPast, entry);
+    sharedFuture.length = 0;
+  }
+
+  function rememberEdit(editorId, targetIds) {
+    if (!audio || !targetIds?.length) return;
+    pushEdit(editorId, snapshotOf(targetIds));
+  }
+
+  function restoreTargets(targets) {
+    if (!audio) return;
+    for (const { playerId, events } of targets || []) {
+      const recorder = recorderFor(playerId);
+      if (!recorder) continue;
+      if (events) recorder.restoreEvents(events);
+      else recorder.clear();
+    }
+  }
+
+  /** The recorder that owns a strip. voiceIds are unique across players. */
+  function ownerOfVoice(voiceId) {
+    if (!audio) return null;
+    for (const [playerId, recorder] of audio.loops) {
+      if (recorder.notes().some((note) => note.voiceId === voiceId)) return playerId;
+    }
+    return null;
+  }
+
+  function undoOwn(editorId) {
+    const entry = ownPast.get(editorId)?.pop();
+    if (!entry || !audio) return false;
+    sharedFuture.push({
+      targets: snapshotOf(entry.targets.map((item) => item.playerId)),
+      origin: { own: editorId },
+    });
+    restoreTargets(entry.targets);
+    refreshLoops();
+    return true;
+  }
+
+  function undoAll() {
+    const entry = globalPast.pop();
+    if (!entry || !audio) return false;
+    sharedFuture.push({ targets: snapshotOf(entry.targets.map((item) => item.playerId)), origin: null });
+    restoreTargets(entry.targets);
+    refreshLoops();
+    return true;
+  }
+
+  function redoShared() {
+    const entry = sharedFuture.pop();
+    if (!entry || !audio) return false;
+    const current = snapshotOf(entry.targets.map((item) => item.playerId));
+    if (entry.origin?.own) {
+      let own = ownPast.get(entry.origin.own);
+      if (!own) {
+        own = [];
+        ownPast.set(entry.origin.own, own);
+      }
+      pushCapped(own, { targets: current });
+    } else {
+      pushCapped(globalPast, { targets: current });
+    }
+    restoreTargets(entry.targets);
+    refreshLoops();
+    return true;
   }
 
   let seqTapBlocked = false;
@@ -976,9 +1054,9 @@ export async function createHostView() {
     paintIconButton(el.loopClear, undo ? 'undo' : 'erase', undo ? 'undo' : 'clr all');
   }
 
-  function armClearUndo(playerId, events) {
+  function armClearUndo(playerId, targets) {
     const origin = litStep >= 0 ? litStep % Math.max(1, state.noteSteps) : -1;
-    clearUndos.set(playerId, { events, leftBar: origin > 0 });
+    clearUndos.set(playerId, { targets, leftBar: origin > 0 });
     if (playerId === 'host') paintHostClear(true);
     refreshLoops();
   }
@@ -992,7 +1070,7 @@ export async function createHostView() {
   function restoreClearUndo(playerId) {
     const pending = clearUndos.get(playerId);
     if (!pending) return false;
-    recorderFor(playerId)?.restoreEvents(pending.events);
+    restoreTargets(pending.targets);
     finishClearUndo(playerId);
     return true;
   }
@@ -1011,14 +1089,14 @@ export async function createHostView() {
     if (!audio) return;
     if (clearUndos.has('host')) {
       restoreClearUndo('host');
-      log('host loop restored', 'loop');
+      log('loops restored', 'loop');
       return;
     }
-    const recorder = recorderFor('host');
-    const events = recorder.exportEvents();
-    recorder.clear();
-    armClearUndo('host', events);
-    log('host loop cleared', 'loop');
+    const targets = snapshotOf(audio.loops.keys());
+    pushEdit('host', targets);
+    for (const recorder of audio.loops.values()) recorder.clear();
+    armClearUndo('host', targets);
+    log('all loops cleared', 'loop');
   });
 
   function rollFocusMidi() {
@@ -1095,13 +1173,23 @@ export async function createHostView() {
     });
   }
 
-  function moveHostGroup(playerId, changes) {
-    const recorder = recorderFor(playerId);
-    if (!recorder || !changes?.length) return;
-    rememberNotes(playerId);
+  /** Dragged strips can belong to any recorder — route each by voiceId. */
+  function moveSharedGroup(editorId, changes) {
+    if (!audio || !changes?.length) return;
+    const jobs = [];
+    const targets = new Set();
     for (const change of changes) {
+      const ownerId = ownerOfVoice(change.voiceId);
+      if (ownerId == null) continue;
+      const recorder = audio.loops.get(ownerId);
       const note = recorder.notes().find((item) => item.voiceId === change.voiceId);
       if (!note) continue;
+      targets.add(ownerId);
+      jobs.push({ recorder, note, change });
+    }
+    if (!jobs.length) return;
+    rememberEdit(editorId, [...targets]);
+    for (const { recorder, note, change } of jobs) {
       const sounding = pitchesFor(note)[0];
       const prefer = change.midi > sounding ? 'up' : change.midi < sounding ? 'down' : undefined;
       const choice = choiceFor(change.midi, note, prefer);
@@ -1116,9 +1204,9 @@ export async function createHostView() {
   }
 
   function syncHostHistory() {
-    const history = historyFor('host');
-    setControlEnabled(el.noteUndo, history.canUndo);
-    setControlEnabled(el.noteRedo, history.canRedo);
+    setControlEnabled(el.noteUndo, Boolean(ownPast.get('host')?.length));
+    setControlEnabled(el.noteUndoAll, globalPast.length > 0);
+    setControlEnabled(el.noteRedo, sharedFuture.length > 0);
   }
 
   function hostNoteStepPx() {
@@ -1137,20 +1225,25 @@ export async function createHostView() {
       pitchesFor,
       colorFor: (note) => INSTRUMENT_COLORS[normalizeInstrument(note.instrument)] || '#e0a12e',
       onDelete: (voiceId) => {
-        rememberNotes('host');
-        recorderFor('host')?.removeNote(voiceId);
+        const ownerId = ownerOfVoice(voiceId);
+        if (ownerId == null) return;
+        rememberEdit('host', [ownerId]);
+        audio?.loops.get(ownerId)?.removeNote(voiceId);
         refreshLoops();
         log('note removed from the loop', 'loop');
       },
       instrument: state.instrument,
       owner: 'host',
       selectMode,
-      onMoveGroup: (changes) => moveHostGroup('host', changes),
+      onMoveGroup: (changes) => moveSharedGroup('host', changes),
       onResize: (voiceId, change) => {
-        const note = recorderFor('host')?.notes().find((item) => item.voiceId === voiceId);
+        const ownerId = ownerOfVoice(voiceId);
+        if (ownerId == null) return;
+        const recorder = audio.loops.get(ownerId);
+        const note = recorder?.notes().find((item) => item.voiceId === voiceId);
         if (!note) return;
-        rememberNotes('host');
-        recorderFor('host')?.moveNote(voiceId, {
+        rememberEdit('host', [ownerId]);
+        recorder.moveNote(voiceId, {
           step: note.step,
           x: note.x,
           degree: note.degree,
@@ -1165,7 +1258,7 @@ export async function createHostView() {
         const instrument = state.instrument;
         const draft = { x: 0.5, y: 0.55, mode: 'single', instrument };
         const choice = choiceFor(midi, draft);
-        rememberNotes('host');
+        rememberEdit('host', ['host']);
         writePlacedNotes(recorderFor('host'), { step, instrument, x: choice.x, y: 0.55, degree: choice.degree, midi });
         ensureTransport();
         refreshLoops();
@@ -1203,34 +1296,29 @@ export async function createHostView() {
 
   el.bars.addEventListener('click', () => cycleSharedLength());
 
-  function applyHistory(playerId, direction) {
-    const recorder = recorderFor(playerId);
-    if (!recorder) return false;
-    const history = historyFor(playerId);
-    const next = direction === 'redo' ? history.redo(recorder.exportEvents()) : history.undo(recorder.exportEvents());
-    if (!next) return false;
-    recorder.restoreEvents(next);
-    if (!el.notesSheet.hidden) paintHostRoll();
-    else if (playerId === 'host') syncHostHistory();
-    shareLoop();
-    return true;
-  }
-
   /** Every player's loop, broadcast as one map so all editors see all notes. */
   function shareLoop() {
     if (!audio) return;
     const players = {};
-    for (const [playerId, recorder] of audio.loops) {
-      const history = histories.get(playerId);
+    // Players with a pending clear-undo but no recorder still need their flag.
+    const ids = new Set([...audio.loops.keys(), ...clearUndos.keys(), ...ownPast.keys()]);
+    for (const playerId of ids) {
+      const recorder = audio.loops.get(playerId);
       players[playerId] = {
-        notes: recorder.notes(),
-        noteSteps: recorder.loopSteps,
-        canUndo: Boolean(history?.canUndo),
-        canRedo: Boolean(history?.canRedo),
+        notes: recorder?.notes() ?? [],
+        noteSteps: recorder?.loopSteps ?? state.noteSteps,
+        canUndo: Boolean(ownPast.get(playerId)?.length),
         clearUndo: clearUndos.has(playerId),
       };
     }
-    socket.broadcastState({ loopNotes: { noteSteps: state.noteSteps, players } });
+    socket.broadcastState({
+      loopNotes: {
+        noteSteps: state.noteSteps,
+        players,
+        canUndoAll: globalPast.length > 0,
+        canRedo: sharedFuture.length > 0,
+      },
+    });
   }
 
   /** Notes from every recorder, tagged with the owning player. */
@@ -1365,14 +1453,15 @@ export async function createHostView() {
   el.notesClose.addEventListener('click', () => {
     el.notesSheet.hidden = true;
   });
-  el.noteUndo.addEventListener('click', () => applyHistory('host', 'undo'));
-  el.noteRedo.addEventListener('click', () => applyHistory('host', 'redo'));
+  el.noteUndo.addEventListener('click', () => undoOwn('host'));
+  el.noteUndoAll.addEventListener('click', () => undoAll());
+  el.noteRedo.addEventListener('click', () => redoShared());
   el.noteClear.addEventListener('click', () => {
     if (!audio) return;
-    rememberNotes('host');
-    recorderFor('host').clearInstrument(state.instrument);
+    rememberEdit('host', [...audio.loops.keys()]);
+    for (const recorder of audio.loops.values()) recorder.clearInstrument(state.instrument);
     refreshLoops();
-    log(`cleared ${state.instrument} from the loop`, 'loop');
+    log(`cleared ${state.instrument} from every loop`, 'loop');
   });
 
   /* ---------- Audio boot ---------- */
@@ -1792,23 +1881,23 @@ export async function createHostView() {
     applyGuestOctave(data);
     if (data.eraseNote && audio) {
       const voiceId = String(data.eraseNote);
-      const recorder = recorderFor(data.peerId);
-      if (recorder?.notes().some((note) => note.voiceId === voiceId)) {
-        rememberNotes(data.peerId);
-        recorder.removeNote(voiceId);
+      const ownerId = ownerOfVoice(voiceId);
+      if (ownerId != null) {
+        rememberEdit(data.peerId, [ownerId]);
+        audio.loops.get(ownerId).removeNote(voiceId);
         refreshLoops();
       }
     }
     if (Array.isArray(data.moveGroup) && data.moveGroup.length && audio) {
-      moveHostGroup(data.peerId, data.moveGroup);
+      moveSharedGroup(data.peerId, data.moveGroup);
     }
     if (data.moveNote && audio) {
       const move = data.moveNote;
-      const recorder = recorderFor(data.peerId);
       const voiceId = String(move?.voiceId ?? '');
-      if (recorder && recorder.notes().some((note) => note.voiceId === voiceId)) {
-        rememberNotes(data.peerId);
-        recorder.moveNote(voiceId, {
+      const ownerId = ownerOfVoice(voiceId);
+      if (ownerId != null) {
+        rememberEdit(data.peerId, [ownerId]);
+        audio.loops.get(ownerId).moveNote(voiceId, {
           step: move.step,
           x: move.x,
           degree: move.degree,
@@ -1822,7 +1911,7 @@ export async function createHostView() {
       const add = data.addNote;
       const instrument = namedInstrument(add?.instrument);
       if (instrument && Number.isFinite(Number(add.step)) && Number.isFinite(Number(add.x))) {
-        rememberNotes(data.peerId);
+        rememberEdit(data.peerId, [data.peerId]);
         writePlacedNotes(recorderFor(data.peerId), {
           step: add.step,
           instrument,
@@ -1835,7 +1924,9 @@ export async function createHostView() {
         refreshLoops();
       }
     }
-    if ((data.history === 'undo' || data.history === 'redo') && audio) applyHistory(data.peerId, data.history);
+    if (data.history === 'undo' && audio) undoOwn(data.peerId);
+    if (data.history === 'undo-all' && audio) undoAll();
+    if (data.history === 'redo' && audio) redoShared();
     if ((data.loopBars === 'cycle' || data.noteLoop === 'cycle') && audio) {
       cycleSharedLength();
     }
@@ -1866,14 +1957,17 @@ export async function createHostView() {
     if (data.loop === 'clear') {
       if (data.fromEditor) {
         const instrument = namedInstrument(data.instrument);
-        rememberNotes(data.peerId);
-        if (instrument) recorder.clearInstrument(instrument);
-        else recorder.clear();
+        rememberEdit(data.peerId, [...audio.loops.keys()]);
+        for (const target of audio.loops.values()) {
+          if (instrument) target.clearInstrument(instrument);
+          else target.clear();
+        }
         refreshLoops();
       } else {
-        const events = recorder.exportEvents();
-        recorder.clear();
-        armClearUndo(data.peerId, events);
+        const targets = snapshotOf(audio.loops.keys());
+        pushEdit(data.peerId, targets);
+        for (const target of audio.loops.values()) target.clear();
+        armClearUndo(data.peerId, targets);
       }
       log(`${data.name ?? 'guest'} cleared ${data.fromEditor ? data.instrument || 'the loop' : 'the loop'}`, 'loop');
     }
@@ -1941,6 +2035,7 @@ export async function createHostView() {
     paintIconButton(el.notes, 'notes', 'Notes');
     paintIconButton(el.bars, 'bars', barCountLabel(state.noteSteps));
     paintIconButton(el.noteUndo, 'undo', 'Undo');
+    paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
     paintIconButton(el.noteRedo, 'redo', 'Redo');
     paintIconButton(el.noteClear, 'erase', 'clr curr inst');
     paintIconButton(el.notesClose, 'done', 'Done');

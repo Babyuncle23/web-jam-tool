@@ -1232,10 +1232,6 @@ input[type='range'] {
   opacity: 0.78;
 }
 
-.roll__note.is-remote .roll__resize {
-  display: none;
-}
-
 .roll__marquee {
   position: absolute;
   z-index: 5;
