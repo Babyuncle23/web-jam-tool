@@ -70,7 +70,7 @@ const SAMPLE_GAIN = {
   kick: 1,
   snare: 0.78,
   hat: 0.68,
-  openhat: 0.5,
+  openhat: 0.3,
   tom: 0.78,
   cowbell: 0.62,
   clap: 0.45,
@@ -153,7 +153,8 @@ export const DRUM_PRESETS = {
   },
   jersey: {
     id: 'jersey',
-    label: 'Jersey Club',
+    label: 'Jersey',
+    title: 'Jersey Club',
     span: 32,
     repeat: 2,
     pattern: { kick: [0, 4, 8, 11, 16, 20, 24, 27, 30], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
@@ -288,7 +289,7 @@ export class DrumMachine {
       harmonicity: 5.1,
       resonance: 2800,
       octaves: 1.1,
-      volume: -18,
+      volume: -22,
     }).connect(this.#output);
 
     this.#voices.tom = new this.#tone.MembraneSynth({

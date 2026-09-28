@@ -72,9 +72,16 @@ const PATHS = {
     'M8.6 20.6c-2.7 0-4.6-1.6-4.6-3.6 0-2.1 2-3.5 4.7-3.5 1 0 1.9.2 2.6.7V4.2h2.2V2.4h5.2v2.6h-5.2v8.4c0 2-1.7 3.6-4.7 3.6z',
   play: 'M8 4.4 19.4 12 8 19.6z',
   stop: 'M6.4 6.4h11.2v11.2H6.4z',
+  scissors:
+    'M2.4 6.2a3.8 3.8 0 1 0 7.6 0 3.8 3.8 0 0 0-7.6 0z' +
+    'M4.4 6.2a1.8 1.8 0 1 1 3.6 0 1.8 1.8 0 0 1-3.6 0z' +
+    'M2.4 17.8a3.8 3.8 0 1 0 7.6 0 3.8 3.8 0 0 0-7.6 0z' +
+    'M4.4 17.8a1.8 1.8 0 1 1 3.6 0 1.8 1.8 0 0 1-3.6 0z' +
+    'M8.9 8.8l13.1 11.3c.7.6.3 1.6-.6 1.5l-11.3-9.6z' +
+    'M8.9 15.2L22 3.9c.7-.6.3-1.6-.6-1.5l-11.3 9.6z',
 };
 
-const EVENODD = new Set(['kick', 'cowbell', 'bass', 'room', 'loop', 'erase']);
+const EVENODD = new Set(['kick', 'cowbell', 'bass', 'room', 'loop', 'erase', 'scissors']);
 const FILLED = new Set(Object.keys(PATHS));
 
 function svgEl(name) {

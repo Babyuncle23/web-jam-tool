@@ -6,7 +6,7 @@
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
-import { FX_COLORS, FX_PAD_DIVISIONS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
+import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
 import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
@@ -440,6 +440,7 @@ export async function createControllerView({ code, name } = {}) {
         const button = pressable(`chip${preset.id === state.drums.preset ? ' is-picked' : ''}`);
         button.dataset.preset = preset.id;
         button.textContent = preset.label;
+        button.title = preset.title || preset.label;
         button.addEventListener('click', () => pickGuestDrumPreset(preset.id));
         row.append(button);
       }
@@ -668,7 +669,8 @@ export async function createControllerView({ code, name } = {}) {
       row.className = 'fx-slider';
       row.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
       const name = document.createElement('span');
-      name.textContent = `${spec.label} · ${Math.round(amount * 100)}%`;
+      const specName = FX_FULL_LABELS[spec.id] ?? spec.label;
+      name.textContent = `${specName} · ${Math.round(amount * 100)}%`;
       const input = document.createElement('input');
       input.type = 'range';
       input.min = '0';
@@ -677,7 +679,7 @@ export async function createControllerView({ code, name } = {}) {
       input.value = String(Math.round(amount * 100));
       input.addEventListener('input', () => {
         const value = Number(input.value) / 100;
-        name.textContent = `${spec.label} · ${input.value}%`;
+        name.textContent = `${specName} · ${input.value}%`;
         if (!state.effects[state.instrument]) state.effects[state.instrument] = {};
         state.effects[state.instrument][spec.id] = value;
         socket.sendControl({ effect: { instrument: state.instrument, id: spec.id, level: value } });
@@ -1192,6 +1194,10 @@ export async function createControllerView({ code, name } = {}) {
   el.instNext.addEventListener('click', () => cycleGuestInstrument(1));
   el.instPrev.replaceChildren(chipIcon('prev'));
   el.instNext.replaceChildren(chipIcon('next'));
+  const padNotesChip = el.padMode?.querySelector('[data-padmode="notes"]');
+  const padFxChip = el.padMode?.querySelector('[data-padmode="fx"]');
+  if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Notes');
+  if (padFxChip) paintIconButton(padFxChip, 'scissors', 'FX');
   paintRollInstrument();
   el.noteClear.addEventListener('click', () => {
     if (!state.audioReady) return;
@@ -1233,7 +1239,7 @@ export async function createControllerView({ code, name } = {}) {
   paintIconButton(el.noteUndo, 'undo', 'Undo');
   paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
   paintIconButton(el.noteRedo, 'redo', 'Redo');
-  paintIconButton(el.noteClear, 'erase', 'clr curr inst');
+  paintIconButton(el.noteClear, 'erase', 'clear inst');
   paintIconButton(el.notesClose, 'done', 'Done');
   paintIconButton(el.fxDetail, 'detail', 'More');
   paintIconButton(el.fxSheetClose, 'done', 'Done');

@@ -188,6 +188,8 @@ try {
   await clickSelector(guest, '#controller-loop-undo');
   await pollExpr(host, `(() => { const s = ${hostNotes}; return { ok: s.notes === 0, ...s }; })()`);
   console.log('undo removed the guest note');
+  // Redo enables only after the host broadcasts canRedo back to this guest.
+  await pollExpr(guest, `({ ok: ${enabled('controller-loop-redo')} })`);
   await clickSelector(guest, '#controller-loop-redo');
   await pollExpr(host, `(() => { const s = ${hostNotes}; return { ok: s.notes === 1, ...s }; })()`);
   console.log('redo restored the guest note');

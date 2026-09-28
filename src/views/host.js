@@ -37,6 +37,7 @@ import {
   defaultFxState,
   defaultLevels,
   fxAmountLabel,
+  FX_FULL_LABELS,
   FX_PAD_DIVISIONS,
   masterCutoffHz,
   masterHipassHz,
@@ -109,6 +110,12 @@ export async function createHostView() {
     code: document.getElementById('host-code'),
     joinUrl: document.getElementById('host-join-url'),
     qr: document.getElementById('host-qr'),
+    qrCard: document.querySelector('#host-screen .qr-card'),
+    shareSheet: document.getElementById('host-share-sheet'),
+    shareQr: document.getElementById('host-qr-big'),
+    codeBig: document.getElementById('host-code-big'),
+    joinUrlBig: document.getElementById('host-join-url-big'),
+    shareClose: document.getElementById('host-share-close'),
     socketStatus: document.getElementById('host-socket-status'),
     audioStatus: document.getElementById('host-audio-status'),
     drumSource: document.getElementById('drum-source'),
@@ -753,6 +760,7 @@ export async function createHostView() {
         const button = pressable(`chip${preset.id === state.drumPreset ? ' is-picked' : ''}`);
         button.dataset.preset = preset.id;
         button.textContent = preset.label;
+        button.title = preset.title || preset.label;
         button.addEventListener('click', () => pickDrumPreset(preset.id));
         row.append(button);
       }
@@ -966,6 +974,13 @@ export async function createHostView() {
   });
   el.masterClose?.addEventListener('click', () => {
     el.masterSheet.hidden = true;
+  });
+
+  el.qrCard?.addEventListener('click', () => {
+    el.shareSheet.hidden = false;
+  });
+  el.shareClose?.addEventListener('click', () => {
+    el.shareSheet.hidden = true;
   });
 
   /* ---------- Pad mode: Notes, or the master FX surface ---------- */
@@ -1631,7 +1646,8 @@ export async function createHostView() {
         row.className = 'fx-slider';
         row.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
         const name = document.createElement('span');
-        name.textContent = `${spec.label} · ${Math.round(amount * 100)}%`;
+        const specName = FX_FULL_LABELS[spec.id] ?? spec.label;
+        name.textContent = `${specName} · ${Math.round(amount * 100)}%`;
         const input = document.createElement('input');
         input.type = 'range';
         input.min = '0';
@@ -1640,7 +1656,7 @@ export async function createHostView() {
         input.value = String(Math.round(amount * 100));
         input.addEventListener('input', () => {
           const value = Number(input.value) / 100;
-          name.textContent = `${spec.label} · ${input.value}%`;
+          name.textContent = `${specName} · ${input.value}%`;
           onInput(spec.id, value);
         });
         row.append(name, input);
@@ -2315,23 +2331,39 @@ export async function createHostView() {
     el.socketStatus.dataset.state = 'error';
   });
 
+  /* The header stamp is 168px for crispness at thumbnail size; the invite
+     sheet re-renders the same link at 512px so a camera can scan it across
+     the room. */
   async function paintJoinQr(url) {
     try {
       const QRCode = await loadScript(QR_SRC);
-      el.qr.replaceChildren();
-      const qr = new QRCode(el.qr, {
-        text: url,
-        width: 168,
-        height: 168,
-        colorDark: '#06231d',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M,
-      });
-      qr.makeCode(url);
+      for (const [box, size] of [[el.qr, 168], [el.shareQr, 512]]) {
+        if (!box) continue;
+        box.replaceChildren();
+        const qr = new QRCode(box, {
+          text: url,
+          width: size,
+          height: size,
+          colorDark: '#06231d',
+          colorLight: '#ffffff',
+          correctLevel: QRCode.CorrectLevel.M,
+        });
+        qr.makeCode(url);
+      }
     } catch (error) {
       el.qr.textContent = 'QR unavailable';
       log(error.message, 'qr');
     }
+  }
+
+  /* Session code and join link are duplicated on the invite sheet — not
+     every camera reads QR, so the text stays visible next to it. */
+  function paintInvite() {
+    el.code.textContent = session.code;
+    el.codeBig.textContent = session.code;
+    el.joinUrl.textContent = joinUrl;
+    el.joinUrl.title = joinUrl;
+    el.joinUrlBig.textContent = joinUrl;
   }
 
   /** After a reconnect the server has already dropped the room: open a new one. */
@@ -2344,10 +2376,8 @@ export async function createHostView() {
       reopening = false;
       return;
     }
-    el.code.textContent = session.code;
     joinUrl = await guestJoinUrl(session.code);
-    el.joinUrl.textContent = joinUrl;
-    el.joinUrl.title = joinUrl;
+    paintInvite();
     for (const peerId of [...state.peers.keys()]) clearPeer(peerId);
     state.peers.clear();
     setPeers();
@@ -2413,7 +2443,11 @@ export async function createHostView() {
     paintIconButton(el.noteUndo, 'undo', 'Undo');
     paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
     paintIconButton(el.noteRedo, 'redo', 'Redo');
-    paintIconButton(el.noteClear, 'erase', 'clr curr inst');
+    paintIconButton(el.noteClear, 'erase', 'clear inst');
+    const padNotesChip = el.padMode?.querySelector('[data-padmode="notes"]');
+    const padFxChip = el.padMode?.querySelector('[data-padmode="fx"]');
+    if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Notes');
+    if (padFxChip) paintIconButton(padFxChip, 'scissors', 'FX');
     paintIconButton(el.notesClose, 'done', 'Done');
     paintIconButton(el.fxDetail, 'detail', 'More');
     paintIconButton(el.fxSheetClose, 'done', 'Done');
@@ -2437,10 +2471,8 @@ export async function createHostView() {
   requestAnimationFrame(() => renderer.resize());
 
   session = await socket.createSession();
-  el.code.textContent = session.code;
   joinUrl = await guestJoinUrl(session.code);
-  el.joinUrl.textContent = joinUrl;
-  el.joinUrl.title = joinUrl;
+  paintInvite();
   publishHarmony();
   await paintJoinQr(joinUrl);
 

@@ -49,7 +49,34 @@ await shot(page, 'host-phone');
 // scroll down to see the tools section
 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
 await shot(page, 'host-phone-scrolled');
+// back to the top, then open the invite sheet via the header QR card
+await page.evaluate(() => window.scrollTo(0, 0));
+await page.tap('.qr-card');
+await shot(page, 'host-phone-invite');
 
+await page.close();
+
+// --- host on phone, landscape ---
+page = await browser.newPage();
+await page.emulate({
+  viewport: { width: 844, height: 390, isMobile: true, hasTouch: true, deviceScaleFactor: 2 },
+  userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1',
+});
+await page.goto(URL + '?role=host', { waitUntil: 'networkidle2' });
+await page.waitForFunction(
+  () => /^[A-Z2-9]{4}$/.test(document.getElementById('host-code')?.textContent || ''),
+  { timeout: 10000, ...POLL },
+);
+await shot(page, 'host-landscape');
+// In landscape the audio splash covers the whole screen — start sound first.
+await page.tap('#splash-start');
+await page.waitForFunction(
+  () => !document.getElementById('host-pad')?.classList.contains('is-locked'),
+  { timeout: 30000, ...POLL },
+);
+await shot(page, 'host-landscape-running');
+await page.tap('.qr-card');
+await shot(page, 'host-landscape-invite');
 await page.close();
 
 // --- PWA standalone emulation on phone (matchMedia stub: CDP has no display-mode) ---

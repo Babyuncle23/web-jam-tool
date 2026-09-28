@@ -73,12 +73,19 @@
       <div class="host-app">
         <header class="topbar">
           <button class="btn btn--icon" type="button" data-action="back" title="Back to role pick">←</button>
-          <div class="qr-card">
+          <div
+            class="qr-card"
+            role="button"
+            tabindex="0"
+            aria-label="Show the guest QR code"
+            title="Show a big QR to invite guests"
+          >
             <div id="host-qr" role="img" aria-label="QR code: open the guest controller"></div>
             <div class="qr-card__meta">
               <p class="topbar__eyebrow">Session · scan the QR</p>
               <p class="topbar__code" id="host-code">····</p>
               <p class="topbar__link" id="host-join-url">—</p>
+              <span class="qr-card__invite">Invite ⤢</span>
               <div class="topbar__status">
                 <span class="pill" id="host-socket-status" data-state="offline">socket: offline</span>
                 <span class="pill" id="host-audio-status" data-state="offline">audio: off</span>
@@ -307,7 +314,7 @@
             <button id="host-undo" class="btn btn--ghost" type="button" disabled>Undo</button>
             <button id="host-undo-all" class="btn btn--ghost" type="button" disabled>Undo all</button>
             <button id="host-redo" class="btn btn--ghost" type="button" disabled>Redo</button>
-            <button id="host-note-clear" class="btn btn--ghost" type="button">clr curr inst</button>
+            <button id="host-note-clear" class="btn btn--ghost" type="button" aria-label="Clear the current instrument in every loop">clear inst</button>
             <button id="host-notes-close" class="btn btn--primary" type="button">Done</button>
           </div>
         </div>
@@ -342,6 +349,17 @@
           <h2>Effect detail</h2>
           <div id="host-fx-sliders" class="fx-sliders"></div>
           <button id="host-fx-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
+
+      <div id="host-share-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card share-sheet">
+          <h2>Invite guests</h2>
+          <p class="seq-hint">Guests scan the code or open the link — same Wi-Fi, no app to install.</p>
+          <div id="host-qr-big" class="share-qr" role="img" aria-label="QR code: open the guest controller"></div>
+          <p class="share-sheet__code" id="host-code-big">····</p>
+          <p class="share-sheet__link" id="host-join-url-big">—</p>
+          <button id="host-share-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>
       </div>
 
@@ -457,7 +475,7 @@
             <button id="controller-undo" class="btn btn--ghost" type="button" disabled>Undo</button>
             <button id="controller-undo-all" class="btn btn--ghost" type="button" disabled>Undo all</button>
             <button id="controller-redo" class="btn btn--ghost" type="button" disabled>Redo</button>
-            <button id="controller-note-clear" class="btn btn--ghost" type="button">clr curr inst</button>
+            <button id="controller-note-clear" class="btn btn--ghost" type="button" aria-label="Clear the current instrument in every loop">clear inst</button>
             <button id="controller-notes-close" class="btn btn--primary" type="button">Done</button>
           </div>
         </div>

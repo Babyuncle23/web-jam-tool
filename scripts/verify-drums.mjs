@@ -169,7 +169,7 @@ try {
   await clickSelector(hostPage, '#drum-presets [data-preset]');
   // pick jersey explicitly
   await hostPage.evaluate(`(() => {
-    const chip = [...document.querySelectorAll('#drum-presets .chip')].find((c) => c.textContent.trim() === 'Jersey Club');
+    const chip = [...document.querySelectorAll('#drum-presets .chip')].find((c) => c.dataset.preset === 'jersey');
     chip?.click();
   })()`);
   await sleep(200);

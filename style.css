@@ -527,6 +527,23 @@ input[type='range'] {
   gap: 8px;
   min-width: 0;
   flex: 1;
+  cursor: pointer;
+  border-radius: 12px;
+}
+
+.qr-card:active {
+  filter: brightness(0.94);
+}
+
+.qr-card:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Phones squeeze the header QR below scanning size, so the card is a button:
+   one tap opens the share sheet with a big code. */
+.qr-card__invite {
+  display: none;
 }
 
 #host-qr {
@@ -681,6 +698,21 @@ input[type='range'] {
   font-size: 15px;
 }
 
+/* Narrow phones: Notes/Chords and Rec were clipping at the chip edges. */
+@media (max-width: 480px) {
+  .play-bar .chip {
+    font-size: 13px;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .play-bar .btn {
+    font-size: 13px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
+
 .zoom-row {
   display: flex;
   align-items: center;
@@ -792,6 +824,16 @@ input[type='range'] {
   min-height: 48px;
   padding: 6px 16px;
   font-weight: 800;
+  gap: 8px;
+}
+
+.pad-mode__chips .chip .ico {
+  width: 20px;
+  height: 20px;
+}
+
+.pad-mode__chips .chip .chip-label {
+  font-size: inherit;
 }
 
 .host-tools {
@@ -843,6 +885,9 @@ input[type='range'] {
   padding-left: 2px;
   padding-right: 2px;
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tool-row__label {
@@ -977,6 +1022,16 @@ input[type='range'] {
 
   .qr-card__meta {
     overflow: hidden;
+  }
+
+  .qr-card__invite {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-dim);
+    white-space: nowrap;
   }
 
   #host-qr img,
@@ -1393,9 +1448,7 @@ input[type='range'] {
   gap: 8px;
 }
 
-.roll-actions .btn,
-#host-note-clear,
-#controller-note-clear {
+.roll-actions .btn {
   min-height: 56px;
   font-size: 18px;
 }
@@ -2105,12 +2158,22 @@ input[type='range'] {
 .stage-head h2 {
   margin: 0;
   flex: 1 1 auto;
+  min-width: 0;
   font-size: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stage-head .btn {
   min-height: 48px;
   min-width: 88px;
+}
+
+@media (max-width: 400px) {
+  .stage-head .btn {
+    min-width: 64px;
+  }
 }
 
 .stage-bar {
@@ -2149,6 +2212,25 @@ input[type='range'] {
   max-height: 44px;
   padding: 0 6px;
   font-size: 14px;
+  overflow: hidden;
+}
+
+/* Icon over a short label beats a wrapped word at 44px. */
+.stage-bar .btn.has-icon {
+  flex-direction: column;
+  gap: 0;
+  padding: 2px;
+}
+
+.stage-bar .btn.has-icon .ico {
+  width: 16px;
+  height: 16px;
+}
+
+.stage-bar .btn .chip-label {
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 #host-notes-sheet .stage-bar .select-move,
@@ -2178,6 +2260,53 @@ input[type='range'] {
 .fx-sheet__card h2 {
   margin: 0;
   font-size: 22px;
+}
+
+/* Invite sheet: the header QR is too small to scan on a phone, so the
+   full-size code lives here on a white card with a wide quiet zone. */
+#host-share-sheet.fx-sheet {
+  align-items: center;
+  /* Above the "Sound is off" splash: a scanned QR must never hide under it. */
+  z-index: 9;
+}
+
+.fx-sheet__card.share-sheet {
+  align-items: center;
+  text-align: center;
+}
+
+.share-qr {
+  background: #fff;
+  padding: 28px;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  line-height: 0;
+}
+
+#host-qr-big img,
+#host-qr-big table {
+  width: min(72vw, 60dvh, 320px) !important;
+  height: min(72vw, 60dvh, 320px) !important;
+  display: block;
+}
+
+.share-sheet__code {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: var(--accent-dim);
+  line-height: 1.1;
+}
+
+.share-sheet__link {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--text-dim);
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .fx-sliders {
@@ -2289,10 +2418,15 @@ input[type='range'] {
   min-width: 76px;
 }
 
-#controller-status {
-  max-width: 42vw;
+#controller-status,
+#controller-key {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#controller-status {
+  max-width: 42vw;
 }
 
 .controller-foot .chips--roots {
@@ -2503,6 +2637,31 @@ input[type='range'] {
   .fx-sheet__card {
     max-height: calc(100dvh - 16px);
     overflow: auto;
+  }
+
+  /* Sideways phone: stack the invite QR beside the code, link, and Done —
+     a tall single column would push them below the fold. */
+  .fx-sheet__card.share-sheet {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 16px;
+    align-items: center;
+  }
+
+  .fx-sheet__card.share-sheet h2,
+  .fx-sheet__card.share-sheet .seq-hint {
+    grid-column: 1 / -1;
+  }
+
+  .share-qr {
+    grid-row: 3 / span 3;
+    padding: 16px;
+  }
+
+  #host-qr-big img,
+  #host-qr-big table {
+    width: min(30vw, 52dvh, 320px) !important;
+    height: min(30vw, 52dvh, 320px) !important;
   }
 
   .roll {

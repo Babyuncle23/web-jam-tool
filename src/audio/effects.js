@@ -471,6 +471,19 @@ export const DRUM_FX = [
   { id: 'room', label: 'Room' },
 ];
 
+/** Chip labels stay short; the detail sheet has room to spell the name out. */
+export const FX_FULL_LABELS = {
+  reverb: 'Reverb',
+  delay: 'Delay',
+  chorus: 'Chorus',
+  drive: 'Distortion',
+  cutoff: 'Cutoff',
+  slap: 'Slap',
+  vibrato: 'Vibrato',
+  room: 'Room',
+  reverse: 'Reverse',
+};
+
 export const FX_LEVELS = ['Off', 'Low', 'High'];
 
 export function defaultFxState() {
