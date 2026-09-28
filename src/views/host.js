@@ -240,8 +240,8 @@ export async function createHostView() {
   }
 
   function selectedFingerHeld() {
-    for (const instrument of padFingers.values()) {
-      if (sameInstrument(instrument)) return true;
+    for (const finger of padFingers.values()) {
+      if (sameInstrument(finger.instrument)) return true;
     }
     return false;
   }
@@ -1831,7 +1831,7 @@ export async function createHostView() {
     else audio.synth.release(payload.id);
     paintTouch(payload.id, payload.type === 'up' ? null : { x: payload.x, y: payload.y });
     if (payload.type === 'up') padFingers.delete(payload.id);
-    else padFingers.set(payload.id, instrument);
+    else padFingers.set(payload.id, { instrument, x: payload.x, y: payload.y });
     if (sameInstrument(instrument)) {
       if (gesture?.label) setLabel(gesture.label);
       else if (payload.type === 'up' && !selectedFingerHeld()) setLabel('—');
@@ -2085,6 +2085,22 @@ export async function createHostView() {
       if (id.startsWith(prefix)) paintTouch(id, null);
     }
     audio?.synth.releaseMatching(prefix);
+    // A finger still down when the peer vanished leaves an open take — close
+    // it with a synthetic note-off at the last known position.
+    const recorder = audio?.loops.get(peerId);
+    for (const [id, finger] of [...padFingers]) {
+      if (!id.startsWith(prefix)) continue;
+      padFingers.delete(id);
+      recorder?.capture({
+        id,
+        type: 'up',
+        direction: 'up',
+        instrument: finger.instrument,
+        mode: 'single',
+        x: finger.x,
+        y: finger.y,
+      });
+    }
   }
 
   /* ---------- Socket ---------- */

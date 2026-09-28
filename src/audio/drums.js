@@ -60,15 +60,20 @@ export const SAMPLE_URLS = {
   clap: `${SAMPLE_CDN}/CP/CP.WAV`,
 };
 
-/** Per-voice gain so the normalised 808 hits sit with the synth, under the limiter. */
+/**
+ * Per-voice gain so the normalised 808 hits sit with the synth, under the
+ * limiter. Balanced against the rendered peak/RMS of each WAV (see
+ * scripts/balance): kick is the anchor, snare/clap/tom sit just under it,
+ * hats and cowbell a step lower.
+ */
 const SAMPLE_GAIN = {
   kick: 1,
-  snare: 0.82,
-  hat: 0.52,
-  openhat: 0.48,
-  tom: 0.86,
-  cowbell: 0.5,
-  clap: 0.22,
+  snare: 1,
+  hat: 0.68,
+  openhat: 0.62,
+  tom: 0.78,
+  cowbell: 0.62,
+  clap: 0.8,
 };
 
 /**
@@ -226,11 +231,13 @@ export class DrumMachine {
       pitchDecay: 0.03,
       octaves: 6,
       envelope: { attack: 0.001, decay: 0.34, sustain: 0 },
+      volume: -4,
     }).connect(this.#output);
 
     this.#voices.snare = new this.#tone.NoiseSynth({
       noise: { type: 'white' },
       envelope: { attack: 0.001, decay: 0.16, sustain: 0 },
+      volume: -7,
     }).connect(this.#output);
 
     this.#voices.hat = new this.#tone.MetalSynth({
@@ -238,13 +245,13 @@ export class DrumMachine {
       harmonicity: 5.1,
       resonance: 4000,
       octaves: 1.2,
-      volume: -22,
+      volume: -13,
     }).connect(this.#output);
 
     this.#voices.clap = new this.#tone.NoiseSynth({
       noise: { type: 'pink' },
       envelope: { attack: 0.002, decay: 0.16, sustain: 0 },
-      volume: -16,
+      volume: -1,
     }).connect(this.#output);
 
     this.#voices.openhat = new this.#tone.MetalSynth({
@@ -252,7 +259,7 @@ export class DrumMachine {
       harmonicity: 5.1,
       resonance: 2800,
       octaves: 1.1,
-      volume: -20,
+      volume: -16,
     }).connect(this.#output);
 
     this.#voices.tom = new this.#tone.MembraneSynth({
@@ -267,7 +274,7 @@ export class DrumMachine {
       harmonicity: 12,
       resonance: 800,
       octaves: 0.4,
-      volume: -16,
+      volume: -20,
     }).connect(this.#output);
 
     for (const [track, steps] of Object.entries(pattern)) {

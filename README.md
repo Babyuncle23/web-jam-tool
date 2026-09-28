@@ -85,7 +85,7 @@ scripts/              стенды и пробы: perf-probe, cpu-sampler, verif
 
 Источник — набор **Roland TR-808 sample set 1.0.0** (Michael Fischer / Technopolis, 1994), названный в `TR808.TXT` **ABSOLUTELY FREE**; пакет [`@fluid-music/tr-808`](https://www.npmjs.com/package/@fluid-music/tr-808) пишет «no licensing restrictions». Это не лицензия MIT — MIT относится к коду инструмента.
 
-Если голос не загрузился за 4 секунды, он остаётся на синтезе (Membrane / Noise / Metal), а пилюля на экране хоста говорит, какие голоса на сэмплах, какие — на fallback. У clap начало файла подрезается до пика, чтобы удар сидел в сетке.
+Если голос не загрузился за 4 секунды, он остаётся на синтезе (Membrane / Noise / Metal), а пилюля на экране хоста говорит, какие голоса на сэмплах, какие — на fallback. У clap начало файла подрезается до пика, чтобы удар сидел в сетке. Уровни голосов отбалансированы по измеренным peak/RMS, и синтез-fallback подобран под громкость своего сэмпла — замеры лежат в `scripts/balance/`.
 
 ## Луп, редактор Notes и Reverse
 

@@ -446,11 +446,11 @@ function createSustainedVoice(tone, SynthClass, options, destination, polyphony)
   const releaseTime = options.envelope?.release ?? 0.2;
   return {
     kind: 'sustain',
-    trigger(frequencies, time, velocity, strumSeconds) {
+    trigger(frequencies, time, velocity) {
       const base = capNow(tone, time);
-      frequencies.forEach((frequency, index) => {
-        synth.triggerAttack(frequency, base + index * strumSeconds, velocity);
-      });
+      for (const frequency of frequencies) {
+        synth.triggerAttack(frequency, base, velocity);
+      }
     },
     release(frequencies, time) {
       if (frequencies?.length) synth.triggerRelease(frequencies, capNow(tone, time));
@@ -548,7 +548,7 @@ function createGlideVoice(tone, options, destination, polyphony) {
 
   return {
     kind: 'sustain',
-    trigger(frequencies, time, velocity, _strum, { id = 'default' } = {}) {
+    trigger(frequencies, time, velocity, { id = 'default' } = {}) {
       const when = capNow(tone, time);
       let slots = held.get(id);
       if (slots) {
@@ -602,7 +602,6 @@ export class TouchSynth {
   #scale = 'major';
   #mode = 'single';
   #range = 12;
-  #strumMs = 28;
   /** @type {Map<string, { instrument: string, frequencies: number[], direction: string, y: number }>} */
   #active = new Map();
   /** Bass notes that are still held. A shorter note can cover a longer one; the longer one stays here. */
@@ -633,7 +632,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'fatsawtooth', count: 2, spread: 12 },
           envelope: { attack: 0.01, decay: 0.18, sustain: 0.75, release: 0.28 },
-          volume: -6,
+          volume: -3,
         },
         inputs.bass,
       ),
@@ -643,7 +642,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'sine4' },
           envelope: { attack: 0.012, decay: 0.08, sustain: 0.9, release: 0.16 },
-          volume: -12,
+          volume: -7.5,
         },
         inputs.organ,
         16,
@@ -658,7 +657,7 @@ export class TouchSynth {
           envelope: { attack: 0.001, decay: 0.32, sustain: 0, release: 0.18 },
           modulation: { type: 'triangle' },
           modulationEnvelope: { attack: 0.001, decay: 0.14, sustain: 0, release: 0.1 },
-          volume: 1,
+          volume: 0,
         },
         inputs.kalimba,
         8,
@@ -668,7 +667,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'triangle' },
           envelope: { attack: 0.005, decay: 0.4, sustain: 0.55, release: 0.5 },
-          volume: -1,
+          volume: -5,
         },
         inputs.synth,
         12,
@@ -696,7 +695,6 @@ export class TouchSynth {
       octave: this.#octave,
       scale: this.#scale,
       mode: this.#mode,
-      strumMs: this.#strumMs,
       range: this.#range,
     };
   }
@@ -730,11 +728,6 @@ export class TouchSynth {
   setMode(mode) {
     if (PLAY_MODES.includes(mode)) this.#mode = mode;
     return this.#mode;
-  }
-
-  setStrum(ms) {
-    this.#strumMs = Math.min(200, Math.max(0, Number(ms) || 0));
-    return this.#strumMs;
   }
 
   /** X (0…1) → frequencies for the current harmony. Chord tones come from the scale. */
@@ -855,7 +848,7 @@ export class TouchSynth {
       if (mine?.chordGroup) this.#chokeVoice(id, when);
       else if (mine) this.release(id, when);
       this.#chopped.delete(id);
-      voice.trigger(gesture.frequencies, when, this.#velocity(gesture, touch.y), 0, { id });
+      voice.trigger(gesture.frequencies, when, this.#velocity(gesture, touch.y), { id });
       this.#active.set(id, {
         instrument: gesture.instrument,
         frequencies: gesture.frequencies,
@@ -879,7 +872,7 @@ export class TouchSynth {
       return gesture;
     }
     this.release(id, when);
-    voice.trigger(gesture.frequencies, when, this.#velocity(gesture, touch.y), 0, { id });
+    voice.trigger(gesture.frequencies, when, this.#velocity(gesture, touch.y), { id });
     this.#active.set(id, {
       instrument: gesture.instrument,
       frequencies: gesture.frequencies,
@@ -1234,6 +1227,7 @@ export class PerformanceRecorder {
    * recorded position is stored as its own tiny segment — same as the old 'up' path.
    */
   #closeSingleTake(voiceId, step, pitched) {
+    this.#silenceTake(voiceId);
     const segment = this.#line.get(voiceId) ?? voiceId;
     const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
     const last = ons[ons.length - 1];
@@ -1261,6 +1255,7 @@ export class PerformanceRecorder {
   }
 
   #closeChordTake(voiceId, step, event) {
+    this.#silenceTake(voiceId);
     const members = this.#chordTakes.get(voiceId) || [];
     if (!members.length) return false;
     const memberStarts = members
@@ -1500,6 +1495,18 @@ export class PerformanceRecorder {
     return time + span * this.stepSeconds;
   }
 
+  /** A note-on only sounds once its note-off exists; an open take has none yet. */
+  #hasUp(voiceId) {
+    return this.#events.some((event) => event.voiceId === voiceId && event.type === 'up');
+  }
+
+  /** Finger up: the take's loop voices die now, not when the recorded 'up' step comes around. */
+  #silenceTake(voiceId) {
+    this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
+    this.#synth.releaseMatching(`loop:${this.#playerId}:${voiceId}~`);
+    this.#synth.releaseMatching(`loop:${this.#playerId}:${voiceId}@`);
+  }
+
   #perform(event, time) {
     const id = `loop:${this.#playerId}:${event.voiceId}`;
     if (event.type === 'up') {
@@ -1508,6 +1515,9 @@ export class PerformanceRecorder {
       this.#onPlayback?.({ ...event, type: 'up' }, null);
       return;
     }
+    // A note with no 'up' yet — the finger is still down or the off was lost —
+    // would ring the whole cycle, so the live take does not preview.
+    if (!this.#hasUp(event.voiceId)) return;
     const gesture = this.#synth.attack({
       id,
       x: event.x,
