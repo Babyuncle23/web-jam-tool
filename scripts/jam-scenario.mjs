@@ -8,7 +8,7 @@
  */
 import puppeteer from 'puppeteer-core';
 
-const BASE = process.argv[2] ?? 'http://192.168.1.193:43117';
+const BASE = process.argv[2] ?? 'http://127.0.0.1:43117';
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const errors = [];
 
@@ -55,7 +55,8 @@ try {
   watch(host, 'host');
   await host.setViewport({ width: 1360, height: 860 });
   await host.goto(`${BASE}/?role=host`, { waitUntil: 'domcontentloaded' });
-  await pollExpr(host, '({ ok: Boolean(document.getElementById("splash-start")) })');
+  // Wait for the host view to finish entering — resetScreen swaps the splash node during entry.
+  await pollExpr(host, '({ ok: document.body.dataset.view === "host" && Boolean(globalThis.__jam) })');
   await host.click('#splash-start');
   const boot = await pollExpr(host, `(() => {
     const splash = document.getElementById('audio-splash');
@@ -142,6 +143,16 @@ try {
   await pollExpr(
     host,
     '(() => ({ ok: window.__jam.lastRemote?.instrument === "bass", remote: window.__jam.lastRemote }))()',
+    { timeout: 5000 },
+  );
+
+  // The host mirrors a caption only while its selected instrument matches the
+  // guest's (sameInstrument gate in soundTouch), so follow the guest to bass
+  // and the label check below stays end-to-end.
+  await clickSelector(host, '#instrument-row [data-instrument="bass"]');
+  await pollExpr(
+    host,
+    '({ ok: document.querySelector(\'#instrument-row [data-instrument="bass"]\').classList.contains("is-on") })',
     { timeout: 5000 },
   );
 

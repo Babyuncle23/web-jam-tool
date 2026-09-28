@@ -48,7 +48,8 @@ try {
   host.on('pageerror', (e) => errors.push(`host pageerror: ${e.message}`));
   await host.setViewport({ width: 1360, height: 900 });
   await host.goto(`${BASE}/?role=host`, { waitUntil: 'domcontentloaded' });
-  await pollExpr(host, '({ ok: Boolean(document.getElementById("splash-start")) })');
+  // Wait for the host view to finish entering — resetScreen swaps the splash node during entry.
+  await pollExpr(host, '({ ok: document.body.dataset.view === "host" && Boolean(globalThis.__jam) })');
   await host.click('#splash-start');
   await pollExpr(host, `(() => {
     const jam = globalThis.__jam;

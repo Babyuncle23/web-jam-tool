@@ -345,7 +345,7 @@ export class DrumMachine {
     );
   }
 
-  /** Node to feed into an EffectChain. */
+  /** Node to feed into the drum FX bus. */
   get output() {
     return this.#output;
   }

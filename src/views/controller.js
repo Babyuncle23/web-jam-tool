@@ -16,6 +16,26 @@ import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode }
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 
+/** Flat shallow compare for `{ instrument: number }` maps. */
+function sameFlatMap(a, b) {
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+/** Two-level compare for `{ instrument: { fxId: level } }` state patches. */
+function sameFxMap(a, b) {
+  for (const key of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    const inner = a?.[key] ?? {};
+    const other = b?.[key] ?? {};
+    for (const id of new Set([...Object.keys(inner), ...Object.keys(other)])) {
+      if (inner[id] !== other[id]) return false;
+    }
+  }
+  return true;
+}
+
 export async function createControllerView({ code, name } = {}) {
   const el = {
     pad: document.getElementById('pad'),
@@ -544,21 +564,56 @@ export async function createControllerView({ code, name } = {}) {
   function applyHostDrums(d) {
     const prevSteps = state.drums.steps;
     const prevRepeat = state.drums.repeat;
-    if (Number.isFinite(Number(d.steps))) state.drums.steps = Math.max(16, Math.round(Number(d.steps)));
-    if (typeof d.preset === 'string' || d.preset === '') state.drums.preset = d.preset || '';
+    let changed = false;
+    if (Number.isFinite(Number(d.steps))) {
+      const next = Math.max(16, Math.round(Number(d.steps)));
+      if (next !== state.drums.steps) {
+        state.drums.steps = next;
+        changed = true;
+      }
+    }
+    if (typeof d.preset === 'string' || d.preset === '') {
+      const next = d.preset || '';
+      if (next !== state.drums.preset) {
+        state.drums.preset = next;
+        changed = true;
+      }
+    }
     if (d.repeat === 'off' || Number(d.repeat) > 0) {
-      state.drums.repeat = d.repeat === 'off' ? 'off' : Math.min(2, Math.max(1, Number(d.repeat)));
+      const next = d.repeat === 'off' ? 'off' : Math.min(2, Math.max(1, Number(d.repeat)));
+      if (next !== state.drums.repeat) {
+        state.drums.repeat = next;
+        changed = true;
+      }
     }
     if (Number.isFinite(Number(d.pitch))) {
-      state.drums.pitch = Math.min(12, Math.max(-12, Math.round(Number(d.pitch))));
-      syncGuestDrumPitch();
+      const next = Math.min(12, Math.max(-12, Math.round(Number(d.pitch))));
+      if (next !== state.drums.pitch) {
+        state.drums.pitch = next;
+        changed = true;
+        syncGuestDrumPitch();
+      }
     }
     if (d.grid && typeof d.grid === 'object') {
       for (const { id } of TRACKS) {
         const row = Array.isArray(d.grid[id]) ? d.grid[id] : [];
-        state.drums.grid[id] = row.map((slot) => ({ on: Boolean(slot?.on), division: slot?.division === 3 ? 3 : 1 }));
+        const target = state.drums.grid[id] || (state.drums.grid[id] = []);
+        for (let i = 0; i < row.length; i += 1) {
+          const next = { on: Boolean(row[i]?.on), division: row[i]?.division === 3 ? 3 : 1 };
+          const prev = target[i];
+          if (prev && prev.on === next.on && (prev.division || 1) === next.division) continue;
+          target[i] = next;
+          changed = true;
+        }
+        if (target.length !== row.length) {
+          target.length = row.length;
+          changed = true;
+        }
       }
     }
+    // An identical echo (a join snapshot, the tail of a debounced push)
+    // leaves the DOM alone — the grid only repaints on real edits.
+    if (!changed) return;
     ensureGuestDrumRows();
     paintGuestDrumPreset();
     paintGuestDrumEditRows();
@@ -626,7 +681,7 @@ export async function createControllerView({ code, name } = {}) {
   el.drumPitch?.addEventListener('input', () => {
     state.drums.pitch = Math.min(12, Math.max(-12, Math.round(Number(el.drumPitch.value) || 0)));
     syncGuestDrumPitch();
-    socket.sendControl({ drumPitch: state.drums.pitch });
+    socket.sendControlThrottled({ drumPitch: state.drums.pitch });
   });
 
   function renderGuestSliders() {
@@ -647,7 +702,7 @@ export async function createControllerView({ code, name } = {}) {
       const value = Number(volume.value) / 100;
       volumeName.textContent = `Volume · ${volume.value}%`;
       state.levels[state.instrument] = value;
-      socket.sendControl({ level: { instrument: state.instrument, value } });
+      socket.sendControlThrottled({ level: { instrument: state.instrument, value } });
     });
     volumeRow.append(volumeName, volume);
     rows.push(volumeRow);
@@ -669,7 +724,7 @@ export async function createControllerView({ code, name } = {}) {
       octaveName.textContent = `Octave · ${value}`;
       state.octaves[state.instrument] = value;
       syncPadMarks();
-      socket.sendControl({ octave: { instrument: state.instrument, value } });
+      socket.sendControlThrottled({ octave: { instrument: state.instrument, value } });
     });
     octaveRow.append(octaveName, octave);
     rows.push(octaveRow);
@@ -692,7 +747,7 @@ export async function createControllerView({ code, name } = {}) {
         name.textContent = `${specName} · ${input.value}%`;
         if (!state.effects[state.instrument]) state.effects[state.instrument] = {};
         state.effects[state.instrument][spec.id] = value;
-        socket.sendControl({ effect: { instrument: state.instrument, id: spec.id, level: value } });
+        socket.sendControlThrottled({ effect: { instrument: state.instrument, id: spec.id, level: value } });
         renderGuestFx();
       });
       row.append(name, input);
@@ -827,7 +882,7 @@ export async function createControllerView({ code, name } = {}) {
         const value = Number(input.value) / 100;
         state.masterFx[key] = value;
         name.textContent = guestMasterLabel(key);
-        socket.sendControl({ masterFx: { [key]: value } });
+        socket.sendControlThrottled({ masterFx: { [key]: value } });
       });
       row.append(name, input);
       rows.push(row);
@@ -883,7 +938,8 @@ export async function createControllerView({ code, name } = {}) {
       state.masterFx.cutoff = 0;
       state.masterFx.hipass = 0;
       setLabel('—');
-      socket.sendControl({ masterHold: { hold: false }, masterFx: { cutoff: 0, hipass: 0 } });
+      socket.sendControl({ masterHold: { hold: false } });
+      socket.sendControlThrottled({ masterFx: { cutoff: 0, hipass: 0 } });
       return;
     }
     const { division } = fxZone(point);
@@ -897,9 +953,12 @@ export async function createControllerView({ code, name } = {}) {
     state.masterFx.hold = wantsHold;
     state.masterFx.cutoff = cutoff;
     state.masterFx.hipass = hipass;
-    const control = { masterFx: { cutoff, hipass } };
-    if (wantsHold !== wasHeld || divisionChanged) control.masterHold = { hold: wantsHold, division: division ?? '16n' };
-    socket.sendControl(control);
+    // The stutter edge is discrete and stays reliable; only the bipolar
+    // filter rides the throttled volatile path.
+    if (wantsHold !== wasHeld || divisionChanged) {
+      socket.sendControl({ masterHold: { hold: wantsHold, division: division ?? '16n' } });
+    }
+    socket.sendControlThrottled({ masterFx: { cutoff, hipass } });
     setLabel(fxCaption(point));
   }
 
@@ -953,6 +1012,9 @@ export async function createControllerView({ code, name } = {}) {
     el.masterSheet.hidden = true;
   });
 
+  /** Last loopNotes version seen — identical echoes skip the note rebuild. */
+  let hostLoopVersion = -1;
+
   socket.on(EVENTS.hostState, (payload) => {
     const previousRoot = state.root;
     const previousScale = state.scale;
@@ -972,15 +1034,21 @@ export async function createControllerView({ code, name } = {}) {
     }
     if ((state.root !== previousRoot || state.scale !== previousScale) && !el.notesSheet.hidden) paintGuestNotes();
     if (payload?.effects && typeof payload.effects === 'object') {
+      // Harmony patches echo every ~90 ms while the host drags — the FX
+      // chips only repaint on a real change or while their sheet is open.
+      const changed = !sameFxMap(payload.effects, state.effects);
       state.effects = payload.effects;
-      renderGuestFx();
+      if (changed || !el.advancedSheet.hidden) renderGuestFx();
     }
     if (payload?.levels && typeof payload.levels === 'object') {
       state.levels = { ...state.levels, ...payload.levels };
     }
     if (payload?.octaves && typeof payload.octaves === 'object') {
-      state.octaves = { ...state.octaves, ...payload.octaves };
-      syncPadMarks();
+      const next = { ...state.octaves, ...payload.octaves };
+      if (!sameFlatMap(next, state.octaves)) {
+        state.octaves = next;
+        syncPadMarks();
+      }
     }
     if (Number.isFinite(Number(payload?.bpm))) {
       const next = Math.min(200, Math.max(40, Number(payload.bpm)));
@@ -1003,11 +1071,6 @@ export async function createControllerView({ code, name } = {}) {
         if (guestStep != null) paintGuestBar(guestStep);
       }
       const players = pack.players && typeof pack.players === 'object' ? pack.players : {};
-      const marks = [];
-      for (const [owner, entry] of Object.entries(players)) {
-        for (const note of entry?.notes || []) marks.push({ ...note, owner });
-      }
-      state.marks = marks;
       const mine = players[state.peerId];
       state.canUndo = Boolean(mine?.canUndo);
       state.canUndoAll = Boolean(pack.canUndoAll);
@@ -1020,8 +1083,21 @@ export async function createControllerView({ code, name } = {}) {
         el.loop.setAttribute('aria-pressed', state.recording ? 'true' : 'false');
       }
       syncGuestHistory();
-      syncPadMarks();
-      if (!el.notesSheet.hidden) paintGuestNotes();
+      // `v` bumps on the host only when the loop really changed, so an
+      // identical echo (a snapshot after another guest joined) skips the
+      // note rebuild and the pad/roll repaints entirely. Hosts without `v`
+      // fall through to the old always-rebuild behaviour.
+      const version = Number(pack.v);
+      if (!Number.isFinite(version) || version !== hostLoopVersion) {
+        if (Number.isFinite(version)) hostLoopVersion = version;
+        const marks = [];
+        for (const [owner, entry] of Object.entries(players)) {
+          for (const note of entry?.notes || []) marks.push({ ...note, owner });
+        }
+        state.marks = marks;
+        syncPadMarks();
+        if (!el.notesSheet.hidden) paintGuestNotes();
+      }
     }
     updateKey();
     if (payload?.audioError) {

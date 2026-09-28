@@ -51,6 +51,7 @@ import { createDrumGrid } from '../ui/drum-grid.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 import { JamSocket, EVENTS, isLocalHostname } from '../network/socket.js';
+import { loadScript } from '../network/load-script.js';
 
 const QR_SRC = 'https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs@master/qrcode.min.js';
 const LOG_LIMIT = 6;
@@ -82,21 +83,6 @@ async function guestJoinUrl(code) {
 const DRUM_EDIT_PX = 46;
 let drumZoom = 0;
 let noteZoom = 0;
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (globalThis.QRCode) {
-      resolve(globalThis.QRCode);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = () => resolve(globalThis.QRCode);
-    script.onerror = () => reject(new Error('QR library failed to load'));
-    document.head.append(script);
-  });
-}
 
 function playerIdFromTouch(id) {
   const value = String(id ?? '');
@@ -444,6 +430,7 @@ export async function createHostView() {
     pushFuture(editorId, snapshotOf(entry.targets.map((item) => item.playerId)));
     restoreTargets(entry.targets);
     refreshLoops();
+    flushLoopPush();
     return true;
   }
 
@@ -456,6 +443,7 @@ export async function createHostView() {
     pushFuture(editorId, snapshotOf(entry.targets.map((item) => item.playerId)));
     restoreTargets(entry.targets);
     refreshLoops();
+    flushLoopPush();
     return true;
   }
 
@@ -472,6 +460,7 @@ export async function createHostView() {
     pushCapped(globalPast, back, 120);
     restoreTargets(entry.targets);
     refreshLoops();
+    flushLoopPush();
     return true;
   }
 
@@ -1121,7 +1110,7 @@ export async function createHostView() {
         }
       }
       setLabel('—');
-      publishHarmony();
+      queueHarmony();
       return;
     }
     const { division } = fxZone(point);
@@ -1148,14 +1137,14 @@ export async function createHostView() {
         setLabel(fxCaption(point));
         audio?.engine.masterFx?.setCutoff(cutoff);
         audio?.engine.masterFx?.setHipass(hipass);
-        publishHarmony();
+        queueHarmony();
         return;
       }
     } else if (wasHeld) {
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
-      publishHarmony();
+      queueHarmony();
     }
     audio?.engine.masterFx?.setCutoff(cutoff);
     audio?.engine.masterFx?.setHipass(hipass);
@@ -1332,6 +1321,7 @@ export async function createHostView() {
       recorder.stop();
       paintRecButton();
       refreshLoops();
+      flushLoopPush();
       log(`${recorder.length} events`, 'loop');
     }
   }
@@ -1349,6 +1339,7 @@ export async function createHostView() {
     if (targets.some((target) => target.events?.length)) pushEdit('host', targets);
     recorderFor('host').clear();
     refreshLoops();
+    flushLoopPush();
     log('your loop cleared', 'loop');
   }
 
@@ -1360,6 +1351,7 @@ export async function createHostView() {
     if (targets.some((target) => target.events?.length)) pushEdit('host', targets);
     for (const recorder of audio.loops.values()) recorder.clear();
     refreshLoops();
+    flushLoopPush();
     log('all loops cleared', 'loop');
   }
 
@@ -1616,6 +1608,9 @@ export async function createHostView() {
 
   el.bars.addEventListener('click', () => setSharedLength(nextLoopSteps(state.noteSteps)));
 
+  /** Bumps on every shareLoop: guests skip repaints on identical echoes. */
+  let loopVersion = 0;
+
   /** Every player's loop, broadcast as one map so all editors see all notes. */
   function shareLoop() {
     if (!audio) return;
@@ -1633,12 +1628,37 @@ export async function createHostView() {
     }
     socket.broadcastState({
       loopNotes: {
+        v: ++loopVersion,
         noteSteps: state.noteSteps,
         players,
         canUndoAll: globalPast.length > 0,
       },
     });
     syncPadMarks();
+  }
+
+  /* A recording burst lands a note per grid step: collapse the broadcast to
+     ~80 ms so guests get the latest map once instead of every note. */
+  let loopPushTimer = 0;
+  let loopPushDirty = false;
+  function queueLoopPush() {
+    loopPushDirty = true;
+    if (loopPushTimer) return;
+    loopPushTimer = setTimeout(() => {
+      loopPushTimer = 0;
+      if (!loopPushDirty) return;
+      loopPushDirty = false;
+      shareLoop();
+    }, 80);
+  }
+  function flushLoopPush() {
+    if (loopPushTimer) {
+      clearTimeout(loopPushTimer);
+      loopPushTimer = 0;
+    }
+    if (!loopPushDirty) return;
+    loopPushDirty = false;
+    shareLoop();
   }
 
   /** Recorded loop notes of the selected instrument show as dots on the pad. */
@@ -1666,7 +1686,7 @@ export async function createHostView() {
   function refreshLoops() {
     if (!el.notesSheet.hidden) paintHostRoll();
     syncHostHistory();
-    shareLoop();
+    queueLoopPush();
   }
 
   function renderFxSliders() {
@@ -1805,6 +1825,7 @@ export async function createHostView() {
     rememberEdit('host', ['host']);
     recorder.clearInstrument(instrument);
     refreshLoops();
+    flushLoopPush();
     log(`cleared ${instrument} from your loop`, 'loop');
   });
 
@@ -2171,7 +2192,7 @@ export async function createHostView() {
     state.effects[instrument][effect.id] = level;
     audio?.bus.setEffect(instrument, effect.id, level);
     if (state.instrument === instrument) renderInstrumentFx();
-    publishHarmony();
+    queueHarmony();
     log(`${data.name ?? 'guest'} · ${instrument} ${effect.id} ${fxAmountLabel(level)}`, 'effect');
   }
 
@@ -2182,7 +2203,7 @@ export async function createHostView() {
     const value = Math.min(6, Math.max(1, Math.round(Number(octave.value))));
     state.octaves[instrument] = value;
     audio?.synth.setInstrumentOctave(instrument, value);
-    publishHarmony();
+    queueHarmony();
   }
 
   function applyGuestLevel(data) {
@@ -2193,7 +2214,7 @@ export async function createHostView() {
     state.levels[instrument] = value;
     audio?.bus.setLevel(instrument, value);
     if (state.instrument === instrument && !el.fxSheet.hidden) renderFxSliders();
-    publishHarmony();
+    queueHarmony();
   }
 
   function applyGuestMaster(data) {
@@ -2211,7 +2232,7 @@ export async function createHostView() {
     if (!changed) return;
     applyMasterFx();
     syncMasterSliderInputs();
-    publishHarmony();
+    queueHarmony();
   }
 
   function applyGuestHold(data) {
@@ -2340,6 +2361,7 @@ export async function createHostView() {
     if (data.loop === 'stop') {
       recorder.stop();
       refreshLoops();
+      flushLoopPush();
       log(`${data.name ?? 'guest'} loop paused, ${recorder.length} events`, 'loop');
     }
     if (data.loop === 'clear') {
@@ -2362,6 +2384,7 @@ export async function createHostView() {
         for (const target of audio.loops.values()) target.clear();
       }
       refreshLoops();
+      flushLoopPush();
       log(`${data.name ?? 'guest'} cleared ${data.scope === 'mine' ? 'their loop' : data.fromEditor ? `${data.instrument || 'notes'} in their loop` : 'all loops'}`, 'loop');
     }
     state.lastRemote = {
@@ -2421,7 +2444,9 @@ export async function createHostView() {
      the room. */
   async function paintJoinQr(url) {
     try {
-      const QRCode = await loadScript(QR_SRC);
+      await loadScript(QR_SRC);
+      const QRCode = globalThis.QRCode;
+      if (!QRCode) throw new Error('QR library failed to load');
       for (const [box, size] of [[el.qr, 168], [el.shareQr, 512]]) {
         if (!box) continue;
         box.replaceChildren();
@@ -2488,7 +2513,8 @@ export async function createHostView() {
   socket.on(EVENTS.peerJoin, ({ peerId, name }) => {
     state.peers.set(peerId, name);
     setPeers();
-    publishHarmony();
+    // Full snapshot: a late joiner gets drums and loopNotes too, not just the harmony patch.
+    socket.broadcastSnapshot();
     const parked = transportAbsoluteStep();
     if (parked >= 0) socket.pulse(parked, { reliable: true, running: Boolean(audio?.engine.transportRunning) });
     log(`${name} joined`, 'guest');
@@ -2688,6 +2714,7 @@ export async function createHostView() {
       document.removeEventListener('visibilitychange', onVisibility);
       clearTimeout(parkTimer);
       clearTimeout(drumPushTimer);
+      clearTimeout(loopPushTimer);
       clearTimeout(harmonyPushTimer);
       drumGrid.destroy();
       hostPad.destroy();

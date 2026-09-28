@@ -31,6 +31,29 @@ export function socketServerUrl(page = globalThis.location) {
 const SERVER_FULL_MESSAGE = 'Server is full';
 const SERVER_FULL_RETRY_MS = 2500;
 
+/** Continuous controls go out at most this often; the trailing value always lands. */
+const CONTROL_THROTTLE_MS = 50;
+
+/**
+ * Coalesce key for a control patch: the field names plus the nested target
+ * (instrument / effect id / the masterFx field set), so two different
+ * sliders never overwrite each other's pending value.
+ */
+function controlSlotKey(control) {
+  const keys = [];
+  for (const [field, value] of Object.entries(control)) {
+    if (!value || typeof value !== 'object') {
+      keys.push(field);
+      continue;
+    }
+    const target = value.instrument
+      ? `${value.instrument}/${value.id ?? ''}`
+      : Object.keys(value).sort().join(',');
+    keys.push(`${field}:${target}`);
+  }
+  return keys.join('|');
+}
+
 /** True when a connect_error came from the server's capacity gate. */
 export function isServerFullError(error) {
   const text = `${error?.message ?? ''} ${error?.data?.message ?? ''}`.toLowerCase();
@@ -58,6 +81,9 @@ export class JamSocket {
   #shared = {};
   #waitingForSlot = false;
   #slotTimer = 0;
+  #controlPending = new Map();
+  #controlTimer = 0;
+  #controlSentAt = 0;
 
   constructor({ io = globalThis.io, url } = {}) {
     if (!io) throw new Error('Socket.io client is not loaded');
@@ -172,6 +198,30 @@ export class JamSocket {
     this.#socket?.emit(EVENTS.control, control);
   }
 
+  /**
+   * Continuous controls (sliders, the guest FX pad) coalesce per target and
+   * fly volatile — like move touches, a dropped frame only means the next
+   * one lands sooner. Discrete edits keep using sendControl: the protocol
+   * stays reliable where losing a message would corrupt state. The newest
+   * value per slot always goes out when the throttle window opens.
+   */
+  sendControlThrottled(control) {
+    if (!this.#socket || !control) return;
+    this.#controlPending.set(controlSlotKey(control), control);
+    const wait = CONTROL_THROTTLE_MS - (Date.now() - this.#controlSentAt);
+    if (wait <= 0) this.#flushControls();
+    else if (!this.#controlTimer) this.#controlTimer = setTimeout(() => this.#flushControls(), wait);
+  }
+
+  #flushControls() {
+    clearTimeout(this.#controlTimer);
+    this.#controlTimer = 0;
+    this.#controlSentAt = Date.now();
+    const batch = [...this.#controlPending.values()];
+    this.#controlPending.clear();
+    for (const control of batch) this.#socket?.volatile.emit(EVENTS.control, control);
+  }
+
   /** One transport step for the guest playhead. Live steps are volatile; a stop is reliable. */
   pulse(step, { reliable = false, running = true } = {}) {
     const payload = { step, running: Boolean(running) };
@@ -183,14 +233,22 @@ export class JamSocket {
     return { ...this.#shared };
   }
 
-  /** Host → room. Later fields merge, so a guest always sees the latest key and readiness. */
+  /** Host → room. Emits just the patch; guests merge fields, so a guest always sees the latest key and readiness. */
   broadcastState(state) {
     this.#shared = { ...this.#shared, ...state };
-    this.#socket?.emit(EVENTS.hostState, this.#shared);
+    this.#socket?.emit(EVENTS.hostState, state);
+  }
+
+  /** Full accumulated state — a guest that just joined catches up without waiting for the next patch. */
+  broadcastSnapshot() {
+    this.#socket?.emit(EVENTS.hostState, { ...this.#shared });
   }
 
   disconnect() {
     this.#setWaitingForSlot(false);
+    clearTimeout(this.#controlTimer);
+    this.#controlTimer = 0;
+    this.#controlPending.clear();
     this.#socket?.disconnect();
     this.#socket = null;
     this.#role = null;

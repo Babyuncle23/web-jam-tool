@@ -1,440 +1,9 @@
 /**
  * Effects — HOST only.
- * Each effect is an independent module with a uniform interface, so the same
- * set can be instantiated twice: one chain for the drum machine, one for the
- * synth, each with its own parameters.
+ * Per-instrument FX buses (createInstrumentBus), the drum bus
+ * (createDrumBus) and the master inserts (createMasterFx), plus the FX
+ * metadata (chips, labels, colors) the UI reads on host and controller.
  */
-
-class Effect {
-  /** @type {string} */ id;
-  /** @type {string} */ label;
-  #tone;
-  #node = null;
-  #bypass;
-  #input;
-  #output;
-  #enabled = false;
-  #params = {};
-
-  constructor(tone, { id, label, params }) {
-    this.#tone = tone;
-    this.id = id;
-    this.label = label;
-    this.#params = { ...params };
-    this.#input = new tone.Gain(1);
-    this.#output = new tone.Gain(1);
-    this.#bypass = new tone.Gain(1);
-    this.#input.connect(this.#bypass);
-    this.#bypass.connect(this.#output);
-  }
-
-  get tone() {
-    return this.#tone;
-  }
-
-  get node() {
-    return this.#node;
-  }
-
-  get input() {
-    return this.#input;
-  }
-
-  get output() {
-    return this.#output;
-  }
-
-  get enabled() {
-    return this.#enabled;
-  }
-
-  get params() {
-    return { ...this.#params };
-  }
-
-  /** Subclasses build their Tone node here. */
-  createNode() {
-    throw new Error(`${this.id}: createNode() is not implemented`);
-  }
-
-  applyParam(_name, _value) {}
-
-  setParam(name, value) {
-    if (!(name in this.#params)) return undefined;
-    this.#params[name] = value;
-    if (this.#node) this.applyParam(name, value);
-    return value;
-  }
-
-  setEnabled(enabled) {
-    const next = Boolean(enabled);
-    if (next === this.#enabled) return this.#enabled;
-    this.#enabled = next;
-    if (next) {
-      if (!this.#node) {
-        this.#node = this.createNode();
-        for (const [name, value] of Object.entries(this.#params)) this.applyParam(name, value);
-      }
-      this.#input.disconnect(this.#bypass);
-      this.#input.connect(this.#node);
-      this.#node.connect(this.#output);
-    } else {
-      this.#input.disconnect(this.#node);
-      this.#node.disconnect(this.#output);
-      this.#input.connect(this.#bypass);
-    }
-    return this.#enabled;
-  }
-
-  dispose() {
-    this.#node?.dispose();
-    this.#input.dispose();
-    this.#output.dispose();
-    this.#bypass.dispose();
-  }
-}
-
-export class DelayEffect extends Effect {
-  constructor(tone) {
-    super(tone, { id: 'delay', label: 'Delay', params: { time: 0.25, feedback: 0.35, wet: 0.35 } });
-  }
-
-  createNode() {
-    const { time, feedback, wet } = this.params;
-    return new this.tone.FeedbackDelay({ delayTime: time, feedback, wet });
-  }
-
-  applyParam(name, value) {
-    if (name === 'time') this.node.delayTime.rampTo(value, 0.1);
-    if (name === 'feedback') this.node.feedback.rampTo(value, 0.1);
-    if (name === 'wet') this.node.wet.rampTo(value, 0.1);
-  }
-}
-
-export class ReverbEffect extends Effect {
-  constructor(tone) {
-    super(tone, { id: 'reverb', label: 'Reverb', params: { decay: 2.4, wet: 0.3 } });
-  }
-
-  createNode() {
-    const { decay, wet } = this.params;
-    return new this.tone.Reverb({ decay, wet, preDelay: 0.02 });
-  }
-
-  applyParam(name, value) {
-    if (name === 'decay') this.node.decay = value;
-    if (name === 'wet') this.node.wet.rampTo(value, 0.1);
-  }
-}
-
-export class DistortionEffect extends Effect {
-  constructor(tone) {
-    super(tone, { id: 'distortion', label: 'Distortion', params: { drive: 0.4, wet: 0.5 } });
-  }
-
-  createNode() {
-    const { drive, wet } = this.params;
-    return new this.tone.Distortion({ distortion: drive, wet, oversample: '2x' });
-  }
-
-  applyParam(name, value) {
-    if (name === 'drive') this.node.distortion = value;
-    if (name === 'wet') this.node.wet.rampTo(value, 0.1);
-  }
-}
-
-/**
- * Reverse runs in an AudioWorklet: it records the live tail into a window
- * buffer and, when the window fills, plays that buffer backwards while the
- * next one records. The dry signal stays in parallel so `wet` is a real mix.
- * The processor source lives here (not in a stub node) and is registered once
- * per audio context.
- */
-const REVERSE_PROCESSOR = `
-class JamReverseProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.windowSamples = Math.max(128, Math.floor(sampleRate * 0.5));
-    this.index = 0;
-    this.record = [new Float32Array(this.windowSamples), new Float32Array(this.windowSamples)];
-    this.play = [new Float32Array(this.windowSamples), new Float32Array(this.windowSamples)];
-    this.pendingWindow = null;
-    this.flushRequested = false;
-    this.port.onmessage = (event) => {
-      const data = event.data || {};
-      if (data.type === 'window') this.pendingWindow = Number(data.seconds);
-      if (data.type === 'flush') this.flushRequested = true;
-    };
-  }
-
-  applyWindow(seconds) {
-    const samples = Math.max(128, Math.min(Math.floor(sampleRate * 4), Math.floor(sampleRate * seconds)));
-    if (!Number.isFinite(samples) || samples === this.windowSamples) return;
-    this.windowSamples = samples;
-    this.record = [new Float32Array(samples), new Float32Array(samples)];
-    this.play = [new Float32Array(samples), new Float32Array(samples)];
-    this.index = 0;
-  }
-
-  swap() {
-    const recorded = this.record;
-    this.record = this.play;
-    this.play = recorded;
-    this.record[0].fill(0);
-    this.record[1].fill(0);
-    this.index = 0;
-  }
-
-  ensureChannel(list, channel) {
-    if (!list[channel] || list[channel].length !== this.windowSamples) {
-      list[channel] = new Float32Array(this.windowSamples);
-    }
-    return list[channel];
-  }
-
-  process(inputs, outputs) {
-    if (this.pendingWindow != null) {
-      this.applyWindow(this.pendingWindow);
-      this.pendingWindow = null;
-    }
-    if (this.flushRequested) {
-      this.swap();
-      this.flushRequested = false;
-    }
-
-    const input = inputs[0] || [];
-    const output = outputs[0] || [];
-    const frames = output[0] ? output[0].length : 0;
-    const channels = output.length;
-    for (let i = 0; i < frames; i += 1) {
-      for (let channel = 0; channel < channels; channel += 1) {
-        const source = input[channel] || input[0];
-        const sample = source ? source[i] || 0 : 0;
-        const record = this.ensureChannel(this.record, channel);
-        const play = this.ensureChannel(this.play, channel);
-        record[this.index] = sample;
-        output[channel][i] = play[this.windowSamples - 1 - this.index] || 0;
-      }
-      this.index += 1;
-      if (this.index >= this.windowSamples) this.swap();
-    }
-    return true;
-  }
-}
-registerProcessor('jam-reverse', JamReverseProcessor);
-`;
-
-let reverseWorkletPromise = null;
-
-/** Registers the reverse processor. Safe to call more than once. */
-export function ensureReverseWorklet(tone) {
-  if (globalThis.isSecureContext === false) {
-    return Promise.reject(new Error('Reverse needs localhost or https'));
-  }
-  if (!reverseWorkletPromise) {
-    const context = tone.getContext();
-    const blob = new Blob([REVERSE_PROCESSOR], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    // Tone 15 wraps AudioContext (standardized-audio-context). The module has
-    // to be added on that wrapper, or AudioWorkletNode rejects the context.
-    const pending = context.addAudioWorkletModule
-      ? context.addAudioWorkletModule(url)
-      : context.rawContext.audioWorklet.addModule(url);
-    reverseWorkletPromise = Promise.resolve(pending).finally(() => URL.revokeObjectURL(url));
-    reverseWorkletPromise.catch(() => {
-      reverseWorkletPromise = null;
-    });
-  }
-  return reverseWorkletPromise;
-}
-
-let ReverseNodeClass = null;
-
-function reverseNodeClass(tone) {
-  if (ReverseNodeClass) return ReverseNodeClass;
-  ReverseNodeClass = class ReverseNode extends tone.ToneAudioNode {
-    constructor() {
-      super();
-      const context = tone.getContext();
-      this.input = new tone.Gain(1);
-      this.output = new tone.Gain(1);
-      this._dry = new tone.Gain(1);
-      this._wet = new tone.Gain(0);
-      const options = {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      };
-      this._worklet = context.createAudioWorkletNode
-        ? context.createAudioWorkletNode('jam-reverse', options)
-        : new AudioWorkletNode(context.rawContext, 'jam-reverse', options);
-
-      this.input.output.connect(this._dry.input);
-      this._dry.output.connect(this.output.input);
-      // Tone.connect unwraps Gain nodes and accepts the worklet from the same wrapped context.
-      tone.connect(this.input, this._worklet);
-      tone.connect(this._worklet, this._wet);
-      this._wet.output.connect(this.output.input);
-    }
-
-    setWet(value, seconds = 0.05) {
-      const wet = Math.min(1, Math.max(0, Number(value) || 0));
-      this._wet.gain.rampTo(wet, seconds);
-      this._dry.gain.rampTo(1 - wet, seconds);
-    }
-
-    setWindow(seconds) {
-      this._worklet.port.postMessage({ type: 'window', seconds: Number(seconds) || 0.5 });
-    }
-
-    /** Swap immediately: the tail captured so far starts playing backwards. */
-    flush() {
-      this._worklet.port.postMessage({ type: 'flush' });
-    }
-
-    dispose() {
-      try {
-        this._worklet.disconnect();
-        this._worklet.port.close();
-      } catch {
-        // already torn down
-      }
-      this._dry.dispose();
-      this._wet.dispose();
-      return super.dispose();
-    }
-  };
-  return ReverseNodeClass;
-}
-
-/**
- * Buffered reverse. While enabled, each window of audio is captured and then
- * played backwards. `captureAndReverse()` flushes the current tail early.
- */
-export class ReverseEffect extends Effect {
-  constructor(tone) {
-    super(tone, { id: 'reverse', label: 'Reverse', params: { window: 0.5, wet: 0.55 } });
-  }
-
-  createNode() {
-    const Node = reverseNodeClass(this.tone);
-    const node = new Node();
-    node.setWindow(this.params.window);
-    node.setWet(this.params.wet, 0);
-    return node;
-  }
-
-  applyParam(name, value) {
-    if (!this.node) return;
-    if (name === 'wet') this.node.setWet(value);
-    if (name === 'window') this.node.setWindow(value);
-  }
-
-  captureAndReverse() {
-    if (!this.enabled) this.setEnabled(true);
-    this.node?.flush();
-    return true;
-  }
-}
-
-/** Dynamic filter driven by the Y axis of a guest touch pad. */
-export class WahWahEffect extends Effect {
-  #min = 180;
-  #max = 4800;
-
-  constructor(tone) {
-    super(tone, { id: 'wah', label: 'Wah-Wah', params: { frequency: 900, q: 0.8, wet: 1 } });
-  }
-
-  createNode() {
-    const { frequency, q } = this.params;
-    return new this.tone.Filter({ type: 'bandpass', frequency, Q: q });
-  }
-
-  applyParam(name, value) {
-    if (name === 'frequency') this.node.frequency.rampTo(value, 0.03);
-    if (name === 'q') this.node.Q.rampTo(value, 0.05);
-  }
-
-  /** y ∈ [0,1] → exponential cutoff sweep, so the ear hears an even glide. */
-  modulateFromY(y) {
-    const clamped = Math.min(1, Math.max(0, y));
-    const frequency = this.#min * Math.pow(this.#max / this.#min, clamped);
-    // A sub-hertz nudge is inaudible and still costs an automation event.
-    if (Math.abs(frequency - this.params.frequency) < 1) return this.params.frequency;
-    this.setParam('frequency', frequency);
-    return frequency;
-  }
-
-  /** Wide, high band so a chord is not stuck in the last single-note wah. */
-  parkOpen() {
-    this.setParam('q', 0.35);
-    if (Math.abs(this.params.frequency - this.#max) < 1) return this.#max;
-    this.setParam('frequency', this.#max);
-    return this.#max;
-  }
-}
-
-export const EFFECT_CLASSES = [DelayEffect, ReverbEffect, DistortionEffect, ReverseEffect, WahWahEffect];
-
-/** Serial chain: input → wah → distortion → delay → reverse → reverb → output. */
-export class EffectChain {
-  #tone;
-  #effects = new Map();
-  #input;
-  #output;
-
-  constructor(engine, { name = 'chain', destination = engine.master } = {}) {
-    this.#tone = engine.tone;
-    this.name = name;
-    this.#input = new this.#tone.Gain(1);
-    this.#output = new this.#tone.Gain(1);
-
-    let previous = this.#input;
-    for (const EffectClass of EFFECT_CLASSES) {
-      const effect = new EffectClass(this.#tone);
-      previous.connect(effect.input);
-      previous = effect.output;
-      this.#effects.set(effect.id, effect);
-    }
-    previous.connect(this.#output);
-    if (destination) this.#output.connect(destination);
-  }
-
-  get input() {
-    return this.#input;
-  }
-
-  get output() {
-    return this.#output;
-  }
-
-  get effects() {
-    return [...this.#effects.values()];
-  }
-
-  get(id) {
-    return this.#effects.get(id);
-  }
-
-  setEnabled(id, enabled) {
-    return this.#effects.get(id)?.setEnabled(enabled);
-  }
-
-  setParam(id, name, value) {
-    return this.#effects.get(id)?.setParam(name, value);
-  }
-
-  state() {
-    return this.effects.map(({ id, label, enabled, params }) => ({ id, label, enabled, params }));
-  }
-
-  dispose() {
-    for (const effect of this.#effects.values()) effect.dispose();
-    this.#input.dispose();
-    this.#output.dispose();
-  }
-}
 
 /** Three effects per instrument. Level 0 is off, 1 is mild, 2 is strong. */
 export const INSTRUMENT_FX = {
@@ -1121,6 +690,9 @@ export function createMasterFx(tone, bpm = 96) {
   const grab = new tone.Gain(0);
   const repeat = new tone.Gain(0);
   const post = new tone.Gain(1);
+  /** One persistent stutter delay. Capture only re-schedules its params —
+   * creating a node per hold would churn audio nodes on a hot gesture. */
+  const delay = new tone.FeedbackDelay({ delayTime: '16n', maxDelay: 2, feedback: 0, wet: 1 });
 
   const cutDry = new tone.Gain(1);
   const cutWet = new tone.Gain(0);
@@ -1139,6 +711,8 @@ export function createMasterFx(tone, bpm = 96) {
 
   input.connect(live);
   input.connect(grab);
+  grab.connect(delay);
+  delay.connect(repeat);
   live.connect(post);
   repeat.connect(post);
   post.connect(cutDry);
@@ -1165,27 +739,10 @@ export function createMasterFx(tone, bpm = 96) {
   let division = '16n';
   let held = false;
   let captureEnd = 0;
-  let delay = null;
 
   const sliceLength = () => {
     const beats = REPEAT_BEATS[division] ?? 0.25;
     return Math.min(1.9, Math.max(0.03, (60 / tempo) * beats));
-  };
-
-  const dropDelay = () => {
-    if (!delay) return;
-    try {
-      grab.disconnect(delay);
-    } catch {
-      // The grab was already detached.
-    }
-    try {
-      delay.disconnect(repeat);
-    } catch {
-      // The delay was already detached.
-    }
-    delay.dispose();
-    delay = null;
   };
 
   const scheduleMix = (now) => {
@@ -1216,19 +773,8 @@ export function createMasterFx(tone, bpm = 96) {
     try {
       held = true;
       captureEnd = now + length;
-      dropDelay();
-      delay = new tone.FeedbackDelay({
-        delayTime: length,
-        maxDelay: 2,
-        feedback: 0,
-        wet: 1,
-      });
-      grab.connect(delay);
-      delay.connect(repeat);
       delay.delayTime.cancelScheduledValues(now);
       delay.delayTime.setValueAtTime(length, now);
-      if (delay.wet?.setValueAtTime) delay.wet.setValueAtTime(1, now);
-      else delay.wet.value = 1;
       delay.feedback.cancelScheduledValues(now);
       delay.feedback.setValueAtTime(0, now);
       delay.feedback.setValueAtTime(1, now + length);
@@ -1248,10 +794,8 @@ export function createMasterFx(tone, bpm = 96) {
     held = false;
     grab.gain.cancelScheduledValues(now);
     grab.gain.setValueAtTime(0, now);
-    if (delay) {
-      delay.feedback.cancelScheduledValues(now);
-      delay.feedback.setValueAtTime(0, now);
-    }
+    delay.feedback.cancelScheduledValues(now);
+    delay.feedback.setValueAtTime(0, now);
     live.gain.cancelScheduledValues(now);
     repeat.gain.cancelScheduledValues(now);
     live.gain.setValueAtTime(live.gain.value, now);
@@ -1350,8 +894,7 @@ export function createMasterFx(tone, bpm = 96) {
     },
     dispose() {
       release();
-      dropDelay();
-      for (const node of [input, output, live, grab, repeat, post, cutDry, cutWet, cutoff, hpWet, hipass, crushDry, crushWet, crusher, wahDry, wahWet, wahLift, wah]) {
+      for (const node of [input, output, live, grab, repeat, post, delay, cutDry, cutWet, cutoff, hpWet, hipass, crushDry, crushWet, crusher, wahDry, wahWet, wahLift, wah]) {
         node.dispose?.();
       }
     },

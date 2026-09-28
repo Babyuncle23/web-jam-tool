@@ -1072,6 +1072,12 @@ export class PerformanceRecorder {
   #playerId;
   #events = [];
   #byKey = new Map();
+  /** voiceId → { ons, up, seq } — per-voice lookups skip the O(n) #events scan. */
+  #byVoice = new Map();
+  /** Insertion order per voiceId — the numeric notes() tie-break (was localeCompare). */
+  #voiceSeq = 0;
+  /** Last built notes() rows; null marks them stale after any #events change. */
+  #notesCache = null;
   #takes = new Map();
   #attackStep = new Map();
   #chordTakes = new Map();
@@ -1142,8 +1148,8 @@ export class PerformanceRecorder {
       if (event.type === 'on') return event.step < next;
       if (!sounding.has(event.voiceId)) return false;
       if (event.step >= next) {
-        const starts = this.#events
-          .filter((item) => item.voiceId === event.voiceId && item.type === 'on' && item.step < next)
+        const starts = (this.#byVoice.get(event.voiceId)?.ons ?? [])
+          .filter((item) => item.step < next)
           .map((item) => item.step);
         const start = Math.min(...starts);
         event.step = event.step % next;
@@ -1152,6 +1158,9 @@ export class PerformanceRecorder {
       return true;
     });
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
+    this.#byVoice.clear();
+    for (const event of this.#events) this.#indexEvent(event);
+    this.#notesCache = null;
     // Chord takes key #attackStep by the finger id, which never appears as an
     // event voiceId — keep steps for every take that is still open.
     const openTakes = new Set([...this.#line.keys(), ...this.#line.values(), ...this.#chordTakes.keys()]);
@@ -1159,7 +1168,7 @@ export class PerformanceRecorder {
       if (!sounding.has(voiceId) && !openTakes.has(voiceId)) this.#attackStep.delete(voiceId);
     }
     for (const [finger, members] of this.#chordTakes) {
-      const kept = members.filter((id) => this.#events.some((event) => event.voiceId === id));
+      const kept = members.filter((id) => this.#byVoice.has(id));
       if (kept.length) this.#chordTakes.set(finger, kept);
       else this.#chordTakes.delete(finger);
     }
@@ -1199,14 +1208,14 @@ export class PerformanceRecorder {
     if (step < 0) step += this.#loopSteps;
     for (const voiceId of [...this.#line.keys()]) {
       const segment = this.#line.get(voiceId) ?? voiceId;
-      const last = this.#events.filter((event) => event.voiceId === segment && event.type === 'on').pop();
+      const last = this.#byVoice.get(segment)?.ons.at(-1);
       if (last && this.#closeSingleTake(voiceId, step, last)) this.#commitTake(voiceId);
       else this.#takePre.delete(voiceId);
     }
     this.#line.clear();
     for (const voiceId of [...this.#chordTakes.keys()]) {
       const member = this.#chordTakes.get(voiceId)?.[0];
-      const on = member && this.#events.find((event) => event.voiceId === member && event.type === 'on');
+      const on = member && this.#byVoice.get(member)?.ons[0];
       if (on && this.#closeChordTake(voiceId, step, on)) this.#commitTake(voiceId);
       else {
         this.#chordTakes.delete(voiceId);
@@ -1268,7 +1277,7 @@ export class PerformanceRecorder {
     if (this.#chordTakes.has(voiceId)) this.#closeChordTake(voiceId, step, pitched);
 
     const segment = this.#line.get(voiceId) ?? voiceId;
-    const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
+    const ons = this.#byVoice.get(segment)?.ons ?? [];
     const last = ons[ons.length - 1];
     if (last && storedPitchKey(last) === storedPitchKey(pitched)) {
       if (last.step === step) this.#put(this.#noteEvent(segment, step, 'on', pitched));
@@ -1308,11 +1317,15 @@ export class PerformanceRecorder {
    * including one from a later `down` of the same finger — never match.
    */
   #takeEvents(base) {
-    return this.#events
-      .filter((event) => event.voiceId === base
-        || event.voiceId.startsWith(`${base}~`)
-        || event.voiceId.startsWith(`${base}@`))
-      .map((event) => ({ ...event }));
+    // Rows come back grouped per voice: undo restores through the keyed merge
+    // in #commitTake, so cross-voice order is irrelevant — per-voice order holds.
+    const events = [];
+    for (const [voiceId, entry] of this.#byVoice) {
+      if (voiceId !== base && !voiceId.startsWith(`${base}~`) && !voiceId.startsWith(`${base}@`)) continue;
+      events.push(...entry.ons);
+      if (entry.up) events.push(entry.up);
+    }
+    return events.map((event) => ({ ...event }));
   }
 
   /**
@@ -1360,7 +1373,7 @@ export class PerformanceRecorder {
   #closeSingleTake(voiceId, step, pitched) {
     this.#silenceTake(voiceId);
     const segment = this.#line.get(voiceId) ?? voiceId;
-    const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
+    const ons = this.#byVoice.get(segment)?.ons ?? [];
     const last = ons[ons.length - 1];
     // A restore mid-take wipes the take's events: a stranded 'up' must not
     // write a note-off for a note that is not there.
@@ -1396,21 +1409,20 @@ export class PerformanceRecorder {
     const members = this.#chordTakes.get(voiceId) || [];
     // After a mid-take restore only members whose 'on' is still there can
     // take a note-off; a wiped take leaves nothing to close.
-    const sounding = members.filter((member) =>
-      this.#events.some((item) => item.voiceId === member && item.type === 'on'));
+    const sounding = members.filter((member) => this.#byVoice.get(member)?.ons.length);
     if (!sounding.length) {
       this.#chordTakes.delete(voiceId);
       return false;
     }
     const memberStarts = sounding
-      .map((member) => this.#events.find((item) => item.voiceId === member && item.type === 'on')?.step)
+      .map((member) => this.#byVoice.get(member)?.ons[0]?.step)
       .filter((item) => item !== undefined);
     const attackStep = this.#attackStep.get(voiceId) ?? (memberStarts.length ? Math.min(...memberStarts) : undefined);
     let upStep = step;
     if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
     const instrument = normalizeInstrument(event.instrument);
     for (const member of sounding) {
-      const on = this.#events.find((item) => item.voiceId === member && item.type === 'on');
+      const on = this.#byVoice.get(member)?.ons[0];
       this.#put({
         voiceId: member,
         step: upStep,
@@ -1443,7 +1455,7 @@ export class PerformanceRecorder {
     const current = this.#chordTakes.get(voiceId) || [];
     const currentDegrees = [];
     for (const id of current) {
-      const on = this.#events.find((item) => item.voiceId === id && item.type === 'on');
+      const on = this.#byVoice.get(id)?.ons[0];
       if (on?.degree != null) currentDegrees.push(on.degree);
     }
     if (current.length && sameDegreeSet(currentDegrees, degrees)) return false;
@@ -1486,14 +1498,12 @@ export class PerformanceRecorder {
 
   #degreesCovering(instrument, step) {
     const degrees = [];
-    const seen = new Set();
-    for (const event of this.#events) {
-      if (event.type !== 'on' || !event.group) continue;
-      if (normalizeInstrument(event.instrument) !== instrument) continue;
-      if (seen.has(event.voiceId)) continue;
-      seen.add(event.voiceId);
-      const up = this.#events.find((item) => item.voiceId === event.voiceId && item.type === 'up');
-      const active = event.step === step || this.#soundsAt(event.step, up ? up.step : null, step);
+    for (const entry of this.#byVoice.values()) {
+      // Only the first chord 'on' per voice counts — later ones share its span.
+      const event = entry.ons.find((item) => item.group
+        && normalizeInstrument(item.instrument) === instrument);
+      if (!event) continue;
+      const active = event.step === step || this.#soundsAt(event.step, entry.up ? entry.up.step : null, step);
       if (!active || event.degree == null) continue;
       degrees.push(event.degree);
     }
@@ -1503,18 +1513,15 @@ export class PerformanceRecorder {
   /** End still-sounding chord notes of this instrument where the new chord attacks. */
   #chopChords(instrument, step) {
     const voices = [];
-    const seen = new Set();
-    for (const event of this.#events) {
-      if (!event.group || event.type !== 'on') continue;
-      if (normalizeInstrument(event.instrument) !== instrument) continue;
-      if (seen.has(event.voiceId)) continue;
-      seen.add(event.voiceId);
-      voices.push(event.voiceId);
+    for (const [voiceId, entry] of this.#byVoice) {
+      if (entry.ons.some((event) => event.group
+        && normalizeInstrument(event.instrument) === instrument)) voices.push(voiceId);
     }
     for (const voiceId of voices) {
-      const on = this.#events.find((event) => event.voiceId === voiceId && event.type === 'on');
+      const entry = this.#byVoice.get(voiceId);
+      const on = entry?.ons[0];
       if (!on) continue;
-      const up = this.#events.find((event) => event.voiceId === voiceId && event.type === 'up');
+      const up = entry.up;
       const loopId = `loop:${this.#playerId}:${voiceId}`;
       if (on.step === step) {
         this.#synth.choke(loopId);
@@ -1537,20 +1544,22 @@ export class PerformanceRecorder {
   }
 
   #setReleaseStep(voiceId, step) {
-    const ons = this.#events.filter((event) => event.voiceId === voiceId && event.type === 'on');
+    const entry = this.#byVoice.get(voiceId);
+    const ons = entry?.ons ?? [];
     if (!ons.length) return;
     const start = Math.min(...ons.map((event) => event.step));
     if (start === step) {
       this.#forgetVoice(voiceId);
       return;
     }
-    const up = this.#events.find((event) => event.voiceId === voiceId && event.type === 'up');
+    const up = entry.up;
     if (up?.step === step) return;
     if (up) {
       this.#disarm(up);
       this.#byKey.delete(`${voiceId}:${up.step}:up`);
       up.step = step;
       this.#byKey.set(`${voiceId}:${step}:up`, up);
+      this.#notesCache = null;
       this.#arm(up);
       return;
     }
@@ -1581,7 +1590,19 @@ export class PerformanceRecorder {
     );
   }
 
+  /** Track an event under its voiceId — mirrors #events for O(1) voice lookups. */
+  #indexEvent(event) {
+    let entry = this.#byVoice.get(event.voiceId);
+    if (!entry) {
+      entry = { ons: [], up: null, seq: this.#voiceSeq++ };
+      this.#byVoice.set(event.voiceId, entry);
+    }
+    if (event.type === 'on') entry.ons.push(event);
+    else entry.up = event;
+  }
+
   #put(event) {
+    this.#notesCache = null;
     const key = `${event.voiceId}:${event.step}:${event.type}`;
     const existing = this.#byKey.get(key);
     if (existing) {
@@ -1596,6 +1617,7 @@ export class PerformanceRecorder {
       return;
     }
     this.#byKey.set(key, event);
+    this.#indexEvent(event);
     this.#events.push(event);
     this.#arm(event);
   }
@@ -1629,7 +1651,7 @@ export class PerformanceRecorder {
   /** Audio-clock time when this bass strip ends, matching the roll length. */
   #bassUntil(event, time) {
     if (normalizeInstrument(event.instrument) !== 'bass') return undefined;
-    const up = this.#events.find((item) => item.voiceId === event.voiceId && item.type === 'up');
+    const up = this.#byVoice.get(event.voiceId)?.up;
     let span = 1;
     if (up && up.step !== event.step) {
       span = up.step - event.step;
@@ -1641,7 +1663,7 @@ export class PerformanceRecorder {
 
   /** A note-on only sounds once its note-off exists; an open take has none yet. */
   #hasUp(voiceId) {
-    return this.#events.some((event) => event.voiceId === voiceId && event.type === 'up');
+    return this.#byVoice.get(voiceId)?.up != null;
   }
 
   /** Finger up: the take's loop voices die now, not when the recorded 'up' step comes around. */
@@ -1681,18 +1703,9 @@ export class PerformanceRecorder {
    * first note, so a later C disappeared behind the opening D#.
    */
   notes() {
-    const groups = new Map();
-    for (const event of this.#events) {
-      let group = groups.get(event.voiceId);
-      if (!group) {
-        group = { ons: [], up: null };
-        groups.set(event.voiceId, group);
-      }
-      if (event.type === 'on') group.ons.push(event);
-      else group.up = event;
-    }
+    if (this.#notesCache) return this.#notesCache.slice();
     const rows = [];
-    for (const [voiceId, group] of groups) {
+    for (const [voiceId, group] of this.#byVoice) {
       const segments = [];
       for (const on of group.ons) {
         const key = storedPitchKey(on);
@@ -1718,10 +1731,14 @@ export class PerformanceRecorder {
           midi: segment.on.midi,
           step,
           endStep,
+          seq: group.seq,
         });
       }
     }
-    return rows.sort((a, b) => a.step - b.step || String(a.voiceId).localeCompare(String(b.voiceId)));
+    // Numeric creation order breaks step ties — localeCompare profiled hot here.
+    rows.sort((a, b) => a.step - b.step || a.seq - b.seq);
+    this.#notesCache = rows.map(({ seq, ...note }) => note);
+    return this.#notesCache.slice();
   }
 
   /** Plain note events for undo. No audio nodes and no buffers. */
@@ -1747,6 +1764,8 @@ export class PerformanceRecorder {
     this.#scheduled = [];
     this.#events = [];
     this.#byKey.clear();
+    this.#byVoice.clear();
+    this.#notesCache = null;
     this.#attackStep.clear();
     this.#chordTakes.clear();
     this.#chordGen.clear();
@@ -1799,11 +1818,11 @@ export class PerformanceRecorder {
     const segment = segmentVoice(voiceId);
     if (segment) return this.#moveSegment(segment, change);
     const { step, x, degree, midi, duration: durationArg } = change;
-    const mine = this.#events.filter((event) => event.voiceId === voiceId);
-    const ons = mine.filter((event) => event.type === 'on');
+    const entry = this.#byVoice.get(voiceId);
+    const ons = entry?.ons ?? [];
     if (!ons.length) return false;
     const start = Math.min(...ons.map((event) => event.step));
-    const up = mine.find((event) => event.type === 'up');
+    const up = entry?.up;
     let duration = (up?.step ?? start + 1) - start;
     if (duration <= 0) duration += this.#loopSteps;
     duration = Math.max(1, Math.min(this.#loopSteps - 1, duration));
@@ -1848,8 +1867,12 @@ export class PerformanceRecorder {
 
   #forgetVoice(voiceId) {
     const transport = this.#tone.getTransport();
-    const removed = this.#events.filter((event) => event.voiceId === voiceId);
+    const entry = this.#byVoice.get(voiceId);
+    const removed = entry ? [...entry.ons] : [];
+    if (entry?.up) removed.push(entry.up);
     this.#events = this.#events.filter((event) => event.voiceId !== voiceId);
+    this.#byVoice.delete(voiceId);
+    this.#notesCache = null;
     for (const event of removed) {
       this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
       if (event.eventId != null) {
@@ -1863,12 +1886,14 @@ export class PerformanceRecorder {
   }
 
   #moveSegment({ base, step: fromStep }, { step, x, degree, midi, duration: durationArg } = {}) {
-    const ons = this.#events.filter((event) => event.voiceId === base && event.type === 'on');
+    const entry = this.#byVoice.get(base);
+    const ons = entry?.ons ?? [];
     const index = ons.findIndex((event) => event.step === fromStep);
     if (index < 0) return false;
+    this.#notesCache = null;
     const target = ons[index];
     const next = ons[index + 1];
-    const up = this.#events.find((event) => event.voiceId === base && event.type === 'up');
+    const up = entry.up;
     const start = Math.max(0, Math.min(this.#loopSteps - 1, Math.round(Number(step) ?? fromStep)));
     this.#retarget(target, start);
     if (x != null) target.x = Number(x);
@@ -1891,11 +1916,13 @@ export class PerformanceRecorder {
     this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
     event.step = step;
     this.#byKey.set(key, event);
+    this.#notesCache = null;
     this.#arm(event);
   }
 
   /** Drop one recorded note and its note-off. The rest of the loop stays. */
   removeNote(voiceId) {
+    this.#notesCache = null;
     const segment = segmentVoice(voiceId);
     if (segment) {
       const removed = [];
@@ -1904,19 +1931,27 @@ export class PerformanceRecorder {
         removed.push(event);
         return false;
       });
+      const entry = this.#byVoice.get(segment.base);
+      if (entry) entry.ons = entry.ons.filter((event) => event.step !== segment.step);
       for (const event of removed) {
         this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
         this.#disarm(event);
       }
-      const still = this.#events.some((event) => event.voiceId === segment.base && event.type === 'on');
+      const still = Boolean(entry?.ons.length);
       if (!still) {
-        const ups = this.#events.filter((event) => event.voiceId === segment.base && event.type === 'up');
-        this.#events = this.#events.filter((event) => event.voiceId !== segment.base || event.type !== 'up');
+        const ups = [];
+        this.#events = this.#events.filter((event) => {
+          if (event.voiceId !== segment.base || event.type !== 'up') return true;
+          ups.push(event);
+          return false;
+        });
+        if (entry) entry.up = null;
         for (const event of ups) {
           this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
           this.#disarm(event);
         }
       }
+      if (entry && !entry.ons.length && !entry.up) this.#byVoice.delete(segment.base);
       if (removed.length) this.#synth.release(`loop:${this.#playerId}:${segment.base}`);
       return removed.length > 0;
     }
@@ -1927,6 +1962,7 @@ export class PerformanceRecorder {
       removed.push(event);
       return false;
     });
+    this.#byVoice.delete(voiceId);
     for (const event of removed) {
       this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
       if (event.eventId != null) {
@@ -1957,6 +1993,8 @@ export class PerformanceRecorder {
     this.#scheduled = [];
     this.#events = [];
     this.#byKey.clear();
+    this.#byVoice.clear();
+    this.#notesCache = null;
     this.#takes.clear();
     this.#attackStep.clear();
     this.#chordTakes.clear();

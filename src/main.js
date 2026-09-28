@@ -7,6 +7,10 @@
 import { markPageEdges } from './ui/scroll-edges.js';
 import { installQuietTouch } from './ui/quiet-touch.js';
 import { initRoleExtras } from './ui/install-share.js';
+import { loadScript } from './network/load-script.js';
+
+/** Tone.js is ~1.5 MB of UMD and only the host evaluates it — fetch on demand, not for guest phones. */
+const TONE_SRC = 'https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js';
 
 installQuietTouch(document.getElementById('host-screen'), document.getElementById('controller-screen'));
 initRoleExtras();
@@ -46,12 +50,28 @@ function showScreen(name) {
   markPageEdges();
 }
 
+const hostButton = document.getElementById('btn-role-host');
+
+function setHostLoading(loading) {
+  hostButton.disabled = loading;
+  hostButton.classList.toggle('is-loading', loading);
+  hostButton.textContent = loading ? 'Loading sound…' : 'Open host';
+}
+
 async function enterHost() {
-  const { createHostView } = await import('./views/host.js');
-  activeView?.destroy?.();
-  resetScreen('host');
-  showScreen('host');
-  activeView = await createHostView();
+  // Tone installs itself as a global, so it must finish before host.js runs.
+  // Warming it at role entry hides the CDN delay behind the "Start sound" tap.
+  setHostLoading(true);
+  try {
+    await loadScript(TONE_SRC);
+    const { createHostView } = await import('./views/host.js');
+    activeView?.destroy?.();
+    resetScreen('host');
+    showScreen('host');
+    activeView = await createHostView();
+  } finally {
+    setHostLoading(false);
+  }
 }
 
 async function enterController(code) {

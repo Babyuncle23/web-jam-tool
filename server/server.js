@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import compression from 'compression';
 import express from 'express';
 import { Server } from 'socket.io';
 
@@ -25,10 +26,18 @@ function lanIPv4() {
 }
 
 const app = express();
+app.use(compression());
 app.get('/api/lan', (_req, res) => {
   res.json({ host: lanIPv4(), port: PORT });
 });
-app.use(express.static(ROOT, { extensions: ['html'] }));
+// Static whitelist: only what the page needs — node_modules, scripts and the
+// markdown docs stay off the wire.
+app.use('/src', express.static(path.join(ROOT, 'src')));
+app.use('/icons', express.static(path.join(ROOT, 'icons')));
+for (const file of ['index.html', 'style.css', 'manifest.json', 'sw.js']) {
+  app.get(`/${file}`, (_req, res) => res.sendFile(path.join(ROOT, file)));
+}
+app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'index.html')));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: process.env.CLIENT_ORIGIN || true } });

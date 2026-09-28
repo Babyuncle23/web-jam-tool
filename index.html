@@ -13,7 +13,9 @@
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <link rel="manifest" href="./manifest.json" />
     <link rel="stylesheet" href="./style.css" />
-    <script src="https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js"></script>
+    <!-- Tone.js is not here: guests never need it, so main.js injects it on host entry. -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link rel="preconnect" href="https://cdn.socket.io" />
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   </head>
   <body data-view="role">
