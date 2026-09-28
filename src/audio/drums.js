@@ -52,7 +52,7 @@ const SAMPLE_CDN = SAMPLE_LIBRARY.cdn;
 
 export const SAMPLE_URLS = {
   kick: `${SAMPLE_CDN}/BD/BD0025.WAV`,
-  snare: `${SAMPLE_CDN}/SD/SD2525.WAV`,
+  snare: `${SAMPLE_CDN}/SD/SD2575.WAV`,
   hat: `${SAMPLE_CDN}/CH/CH.WAV`,
   openhat: `${SAMPLE_CDN}/OH/OH75.WAV`,
   tom: `${SAMPLE_CDN}/MT/MT25.WAV`,
@@ -68,13 +68,26 @@ export const SAMPLE_URLS = {
  */
 const SAMPLE_GAIN = {
   kick: 1,
-  snare: 1,
+  snare: 0.78,
   hat: 0.68,
-  openhat: 0.62,
+  openhat: 0.5,
   tom: 0.78,
   cowbell: 0.62,
-  clap: 0.8,
+  clap: 0.45,
 };
+
+/**
+ * Playback rate per sample voice. The SD2575 snare sits above the old snare
+ * pitch; 0.87 brings it into register and softens the snap. The clap speeds
+ * up slightly: tighter tail and a bit more brightness.
+ */
+const SAMPLE_RATE = { snare: 0.87, clap: 1.15 };
+
+/**
+ * The 808 clap sample carries a long reverb tail; cap playback so the hit
+ * reads tight. Other voices ring out naturally.
+ */
+const SAMPLE_DURATION = { clap: 0.24 };
 
 /**
  * The 808 clap starts with a quiet flam and the loud burst arrives later.
@@ -204,9 +217,14 @@ export class DrumMachine {
   #pools = {};
   #cursors = {};
   #sampleGains = {};
+  #snareShape;
+  #snareAir;
+  #clapShape;
   #clapLead = 0;
   #sequence = null;
   #output;
+  /** Semitone offset shared by every voice, −12…+12. Sampled voices get it through playbackRate. */
+  #pitch = 0;
   #grid = emptyGrid();
   #length = STEPS;
   #running = false;
@@ -234,11 +252,18 @@ export class DrumMachine {
       volume: -4,
     }).connect(this.#output);
 
+    // One shaper chain for both snare paths (sample pool and synth
+    // fallback): pull down the low/mid body a touch so it stops pressing on
+    // the ears, keep the snap's top smooth.
+    this.#snareShape = new this.#tone.Filter({ type: 'lowshelf', frequency: 550, gain: -3, Q: 0.7 });
+    this.#snareAir = new this.#tone.Filter({ type: 'highshelf', frequency: 3000, gain: -3, Q: 0.7 }).connect(this.#output);
+    this.#snareShape.connect(this.#snareAir);
+
     this.#voices.snare = new this.#tone.NoiseSynth({
       noise: { type: 'white' },
       envelope: { attack: 0.001, decay: 0.16, sustain: 0 },
-      volume: -7,
-    }).connect(this.#output);
+      volume: -5,
+    }).connect(this.#snareShape);
 
     this.#voices.hat = new this.#tone.MetalSynth({
       envelope: { attack: 0.001, decay: 0.06, release: 0.01 },
@@ -248,18 +273,22 @@ export class DrumMachine {
       volume: -13,
     }).connect(this.#output);
 
+    // Clap gets its own air shelf on both paths so the hit reads brighter
+    // without raising the low body.
+    this.#clapShape = new this.#tone.Filter({ type: 'highshelf', frequency: 2200, gain: 3.5, Q: 0.7 }).connect(this.#output);
+
     this.#voices.clap = new this.#tone.NoiseSynth({
       noise: { type: 'pink' },
       envelope: { attack: 0.002, decay: 0.16, sustain: 0 },
-      volume: -1,
-    }).connect(this.#output);
+      volume: -3,
+    }).connect(this.#clapShape);
 
     this.#voices.openhat = new this.#tone.MetalSynth({
       envelope: { attack: 0.001, decay: 0.22, release: 0.06 },
       harmonicity: 5.1,
       resonance: 2800,
       octaves: 1.1,
-      volume: -16,
+      volume: -18,
     }).connect(this.#output);
 
     this.#voices.tom = new this.#tone.MembraneSynth({
@@ -379,6 +408,32 @@ export class DrumMachine {
     return this.#running;
   }
 
+  get pitch() {
+    return this.#pitch;
+  }
+
+  /**
+   * Retune every drum voice by semitones. Sample pools take it as a
+   * playbackRate multiplier; the pitched synth voices transpose their trigger
+   * note. The noise voices (snare, clap) have no pitch to move on the synth
+   * path — their samples still shift when loaded.
+   */
+  setPitch(semitones) {
+    const next = Math.min(12, Math.max(-12, Math.round(Number(semitones) || 0)));
+    if (next === this.#pitch) return this.#pitch;
+    this.#pitch = next;
+    const rate = Math.pow(2, next / 12);
+    for (const [track, pool] of Object.entries(this.#pools)) {
+      for (const player of pool) player.playbackRate = (SAMPLE_RATE[track] ?? 1) * rate;
+    }
+    return this.#pitch;
+  }
+
+  #pitched(note) {
+    if (!this.#pitch) return note;
+    return this.#tone.Frequency(note).transpose(this.#pitch).toNote();
+  }
+
   start() {
     try {
       this.#sequence.stop();
@@ -473,11 +528,14 @@ export class DrumMachine {
             playBuffer = trimmed.buffer;
             this.#clapLead = trimmed.skipped;
           }
-          const gain = new this.#tone.Gain(SAMPLE_GAIN[id] ?? 0.7).connect(this.#output);
+          const gain = new this.#tone.Gain(SAMPLE_GAIN[id] ?? 0.7).connect(
+            id === 'snare' ? this.#snareShape : id === 'clap' ? this.#clapShape : this.#output,
+          );
           const pool = Array.from({ length: POOL_SIZE }, () => {
             const player = new this.#tone.Player();
             player.buffer = playBuffer;
             player.fadeOut = 0.008;
+            player.playbackRate = SAMPLE_RATE[id] ?? 1;
             player.connect(gain);
             return player;
           });
@@ -532,7 +590,9 @@ export class DrumMachine {
     } catch {
       // This player was idle, so the start below is its first hit.
     }
-    next.start(when);
+    const duration = SAMPLE_DURATION[track];
+    if (duration) next.start(when, 0, duration);
+    else next.start(when);
     return true;
   }
 
@@ -551,12 +611,12 @@ export class DrumMachine {
   #hit(track, time) {
     if (this.#triggerSample(track, time)) return;
     const voice = this.#voices[track];
-    if (track === 'kick') this.#retriggerSynth(voice, time, () => voice.triggerAttack('C1', time));
+    if (track === 'kick') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('C1'), time));
     else if (track === 'snare') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
-    else if (track === 'hat') this.#retriggerSynth(voice, time, () => voice.triggerAttack('G5', time));
-    else if (track === 'openhat') this.#retriggerSynth(voice, time, () => voice.triggerAttack('A5', time));
-    else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack('A1', time));
-    else if (track === 'cowbell') this.#retriggerSynth(voice, time, () => voice.triggerAttack('G5', time));
+    else if (track === 'hat') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G5'), time));
+    else if (track === 'openhat') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('A5'), time));
+    else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('A1'), time));
+    else if (track === 'cowbell') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G5'), time));
     else if (track === 'clap') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
   }
 
@@ -578,6 +638,9 @@ export class DrumMachine {
     for (const voice of Object.values(this.#voices)) voice.dispose();
     for (const pool of Object.values(this.#pools)) for (const player of pool) player.dispose();
     for (const gain of Object.values(this.#sampleGains)) gain.dispose();
+    this.#snareShape?.dispose();
+    this.#snareAir?.dispose();
+    this.#clapShape?.dispose();
     this.#output.dispose();
   }
 }

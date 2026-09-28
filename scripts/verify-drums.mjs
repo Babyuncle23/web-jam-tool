@@ -123,7 +123,9 @@ try {
   })()`);
   console.log('host unchanged after drag:', JSON.stringify(hostDrag));
 
-  // 5. Triplet write mode on the guest.
+  // 5. Triplet write mode on the guest — lives in the advanced drum panel.
+  await clickSelector(guest, '#controller-drum-adv-check');
+  await pollExpr(guest, `({ ok: !document.getElementById('controller-drum-adv').hidden })`);
   await clickSelector(guest, '#controller-drum-write [data-write="triplet"]');
   await clickSelector(guest, '#controller-sequencer .step[data-track="clap"][data-step="0"]');
   await sleep(300);
@@ -138,6 +140,8 @@ try {
   const hostPage = host;
   await clickSelector(hostPage, '#btn-drums');
   await pollExpr(hostPage, `({ ok: !document.getElementById('host-drums-sheet').hidden })`);
+  await clickSelector(hostPage, '#host-drum-adv-check');
+  await pollExpr(hostPage, `({ ok: !document.getElementById('host-drum-adv').hidden })`);
   await clickSelector(hostPage, '#host-drum-repeat [data-repeat-bars="off"]');
   await sleep(200);
   const before = await hostPage.evaluate(`(() => ({

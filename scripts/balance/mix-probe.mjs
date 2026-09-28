@@ -34,19 +34,36 @@ try {
       const sr = raw.sampleRate;
       const a = Math.floor(from * sr);
       const b = Math.min(raw.length, to === Infinity ? raw.length : Math.floor(to * sr));
+      // one-pole highpass at 3 kHz → "air"; at 1.5 kHz minus air → "presence"
+      // (the band the snare crack has to win).
+      const alphaOf = (fc) => { const rc = 1 / (2 * Math.PI * fc); return rc / (rc + 1 / sr); };
+      const aAir = alphaOf(3000);
+      const aPres = alphaOf(1500);
       let peak = 0;
       let sum = 0;
+      let hfSum = 0;
+      let presSum = 0;
       for (let ch = 0; ch < raw.numberOfChannels; ch += 1) {
         const data = raw.getChannelData(ch);
+        let lpAir = 0;
+        let lpPres = 0;
         for (let i = a; i < b; i += 1) {
-          const v = Math.abs(data[i]);
-          if (v > peak) peak = v;
+          const v = data[i];
+          lpAir += aAir * (v - lpAir);
+          lpPres += aPres * (v - lpPres);
+          hfSum += (v - lpAir) * (v - lpAir);
+          presSum += (v - lpPres) * (v - lpPres);
+          const m = Math.abs(v);
+          if (m > peak) peak = m;
           sum += v * v;
         }
       }
-      const rms = Math.sqrt(sum / Math.max(1, (b - a) * raw.numberOfChannels));
+      const frames = Math.max(1, b - a) * raw.numberOfChannels;
+      const rms = Math.sqrt(sum / frames);
+      const hf = Math.sqrt(hfSum / frames);
+      const pres = Math.sqrt(presSum / frames);
       const db = (v) => +(20 * Math.log10(Math.max(v, 1e-9))).toFixed(1);
-      return { peak: db(peak), rms: db(rms) };
+      return { peak: db(peak), rms: db(rms), hf: db(hf), pres: db(pres) };
     };
 
     const render = async (seconds, fn) => stats(await Tone.Offline(fn, seconds));
@@ -56,7 +73,7 @@ try {
 
     for (const track of TRACKS) {
       for (const kind of ['synth', 'sample']) {
-        out.drums[`${track.id}:${kind}`] = await render(2.2, async () => {
+        const buf = await Tone.Offline(async () => {
           const dest = new Tone.Gain(1).toDestination();
           const drums = new DrumMachine(engine, { pattern: {} });
           drums.output.connect(dest);
@@ -64,7 +81,10 @@ try {
           drums.setStep(track.id, 0, true);
           drums.start();
           Tone.getTransport().start(0);
-        });
+        }, 2.2);
+        out.drums[`${track.id}:${kind}`] = stats(buf);
+        out.drums[`${track.id}:${kind}:hit`] = stats(buf, 0, 0.3);
+        out.drums[`${track.id}:${kind}:t50`] = stats(buf, 0, 0.05);
       }
     }
 
@@ -120,7 +140,7 @@ try {
     return out;
   });
 
-  const line = (name, s) => console.log(name.padEnd(22), `peak=${String(s.peak).padStart(6)}dB  rms=${String(s.rms).padStart(6)}dB`);
+  const line = (name, s) => console.log(name.padEnd(22), `peak=${String(s.peak).padStart(6)}dB  rms=${String(s.rms).padStart(6)}dB  pres=${String(s.pres).padStart(6)}dB  hf=${String(s.hf).padStart(6)}dB`);
   console.log('--- drums ---');
   for (const [k, v] of Object.entries(report.drums)) line(k, v);
   console.log('--- instruments (single note, level 0.8) ---');

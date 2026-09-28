@@ -40,7 +40,7 @@ function softenButtons(root) {
 
 function quietTarget(node) {
   const el =
-    node?.closest?.('.pad, .btn, .chip, .mix-flag, .stutter-hold, .roll__note, .roll__key, input[type="range"], [role="button"]') ||
+    node?.closest?.('.pad, .btn, .chip, .mix-flag, .roll__note, .roll__key, input[type="range"], [role="button"]') ||
     null;
   // .step is left out: drum cells write on their own pointer path, and the
   // touchstart veto would block pan-y scrolling of the sheet over the grid.
@@ -61,7 +61,7 @@ function wantsClick(el) {
   if (!el || !el.isConnected) return false;
   if (el.getAttribute('aria-disabled') === 'true' || el.disabled) return false;
   if (el.closest('.pad')) return false;
-  if (el.matches('.stutter-hold, .roll__note, .roll__key, input')) return false;
+  if (el.matches('.roll__note, .roll__key, input')) return false;
   return el.matches('[role="button"]');
 }
 

@@ -7,6 +7,8 @@
 import { createMasterFx } from './effects.js';
 
 const DEFAULT_BPM = 120;
+/** Pre-compressor master bus level. The Master sheet volume slider writes this. */
+export const DEFAULT_MASTER_GAIN = 0.78;
 
 export class AudioEngine {
   #tone;
@@ -80,7 +82,7 @@ export class AudioEngine {
       this.#masterFx = createMasterFx(this.#tone, this.#bpm);
       this.#compressor.connect(this.#masterFx.input);
       this.#masterFx.output.connect(this.#limiter);
-      this.#master = new this.#tone.Gain(0.78).connect(this.#compressor);
+      this.#master = new this.#tone.Gain(DEFAULT_MASTER_GAIN).connect(this.#compressor);
       this.#tone.getTransport().bpm.value = this.#bpm;
       this.#started = true;
       this.#phase = 'ready';
@@ -108,7 +110,7 @@ export class AudioEngine {
   /** Current master level, before a fade. */
   masterGain() {
     const value = this.#master?.gain?.value;
-    return Number.isFinite(value) ? value : 0.78;
+    return Number.isFinite(value) ? value : DEFAULT_MASTER_GAIN;
   }
 
   /** Even fade so a backgrounded tab does not cut the bus in one click. */

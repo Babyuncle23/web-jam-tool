@@ -5,8 +5,9 @@
  */
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
-import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
-import { FX_COLORS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz } from '../audio/effects.js';
+import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
+import { FX_COLORS, FX_PAD_DIVISIONS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
+import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
 import { chipIcon, paintIconButton } from '../ui/icons.js';
@@ -32,6 +33,11 @@ export async function createControllerView({ code, name } = {}) {
     splashError: document.getElementById('controller-splash-error'),
     loop: document.getElementById('controller-loop'),
     loopClear: document.getElementById('controller-loop-clear'),
+    loopUndo: document.getElementById('controller-loop-undo'),
+    loopRedo: document.getElementById('controller-loop-redo'),
+    advanced: document.getElementById('controller-advanced'),
+    advancedSheet: document.getElementById('controller-advanced-sheet'),
+    advancedClose: document.getElementById('controller-advanced-close'),
     transport: document.getElementById('controller-transport'),
     instruments: document.getElementById('controller-instruments'),
     fx: document.getElementById('controller-fx'),
@@ -58,11 +64,19 @@ export async function createControllerView({ code, name } = {}) {
     drumsSheet: document.getElementById('controller-drums-sheet'),
     drumSequencer: document.getElementById('controller-sequencer'),
     drumPresets: document.getElementById('controller-drum-presets'),
+    drumPresetsMain: document.getElementById('controller-drum-presets-main'),
     drumsClose: document.getElementById('controller-drums-close'),
     drumTransport: document.getElementById('controller-drums-transport'),
     drumZoom: document.getElementById('controller-drum-zoom'),
     drumWriteRow: document.getElementById('controller-drum-write'),
     drumRepeatRow: document.getElementById('controller-drum-repeat'),
+    drumAdvCheck: document.getElementById('controller-drum-adv-check'),
+    drumAdvPanel: document.getElementById('controller-drum-adv'),
+    drumLengthRow: document.getElementById('controller-drum-length'),
+    drumPitch: document.getElementById('controller-drum-pitch'),
+    drumPitchLabel: document.getElementById('controller-drum-pitch-label'),
+    padMode: document.getElementById('controller-pad-mode'),
+    playBar: document.getElementById('controller-play-bar'),
   };
 
   const state = {
@@ -79,14 +93,15 @@ export async function createControllerView({ code, name } = {}) {
     marks: [],
     noteSteps: LOOP_STEPS,
     bpm: 120,
-    masterFx: { division: '16n', cutoff: 0, grit: 0, wah: 0, hold: false },
+    masterFx: { division: '16n', cutoff: 0, hipass: 0, grit: 0, wah: 0, hold: false, volume: DEFAULT_MASTER_GAIN },
+    padMode: 'notes',
     canUndo: false,
     canUndoAll: false,
     canRedo: false,
     clearUndo: false,
     peerId: null,
     drumWrite: 'single',
-    drums: { steps: DRUM_STEPS, preset: 'break', repeat: 1, grid: null },
+    drums: { steps: DRUM_STEPS, preset: 'break', repeat: 1, grid: null, pitch: 0 },
   };
   state.drums.grid = Object.fromEntries(
     TRACKS.map(({ id }) => [id, Array.from({ length: state.drums.steps }, () => ({ on: false, division: 1 }))]),
@@ -109,12 +124,32 @@ export async function createControllerView({ code, name } = {}) {
     el.label.textContent = text || '—';
   }
 
+  /** Zone labels sit top→bottom: 9, 7, sus, triad. Both sus bands share one. */
+  const ZONE_SPAN = { ninth: 0, seventh: 1, sus2: 2, sus4: 2, triad: 3 };
+
+  function paintZone(y) {
+    const spans = el.zones?.children;
+    if (!spans?.length) return;
+    const hit = y == null || state.mode !== 'chords' || state.instrument === 'bass'
+      ? -1
+      : ZONE_SPAN[extensionFromY(y)] ?? -1;
+    [...spans].forEach((span, index) => span.classList.toggle('is-active', index === hit));
+  }
+
   function syncChrome() {
     const bassPicked = state.instrument === 'bass';
+    const fxMode = state.padMode === 'fx';
     const shownMode = bassPicked ? 'single' : state.mode;
+    // FX owns the pad: the note-mode row and its loop buttons step aside.
+    // Bass never plays chords, so its mode chips hide too.
+    el.playBar.hidden = fxMode;
+    const modeRow = el.playBar?.querySelector('.play-bar__modes');
+    if (modeRow) modeRow.hidden = bassPicked;
     el.screen.querySelectorAll('[data-mode]').forEach((chip) => {
-      chip.hidden = bassPicked && chip.dataset.mode === 'chords';
       chip.classList.toggle('is-on', chip.dataset.mode === shownMode);
+    });
+    el.padMode?.querySelectorAll('[data-padmode]').forEach((chip) => {
+      chip.classList.toggle('is-on', chip.dataset.padmode === state.padMode);
     });
     el.instruments.querySelectorAll('[data-instrument]').forEach((chip) => {
       const id = chip.dataset.instrument;
@@ -125,13 +160,17 @@ export async function createControllerView({ code, name } = {}) {
       paintIconButton(chip, id, spec?.label || id);
     });
     const bass = state.instrument === 'bass';
-    const chords = state.mode === 'chords' && !bass;
+    const chords = !fxMode && state.mode === 'chords' && !bass;
     el.zones.hidden = !chords;
-    el.hint.textContent = bass
-      ? 'One scale step. Hold and slide.'
-      : chords
-        ? 'X is the chord. Y is triad, sus, 7th, 9th.'
-        : 'X is one note in the host key.';
+    renderer.setMode(fxMode ? 'fx' : chords ? 'chords' : 'single');
+    if (!chords) paintZone(null);
+    el.hint.textContent = fxMode
+      ? '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.'
+      : bass
+        ? 'One scale step. Hold and slide.'
+        : chords
+          ? 'X is the chord. Y is triad, sus, 7th, 9th.'
+          : 'X is one note in the host key.';
   }
 
   function renderGuestFx() {
@@ -164,6 +203,7 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loopClear, true);
     setControlEnabled(el.notes, true);
     setControlEnabled(el.transport, true);
+    syncGuestHistory();
     el.splash.hidden = true;
     el.splash.dataset.phase = 'ready';
   }
@@ -179,11 +219,12 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.loopClear, false);
     setControlEnabled(el.notes, false);
     setControlEnabled(el.transport, false);
+    syncGuestHistory();
   }
 
   function rollFocusMidi() {
     const instrument = normalizeInstrument(state.instrument);
-    const octave = state.octaves[instrument] ?? (instrument === 'bass' ? 2 : 3);
+    const octave = state.octaves[instrument] ?? defaultOctaves()[instrument];
     return instrumentHomeMidi(state.root, octave);
   }
 
@@ -206,7 +247,7 @@ export async function createControllerView({ code, name } = {}) {
       instrument,
       root: state.root,
       scale: state.scale,
-      octave: state.octaves[instrument] ?? (instrument === 'bass' ? 2 : 3),
+      octave: state.octaves[instrument] ?? defaultOctaves()[instrument],
       degree: note.degree,
       midi: note.midi,
     }).soundingMidis;
@@ -229,6 +270,8 @@ export async function createControllerView({ code, name } = {}) {
     setControlEnabled(el.noteUndo, state.canUndo);
     setControlEnabled(el.noteUndoAll, state.canUndoAll);
     setControlEnabled(el.noteRedo, state.canRedo);
+    setControlEnabled(el.loopUndo, state.audioReady && state.canUndo);
+    setControlEnabled(el.loopRedo, state.audioReady && state.canRedo);
   }
 
   let noteZoom = 0;
@@ -380,22 +423,26 @@ export async function createControllerView({ code, name } = {}) {
   });
 
   function paintGuestDrumPreset() {
-    el.drumPresets?.querySelectorAll('.chip').forEach((chip) => {
-      chip.classList.toggle('is-picked', chip.dataset.preset === state.drums.preset);
-    });
+    for (const row of [el.drumPresets, el.drumPresetsMain]) {
+      row?.querySelectorAll('.chip').forEach((chip) => {
+        chip.classList.toggle('is-picked', chip.dataset.preset === state.drums.preset);
+      });
+    }
     const preset = DRUM_PRESETS[state.drums.preset];
     if (el.drumsOpen) el.drumsOpen.textContent = preset ? `Drums · ${preset.label}` : 'Drums';
   }
 
   function renderGuestDrumPresets() {
-    if (!el.drumPresets) return;
-    el.drumPresets.replaceChildren();
-    for (const preset of Object.values(DRUM_PRESETS)) {
-      const button = pressable(`chip${preset.id === state.drums.preset ? ' is-picked' : ''}`);
-      button.dataset.preset = preset.id;
-      button.textContent = preset.label;
-      button.addEventListener('click', () => pickGuestDrumPreset(preset.id));
-      el.drumPresets.append(button);
+    for (const row of [el.drumPresets, el.drumPresetsMain]) {
+      if (!row) continue;
+      row.replaceChildren();
+      for (const preset of Object.values(DRUM_PRESETS)) {
+        const button = pressable(`chip${preset.id === state.drums.preset ? ' is-picked' : ''}`);
+        button.dataset.preset = preset.id;
+        button.textContent = preset.label;
+        button.addEventListener('click', () => pickGuestDrumPreset(preset.id));
+        row.append(button);
+      }
     }
     paintGuestDrumPreset();
   }
@@ -463,6 +510,26 @@ export async function createControllerView({ code, name } = {}) {
     });
   }
 
+  function paintGuestDrumLength() {
+    el.drumLengthRow?.querySelectorAll('[data-steps]').forEach((chip) => {
+      chip.classList.toggle('is-picked', Number(chip.dataset.steps) === state.drums.steps);
+    });
+  }
+
+  let guestPitchDrag = false;
+
+  function guestPitchLabel() {
+    const st = state.drums.pitch;
+    return `Drum pitch · ${st > 0 ? '+' : ''}${st} st`;
+  }
+
+  function syncGuestDrumPitch() {
+    if (!guestPitchDrag && el.drumPitch && String(el.drumPitch.value) !== String(state.drums.pitch)) {
+      el.drumPitch.value = String(state.drums.pitch);
+    }
+    if (el.drumPitchLabel) el.drumPitchLabel.textContent = guestPitchLabel();
+  }
+
   /** Host broadcast is the authority: adopt the whole drum state. */
   function applyHostDrums(d) {
     const prevSteps = state.drums.steps;
@@ -471,6 +538,10 @@ export async function createControllerView({ code, name } = {}) {
     if (typeof d.preset === 'string' || d.preset === '') state.drums.preset = d.preset || '';
     if (d.repeat === 'off' || Number(d.repeat) > 0) {
       state.drums.repeat = d.repeat === 'off' ? 'off' : Math.min(2, Math.max(1, Number(d.repeat)));
+    }
+    if (Number.isFinite(Number(d.pitch))) {
+      state.drums.pitch = Math.min(12, Math.max(-12, Math.round(Number(d.pitch))));
+      syncGuestDrumPitch();
     }
     if (d.grid && typeof d.grid === 'object') {
       for (const { id } of TRACKS) {
@@ -481,6 +552,7 @@ export async function createControllerView({ code, name } = {}) {
     ensureGuestDrumRows();
     paintGuestDrumPreset();
     paintGuestDrumEditRows();
+    paintGuestDrumLength();
     if (el.drumsSheet.hidden) return;
     if (state.drums.steps !== prevSteps || state.drums.repeat !== prevRepeat) drumGrid.render();
     else drumGrid.paintAll();
@@ -519,6 +591,33 @@ export async function createControllerView({ code, name } = {}) {
     drumZoom = Number(event.target.value) / 100;
     drumGrid.render();
   });
+  el.drumAdvCheck?.addEventListener('change', () => {
+    const on = Boolean(el.drumAdvCheck.checked);
+    if (el.drumAdvPanel) el.drumAdvPanel.hidden = !on;
+    if (!on && state.drumWrite !== 'single') {
+      state.drumWrite = 'single';
+      paintGuestDrumEditRows();
+    }
+  });
+  el.drumLengthRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-steps]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    socket.sendControl({ drumLength: Number(chip.dataset.steps) });
+  });
+  el.drumPitch?.addEventListener('pointerdown', () => {
+    guestPitchDrag = true;
+  });
+  el.drumPitch?.addEventListener('pointerup', () => {
+    guestPitchDrag = false;
+  });
+  el.drumPitch?.addEventListener('pointercancel', () => {
+    guestPitchDrag = false;
+  });
+  el.drumPitch?.addEventListener('input', () => {
+    state.drums.pitch = Math.min(12, Math.max(-12, Math.round(Number(el.drumPitch.value) || 0)));
+    syncGuestDrumPitch();
+    socket.sendControl({ drumPitch: state.drums.pitch });
+  });
 
   function renderGuestSliders() {
     const rows = [];
@@ -542,7 +641,7 @@ export async function createControllerView({ code, name } = {}) {
     });
     volumeRow.append(volumeName, volume);
     rows.push(volumeRow);
-    const octaveValue = state.octaves[state.instrument] ?? (state.instrument === 'bass' ? 2 : 3);
+    const octaveValue = state.octaves[state.instrument] ?? defaultOctaves()[state.instrument];
     const octaveRow = document.createElement('label');
     octaveRow.className = 'fx-slider fx-slider--octave';
     octaveRow.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
@@ -658,9 +757,9 @@ export async function createControllerView({ code, name } = {}) {
     if (el.notesSheet.hidden || !(state.noteSteps > 0)) return;
     setRollPlayhead(el.noteTape, step % state.noteSteps);
   });
-  const GUEST_DIVISIONS = new Set(['4n', '8n', '16n', '32n']);
+  const GUEST_DIVISIONS = new Set(REPEAT_ORDER);
+  /** The master slider under a finger (element), so host echoes don't fight it. */
   let guestMasterDrag = null;
-  let guestStutterPointer = null;
 
   function guestMasterLabel(key) {
     if (key === 'cutoff') {
@@ -671,21 +770,16 @@ export async function createControllerView({ code, name } = {}) {
     if (key === 'grit') {
       return `8-bit grit · ${state.masterFx.grit < 0.02 ? 'Off' : `${Math.round(state.masterFx.grit * 100)}%`}`;
     }
+    if (key === 'volume') {
+      return `Master volume · ${Math.round(state.masterFx.volume * 100)}%`;
+    }
     return `Wah frequency · ${state.masterFx.wah < 0.02 ? 'Off' : `${Math.round(160 * Math.pow(2400 / 160, state.masterFx.wah))} Hz`}`;
-  }
-
-  function paintGuestHold() {
-    document.querySelectorAll('#controller-stutter [data-repeat]').forEach((button) => {
-      const on = Boolean(state.masterFx.hold) && button.dataset.repeat === state.masterFx.division;
-      button.classList.toggle('is-on', on);
-      button.setAttribute('aria-pressed', on ? 'true' : 'false');
-    });
   }
 
   function syncGuestMasterSliders() {
     el.masterSliders?.querySelectorAll('[data-master]').forEach((input) => {
       const key = input.dataset.master;
-      if (key === guestMasterDrag) return;
+      if (input === guestMasterDrag) return;
       const next = String(Math.round(state.masterFx[key] * 100));
       if (input.value !== next) input.value = next;
       const name = input.previousElementSibling;
@@ -708,10 +802,10 @@ export async function createControllerView({ code, name } = {}) {
       input.dataset.master = key;
       input.value = String(Math.round(state.masterFx[key] * 100));
       const claim = () => {
-        guestMasterDrag = key;
+        guestMasterDrag = input;
       };
       const release = () => {
-        if (guestMasterDrag === key) guestMasterDrag = null;
+        if (guestMasterDrag === input) guestMasterDrag = null;
       };
       input.addEventListener('pointerdown', claim);
       input.addEventListener('pointerup', release);
@@ -725,51 +819,121 @@ export async function createControllerView({ code, name } = {}) {
       row.append(name, input);
       rows.push(row);
     };
-    add('cutoff');
     add('grit');
     add('wah');
+    add('volume');
     el.masterSliders.replaceChildren(...rows);
   }
 
-  function endGuestStutter(event) {
-    if (guestStutterPointer == null) return;
-    if (event?.pointerId != null && event.pointerId !== guestStutterPointer) return;
-    guestStutterPointer = null;
-    state.masterFx.hold = false;
-    paintGuestHold();
-    socket.sendControl({ masterHold: { hold: false } });
+  /* ---------- Pad mode: Notes, or the master FX surface ---------- */
+
+  /** FX pad fingers, insertion-ordered — the newest finger drives the master. */
+  const fxFingers = new Map();
+
+  function fxZone(point) {
+    const index = Math.min(FX_PAD_DIVISIONS.length - 1, Math.max(0, Math.floor(point.x * FX_PAD_DIVISIONS.length)));
+    const division = FX_PAD_DIVISIONS[index];
+    return { division, label: division ? `1/${division.replace('n', '')}` : '—' };
   }
 
-  document.querySelectorAll('#controller-stutter [data-repeat]').forEach((button) => {
-    button.addEventListener('pointerdown', (event) => {
-      if (event.pointerType === 'mouse' && event.button !== 0) return;
-      if (!GUEST_DIVISIONS.has(button.dataset.repeat)) return;
-      event.preventDefault();
-      if (guestStutterPointer != null) endGuestStutter();
-      guestStutterPointer = event.pointerId;
-      try {
-        button.setPointerCapture(event.pointerId);
-      } catch {
-        // Capture can fail if the pointer already ended.
-      }
-      state.masterFx.division = button.dataset.repeat;
-      state.masterFx.hold = true;
-      paintGuestHold();
-      socket.sendControl({ masterHold: { hold: true, division: button.dataset.repeat } });
-    });
-    button.addEventListener('pointerup', endGuestStutter);
-    button.addEventListener('pointercancel', endGuestStutter);
-    button.addEventListener('lostpointercapture', endGuestStutter);
-    const quiet = (event) => event.preventDefault();
-    button.addEventListener('contextmenu', quiet);
-    button.addEventListener('selectstart', quiet);
+  /** Filter amount above/below the Y middle. |y − 0.5| inside the dead band is Off. */
+  const FX_DEAD = 0.04;
+  function fxFilter(point) {
+    const t = point.y * 2 - 1;
+    const edge = FX_DEAD * 2;
+    const amount = Math.abs(t) <= edge ? 0 : clampFx((Math.abs(t) - edge) / (1 - edge));
+    return {
+      cutoff: t < 0 ? amount : 0,
+      hipass: t > 0 ? amount : 0,
+      label:
+        amount < 0.02
+          ? 'open'
+          : t > 0
+            ? `${masterHipassHz(amount) >= 1000 ? `${(masterHipassHz(amount) / 1000).toFixed(1)} kHz` : `${Math.round(masterHipassHz(amount))} Hz`} HP`
+            : `${masterCutoffHz(amount) >= 1000 ? `${(masterCutoffHz(amount) / 1000).toFixed(1)} kHz` : `${Math.round(masterCutoffHz(amount))} Hz`} LP`,
+    };
+  }
+
+  function fxCaption(point) {
+    return `${fxZone(point).label} · ${fxFilter(point).label}`;
+  }
+
+  /**
+   * FX touches ride the existing control channel: masterHold carries the
+   * stutter on/off + division, masterFx carries the bipolar filter (lowpass
+   * below the Y middle, highpass above it). No new protocol.
+   */
+  function driveFxPad() {
+    const point = [...fxFingers.values()].pop();
+    if (!point) {
+      state.masterFx.hold = false;
+      state.masterFx.cutoff = 0;
+      state.masterFx.hipass = 0;
+      setLabel('—');
+      socket.sendControl({ masterHold: { hold: false }, masterFx: { cutoff: 0, hipass: 0 } });
+      return;
+    }
+    const { division } = fxZone(point);
+    const { cutoff, hipass } = fxFilter(point);
+    // The left lane is filter-only: there the finger drops the stutter but
+    // keeps steering the filter.
+    const wantsHold = Boolean(division);
+    const wasHeld = state.masterFx.hold;
+    const divisionChanged = wantsHold && state.masterFx.division !== division;
+    if (wantsHold) state.masterFx.division = division;
+    state.masterFx.hold = wantsHold;
+    state.masterFx.cutoff = cutoff;
+    state.masterFx.hipass = hipass;
+    const control = { masterFx: { cutoff, hipass } };
+    if (wantsHold !== wasHeld || divisionChanged) control.masterHold = { hold: wantsHold, division: division ?? '16n' };
+    socket.sendControl(control);
+    setLabel(fxCaption(point));
+  }
+
+  function fxPadDown(point) {
+    fxFingers.set(point.id, { x: point.x, y: point.y });
+    el.pad.classList.add('is-active');
+    renderer.update(point.id, point);
+    driveFxPad();
+  }
+
+  function fxPadMove(point) {
+    if (!fxFingers.has(point.id)) return;
+    fxFingers.set(point.id, { x: point.x, y: point.y });
+    renderer.update(point.id, point);
+    driveFxPad();
+  }
+
+  function fxPadUp(point) {
+    fxFingers.delete(point.id);
+    renderer.update(point.id, null);
+    if (!pad.activePointers.size) el.pad.classList.remove('is-active');
+    driveFxPad();
+  }
+
+  /**
+   * Held fingers leave through the OLD mode first: a notes finger sends its
+   * note-off, an FX finger releases the stutter — nothing hangs on the flip.
+   */
+  function setPadMode(next) {
+    const mode = next === 'fx' ? 'fx' : 'notes';
+    if (mode === state.padMode) return;
+    pad.releaseHeld();
+    fxFingers.clear();
+    state.padMode = mode;
+    syncChrome();
+  }
+
+  el.advanced?.addEventListener('click', () => {
+    renderGuestFx();
+    el.advancedSheet.hidden = false;
   });
-  window.addEventListener('pointerup', endGuestStutter);
-  window.addEventListener('pointercancel', endGuestStutter);
+  el.advancedClose?.addEventListener('click', () => {
+    el.advancedSheet.hidden = true;
+  });
 
   el.master?.addEventListener('click', () => {
     renderGuestMaster();
-    paintGuestHold();
     el.masterSheet.hidden = false;
   });
   el.masterClose?.addEventListener('click', () => {
@@ -783,13 +947,14 @@ export async function createControllerView({ code, name } = {}) {
     if (payload?.scale && SCALES[payload.scale]) state.scale = payload.scale;
     if (payload?.masterFx && typeof payload.masterFx === 'object') {
       const next = payload.masterFx;
-      if (GUEST_DIVISIONS.has(next.division)) state.masterFx.division = next.division;
-      if (typeof next.hold === 'boolean') state.masterFx.hold = next.hold;
-      for (const key of ['cutoff', 'grit', 'wah']) {
-        if (!Number.isFinite(Number(next[key])) || guestMasterDrag === key) continue;
+      const dragKey = guestMasterDrag?.dataset?.master;
+      if (GUEST_DIVISIONS.has(next.division) && !fxFingers.size) state.masterFx.division = next.division;
+      if (typeof next.hold === 'boolean' && !fxFingers.size) state.masterFx.hold = next.hold;
+      for (const key of ['cutoff', 'hipass', 'grit', 'wah', 'volume']) {
+        if (!Number.isFinite(Number(next[key])) || dragKey === key) continue;
+        if ((key === 'cutoff' || key === 'hipass') && fxFingers.size) continue;
         state.masterFx[key] = clampFx(next[key]);
       }
-      paintGuestHold();
       syncGuestMasterSliders();
     }
     if ((state.root !== previousRoot || state.scale !== previousScale) && !el.notesSheet.hidden) paintGuestNotes();
@@ -876,23 +1041,38 @@ export async function createControllerView({ code, name } = {}) {
   const pad = new TouchPad(el.pad, {
     locked: true,
     onStart: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadDown(point);
+        return;
+      }
       if (!state.audioReady) return;
       socket.sendTouch(touchPayload(point));
       el.pad.classList.add('is-active');
       renderer.update(point.id, point);
       setLabel(caption(point));
+      paintZone(point.y);
     },
     onMove: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadMove(point);
+        return;
+      }
       if (!state.audioReady) return;
       renderer.update(point.id, point);
       setLabel(caption(point));
+      paintZone(point.y);
       socket.sendTouch(touchPayload(point));
     },
     onEnd: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadUp(point);
+        return;
+      }
       renderer.update(point.id, null);
       if (!pad.activePointers.size) {
         el.pad.classList.remove('is-active');
         setLabel('—');
+        paintZone(null);
       }
       if (!state.audioReady) return;
       socket.sendTouch(touchPayload(point));
@@ -902,6 +1082,10 @@ export async function createControllerView({ code, name } = {}) {
   function onChipClick(event) {
     const chip = event.target.closest('.chip');
     if (!chip) return;
+    if (chip.dataset.padmode) {
+      setPadMode(chip.dataset.padmode);
+      return;
+    }
     if (chip.dataset.fx) {
       cycleGuestFx(chip.dataset.fx);
       return;
@@ -966,7 +1150,8 @@ export async function createControllerView({ code, name } = {}) {
   });
 
   function paintGuestClear() {
-    paintIconButton(el.loopClear, state.clearUndo ? 'undo' : 'erase', state.clearUndo ? 'undo' : 'clr all');
+    el.loopClear.replaceChildren(chipIcon(state.clearUndo ? 'undo' : 'erase'));
+    el.loopClear.setAttribute('aria-label', state.clearUndo ? 'Undo clear' : 'Clear all loops');
   }
 
   el.loopClear.addEventListener('click', () => {
@@ -981,6 +1166,9 @@ export async function createControllerView({ code, name } = {}) {
     if (!el.notesSheet.hidden) paintGuestNotes();
     socket.sendControl({ loop: 'clear' });
   });
+
+  el.loopUndo.addEventListener('click', () => socket.sendControl({ history: 'undo' }));
+  el.loopRedo.addEventListener('click', () => socket.sendControl({ history: 'redo' }));
 
   document.getElementById('controller-note-zoom')?.addEventListener('input', (event) => {
     noteZoom = Number(event.target.value) / 100;
@@ -1034,8 +1222,13 @@ export async function createControllerView({ code, name } = {}) {
     }
   }
   paintIconButton(el.loop, 'loop', 'Rec');
+  el.loopUndo.replaceChildren(chipIcon('undo'));
+  el.loopRedo.replaceChildren(chipIcon('redo'));
+  paintIconButton(el.advanced, 'detail', 'Advanced');
   paintGuestTransport();
   paintGuestClear();
+  paintGuestDrumLength();
+  syncGuestDrumPitch();
   paintIconButton(el.notes, 'notes', 'Notes');
   paintIconButton(el.noteUndo, 'undo', 'Undo');
   paintIconButton(el.noteUndoAll, 'undo', 'Undo all');

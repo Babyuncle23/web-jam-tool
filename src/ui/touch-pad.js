@@ -4,6 +4,9 @@
  * Coordinates are normalised: x ∈ [0,1] left→right, y ∈ [0,1] bottom→top.
  */
 
+import { CHORD_ZONE_EDGES } from '../audio/synth.js';
+import { FX_PAD_DIVISIONS } from '../audio/effects.js';
+
 /** 30 Hz is the cap: finer than the ear or the eye needs, far cheaper than 60. */
 const THROTTLE_MS = 33;
 
@@ -220,6 +223,7 @@ export class TouchPadRenderer {
   #points = new Map();
   #marks = [];
   #columns;
+  #mode = 'single';
   #frame = null;
   #glow = null;
   #grid = null;
@@ -243,6 +247,18 @@ export class TouchPadRenderer {
 
   setColumns(columns) {
     this.#columns = columns;
+    this.#buildGrid();
+    this.#schedule();
+  }
+
+  /**
+   * 'single' draws scale columns, 'chords' adds the Y zone borders the DOM
+   * labels describe, 'fx' swaps the grid for stutter zones + a filter shade.
+   */
+  setMode(mode) {
+    const next = mode === 'chords' || mode === 'fx' ? mode : 'single';
+    if (next === this.#mode) return;
+    this.#mode = next;
     this.#buildGrid();
     this.#schedule();
   }
@@ -316,6 +332,11 @@ export class TouchPadRenderer {
     canvas.height = Math.floor(height * ratio);
     const ctx = canvas.getContext('2d');
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    if (this.#mode === 'fx') {
+      this.#paintFxGrid(ctx, width, height);
+      this.#grid = canvas;
+      return;
+    }
     ctx.strokeStyle = 'rgba(28, 20, 12, 0.16)';
     ctx.lineWidth = 1;
     for (let i = 1; i < this.#columns; i += 1) {
@@ -325,7 +346,87 @@ export class TouchPadRenderer {
       ctx.lineTo(x, height);
       ctx.stroke();
     }
+    if (this.#mode === 'chords') {
+      ctx.strokeStyle = 'rgba(28, 20, 12, 0.34)';
+      ctx.lineWidth = 2;
+      for (const edge of CHORD_ZONE_EDGES) {
+        const y = (1 - edge) * height;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    }
     this.#grid = canvas;
+  }
+
+  /**
+   * FX mode: X picks the stutter division — the left zone is filter-only,
+   * then slice lines pack tighter towards the right. Y is bipolar around the
+   * mid line: above it the highpass thins the lows (lighter shade), below it
+   * the lowpass closes the highs (darker shade). Labels sit in the canvas.
+   */
+  #paintFxGrid(ctx, width, height) {
+    const mid = height / 2;
+    const topShade = ctx.createLinearGradient(0, 0, 0, mid);
+    topShade.addColorStop(0, 'rgba(255, 250, 235, 0.5)');
+    topShade.addColorStop(1, 'rgba(255, 250, 235, 0)');
+    ctx.fillStyle = topShade;
+    ctx.fillRect(0, 0, width, mid);
+    const bottomShade = ctx.createLinearGradient(0, mid, 0, height);
+    bottomShade.addColorStop(0, 'rgba(28, 20, 12, 0)');
+    bottomShade.addColorStop(1, 'rgba(28, 20, 12, 0.22)');
+    ctx.fillStyle = bottomShade;
+    ctx.fillRect(0, mid, width, height - mid);
+
+    // The neutral line: a finger resting on the middle applies no filter.
+    ctx.strokeStyle = 'rgba(28, 20, 12, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    ctx.lineTo(width, mid);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const zones = FX_PAD_DIVISIONS.length;
+    const zoneWidth = width / zones;
+    for (let z = 0; z < zones; z += 1) {
+      const left = zoneWidth * z;
+      if (z > 0) {
+        ctx.strokeStyle = 'rgba(28, 20, 12, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(left, 0);
+        ctx.lineTo(left, height);
+        ctx.stroke();
+      }
+      // Zone 0 has no slices — it is the filter-only lane. The rest get
+      // 1, 2, 4, 8 slices: the right edge reads as the fastest cut.
+      const slices = z === 0 ? 0 : 2 ** (z - 1);
+      ctx.strokeStyle = 'rgba(28, 20, 12, 0.16)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < slices; i += 1) {
+        const x = left + (zoneWidth / slices) * i;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(28, 20, 12, 0.78)';
+      ctx.font = '800 16px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = z === 0 ? '—' : `1/${FX_PAD_DIVISIONS[z].replace('n', '')}`;
+      ctx.fillText(label, left + zoneWidth / 2, height - 62);
+    }
+
+    ctx.fillStyle = 'rgba(28, 20, 12, 0.5)';
+    ctx.font = '700 11px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('low cut', width - 10, 16);
+    ctx.fillText('open', width - 10, mid - 6);
+    ctx.fillText('high cut', width - 10, height - 14);
   }
 
   #schedule() {
@@ -341,6 +442,41 @@ export class TouchPadRenderer {
     const ctx = this.#ctx;
     ctx.clearRect(0, 0, width, height);
     if (this.#grid) ctx.drawImage(this.#grid, 0, 0, width, height);
+
+    // The strip the finger plays: its scale column, plus the chord zone it
+    // sits in when the pad is in chords mode. FX fingers light their stutter
+    // zone and shade the filtered-away half — dark below for the lowpass,
+    // light above for the highpass.
+    const columnWidth = width / this.#columns;
+    const zoneBounds = [0, ...CHORD_ZONE_EDGES, 1];
+    for (const point of this.#points.values()) {
+      if (this.#mode === 'fx') {
+        const zones = FX_PAD_DIVISIONS.length;
+        const zone = Math.min(zones - 1, Math.max(0, Math.floor(point.x * zones)));
+        ctx.fillStyle = 'rgba(242, 193, 75, 0.24)';
+        ctx.fillRect(zone * (width / zones), 0, width / zones, height);
+        const fingerY = (1 - point.y) * height;
+        if (fingerY > height / 2) {
+          ctx.fillStyle = 'rgba(28, 20, 12, 0.14)';
+          ctx.fillRect(0, fingerY, width, height - fingerY);
+        } else {
+          ctx.fillStyle = 'rgba(255, 250, 235, 0.35)';
+          ctx.fillRect(0, 0, width, fingerY);
+        }
+        continue;
+      }
+      if (this.#mode === 'chords') {
+        let zone = 0;
+        while (zone < CHORD_ZONE_EDGES.length && point.y >= CHORD_ZONE_EDGES[zone]) zone += 1;
+        const top = (1 - zoneBounds[zone + 1]) * height;
+        const bottom = (1 - zoneBounds[zone]) * height;
+        ctx.fillStyle = 'rgba(47, 143, 85, 0.16)';
+        ctx.fillRect(0, top, width, bottom - top);
+      }
+      const column = Math.min(this.#columns - 1, Math.max(0, Math.floor(point.x * this.#columns)));
+      ctx.fillStyle = 'rgba(242, 193, 75, 0.24)';
+      ctx.fillRect(column * columnWidth, 0, columnWidth, height);
+    }
 
     for (const mark of this.#marks) {
       const x = mark.x * width;

@@ -806,7 +806,7 @@ export function createInstrumentBus(tone) {
   const finish = (instrument, node, { darken = false } = {}) => {
     let last = node;
     if (darken) {
-      const shelf = keep(new tone.Filter({ type: 'highshelf', frequency: 3200, gain: -6, Q: 0.7 }));
+      const shelf = keep(new tone.Filter({ type: 'highshelf', frequency: 2200, gain: -8, Q: 0.7 }));
       last.connect(shelf);
       last = shelf;
     }
@@ -1067,9 +1067,14 @@ export function createDrumBus(tone) {
 }
 
 const REPEAT_BEATS = { '4n': 1, '8n': 0.5, '16n': 0.25, '32n': 0.125 };
-const REPEAT_ORDER = ['4n', '8n', '16n', '32n'];
+/** Stutter divisions, coarse → dense. The FX pad maps these to X zones. */
+export const REPEAT_ORDER = ['4n', '8n', '16n', '32n'];
+/** FX pad X zones, left → right: a filter-only lane, then the stutter divisions. */
+export const FX_PAD_DIVISIONS = [null, ...REPEAT_ORDER];
 const CUTOFF_OPEN_HZ = 14000;
 const CUTOFF_DARK_HZ = 180;
+const HIPASS_OPEN_HZ = 24;
+const HIPASS_THIN_HZ = 4000;
 /** Narrow bandpass makeup. 8-bit is not lifted. Was 2.8; 4.8 sits closer to the dry bus. */
 const WAH_LIFT = 4.8;
 
@@ -1079,13 +1084,22 @@ export function masterCutoffHz(amount) {
   return CUTOFF_OPEN_HZ * Math.pow(CUTOFF_DARK_HZ / CUTOFF_OPEN_HZ, value);
 }
 
+/** Highpass frequency for a master hipass amount. Amount 0 bypasses the filter instead. */
+export function masterHipassHz(amount) {
+  const value = clampFx(amount);
+  return HIPASS_OPEN_HZ * Math.pow(HIPASS_THIN_HZ / HIPASS_OPEN_HZ, value);
+}
+
 /**
  * Master inserts after the instrument mix and before the limiter.
- * Signal order: beat-repeat stutter, then lowpass cutoff, then 8-bit, then wah.
+ * Signal order: beat-repeat stutter, then the cutoff stage, then 8-bit, then wah.
  * The repeat is not part of a loop. The slice is a delay line, not a frame loop
  * and not an AudioWorklet. Hold replaces the live bus at full level.
- * Cutoff at 0 is a true bypass. 8-bit stays at unity.
- * Wah gets makeup because the bandpass would otherwise duck the bus.
+ * The cutoff stage is bipolar: lowpass (cut highs) and highpass (cut lows)
+ * share one dry/wet gate and are never wet at once — the FX pad picks one by
+ * which side of the Y middle the finger sits on. Both at 0 is a true bypass.
+ * 8-bit stays at unity. Wah gets makeup because the bandpass would otherwise
+ * duck the bus.
  */
 export function createMasterFx(tone, bpm = 96) {
   const input = new tone.Gain(1);
@@ -1098,6 +1112,10 @@ export function createMasterFx(tone, bpm = 96) {
   const cutDry = new tone.Gain(1);
   const cutWet = new tone.Gain(0);
   const cutoff = new tone.Filter({ type: 'lowpass', frequency: CUTOFF_OPEN_HZ, Q: 0.7, rolloff: -24 });
+  const hpWet = new tone.Gain(0);
+  const hipass = new tone.Filter({ type: 'highpass', frequency: HIPASS_OPEN_HZ, Q: 0.7, rolloff: -24 });
+  let cutAmount = 0;
+  let hpAmount = 0;
   const crushDry = new tone.Gain(1);
   const crushWet = new tone.Gain(0);
   const crusher = new tone.WaveShaper((value) => value, 2048);
@@ -1113,8 +1131,11 @@ export function createMasterFx(tone, bpm = 96) {
   post.connect(cutDry);
   post.connect(cutoff);
   cutoff.connect(cutWet);
+  post.connect(hipass);
+  hipass.connect(hpWet);
   cutDry.connect(crushDry);
   cutWet.connect(crushDry);
+  hpWet.connect(crushDry);
   cutDry.connect(crusher);
   cutWet.connect(crusher);
   crusher.connect(crushWet);
@@ -1260,13 +1281,28 @@ export function createMasterFx(tone, bpm = 96) {
     /** 0 bypasses the lowpass. Higher amounts close it from bright to dark. */
     setCutoff(amount) {
       const value = clampFx(amount);
+      cutAmount = value;
       if (value < 0.001) {
         cutWet.gain.value = 0;
-        cutDry.gain.value = 1;
+        cutDry.gain.value = hpAmount > 0 ? 0 : 1;
         return 0;
       }
-      cutoff.frequency.value = masterCutoffHz(value);
+      cutoff.frequency.rampTo(masterCutoffHz(value), 0.03);
       cutWet.gain.value = 1;
+      cutDry.gain.value = 0;
+      return value;
+    },
+    /** 0 bypasses the highpass. Higher amounts thin the lows out. */
+    setHipass(amount) {
+      const value = clampFx(amount);
+      hpAmount = value;
+      if (value < 0.001) {
+        hpWet.gain.value = 0;
+        cutDry.gain.value = cutAmount > 0 ? 0 : 1;
+        return 0;
+      }
+      hipass.frequency.rampTo(masterHipassHz(value), 0.03);
+      hpWet.gain.value = 1;
       cutDry.gain.value = 0;
       return value;
     },
@@ -1302,7 +1338,7 @@ export function createMasterFx(tone, bpm = 96) {
     dispose() {
       release();
       dropDelay();
-      for (const node of [input, output, live, grab, repeat, post, cutDry, cutWet, cutoff, crushDry, crushWet, crusher, wahDry, wahWet, wahLift, wah]) {
+      for (const node of [input, output, live, grab, repeat, post, cutDry, cutWet, cutoff, hpWet, hipass, crushDry, crushWet, crusher, wahDry, wahWet, wahLift, wah]) {
         node.dispose?.();
       }
     },

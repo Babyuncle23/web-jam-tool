@@ -258,7 +258,6 @@ body[data-view='controller'] {
 
 .pad,
 .pad__canvas,
-.stutter-hold,
 .roll__note,
 .roll__key,
 input[type='range'] {
@@ -586,62 +585,6 @@ input[type='range'] {
   height: 18px;
 }
 
-.stutter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  background: #f3d7a6;
-  border-bottom: 1px solid var(--line);
-}
-
-.btn--stutter {
-  flex: 1 1 140px;
-  min-width: 120px;
-  max-width: 220px;
-  min-height: 72px;
-  height: auto;
-  font-size: 22px;
-  font-weight: 800;
-  background: var(--bg-elevated);
-  border-width: 3px;
-  touch-action: none;
-  user-select: none;
-}
-
-.btn--stutter.is-on {
-  background: var(--warn);
-  color: var(--ink);
-}
-
-.stutter-div {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  flex: 1 1 180px;
-  min-width: 0;
-}
-
-.stutter-div .chip {
-  min-height: 48px;
-  font-weight: 800;
-}
-
-.stutter-hold {
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-  min-height: 64px;
-  font-size: 22px;
-}
-
-.stutter-hold.is-on {
-  background: var(--warn);
-  color: var(--ink);
-}
-
 .export-hint {
   margin: 0;
   color: var(--text-dim);
@@ -704,6 +647,11 @@ input[type='range'] {
   touch-action: pan-y;
 }
 
+.play-bar[hidden],
+.play-bar__modes[hidden] {
+  display: none;
+}
+
 .play-bar__modes {
   display: flex;
   flex: 1.4 1 0;
@@ -717,6 +665,16 @@ input[type='range'] {
   min-width: 0;
   min-height: 48px;
   width: auto;
+}
+
+.play-bar .btn--icon {
+  flex: 0 0 52px;
+  width: 52px;
+  padding: 0;
+}
+
+.play-bar .btn--icon .ico {
+  margin: 0 auto;
 }
 
 .play-bar .chip-label {
@@ -775,9 +733,13 @@ input[type='range'] {
   gap: 8px;
 }
 
-.drum-picker__open {
+.drum-picker__presets {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.drum-picker__open {
+  flex: 0 0 auto;
 }
 
 .host-pad {
@@ -787,6 +749,49 @@ input[type='range'] {
   border-radius: 0;
   border-left: none;
   border-right: none;
+}
+
+.pad-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.pad-stage .host-pad {
+  flex: 0 0 auto;
+}
+
+.pad-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f3d7a6;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  touch-action: pan-y;
+}
+
+.pad-stage .pad-mode {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+
+.pad-mode__chips {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+}
+
+.pad-mode__chips .chip {
+  flex: 1 1 0;
+  min-width: 76px;
+  min-height: 48px;
+  padding: 6px 16px;
+  font-weight: 800;
 }
 
 .host-tools {
@@ -826,6 +831,18 @@ input[type='range'] {
   min-height: 52px;
   height: auto;
   padding: 6px 6px;
+}
+
+.drum-presets {
+  flex-wrap: nowrap;
+}
+
+.drum-presets .chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 2px;
+  padding-right: 2px;
+  font-size: 13px;
 }
 
 .tool-row__label {
@@ -931,9 +948,9 @@ input[type='range'] {
 }
 
 #btn-drums {
-  width: 100%;
-  min-height: 64px;
-  font-size: 20px;
+  min-height: 52px;
+  padding: 6px 10px;
+  font-size: 17px;
   font-weight: 800;
 }
 
@@ -1031,10 +1048,15 @@ input[type='range'] {
     font-size: 28px;
   }
 
-  .host-pad {
+  .pad-stage {
     grid-column: 1;
     grid-row: 3;
     min-height: 70vh;
+  }
+
+  .pad-stage .host-pad {
+    flex: 1 1 auto;
+    min-height: 0;
     height: auto;
   }
 
@@ -1514,6 +1536,44 @@ input[type='range'] {
   opacity: 0.65;
 }
 
+/* Big tappable checkbox row that opens the advanced drum controls. */
+.adv-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  font-weight: 800;
+  font-size: 16px;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.adv-check input[type='checkbox'] {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.drum-adv {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  background: var(--bg-elevated);
+}
+
+.drum-adv[hidden] {
+  display: none;
+}
+
+.drum-pitch {
+  margin: 0;
+}
+
 .event-log {
   list-style: none;
   margin: 0;
@@ -1577,6 +1637,15 @@ input[type='range'] {
   height: 48vh;
   min-height: 220px;
   padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pad-wrap > .pad {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 
 .pad {
@@ -1737,6 +1806,12 @@ input[type='range'] {
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.y-zones span.is-active {
+  color: var(--ink);
+  font-weight: 700;
+  text-shadow: 0 0 10px rgba(242, 193, 75, 0.9);
 }
 
 .fx-stack {
@@ -2328,17 +2403,12 @@ input[type='range'] {
   .host-tools > .tool-row,
   .host-tools > .root-picker,
   .host-tools > .tempo-row,
-  .host-tools > #btn-drums,
+  .host-tools > .drum-picker,
   .host-tools > .fx-stack,
   .host-tools > .instrument-grid,
   .host-tools > .loop-actions {
     min-width: 0;
     max-width: 100%;
-  }
-
-  .stutter-hold {
-    min-height: 48px;
-    font-size: 18px;
   }
 
   .screen.screen--controller:not([hidden]) {
@@ -2395,6 +2465,7 @@ input[type='range'] {
   .loop-actions .btn,
   .fx-chip,
   .controller-foot .chip,
+  .pad-mode__chips .chip,
   .seq-page,
   .btn.has-icon {
     min-height: 44px;
@@ -2402,6 +2473,10 @@ input[type='range'] {
     overflow: visible;
     text-overflow: clip;
     white-space: normal;
+  }
+
+  .pad-mode {
+    padding: 6px 8px;
   }
 
   .tool-block,

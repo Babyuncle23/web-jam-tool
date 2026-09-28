@@ -99,29 +99,39 @@
             <button class="chip" type="button" data-mode="chords">Chords</button>
           </div>
           <button id="btn-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
-          <button id="btn-loop-clear" class="btn btn--ghost" type="button" disabled>clr all</button>
+          <button id="btn-loop-undo" class="btn btn--ghost btn--icon" type="button" aria-label="Undo your last change" disabled></button>
+          <button id="btn-loop-redo" class="btn btn--ghost btn--icon" type="button" aria-label="Redo" disabled></button>
+          <button id="btn-loop-clear" class="btn btn--ghost btn--icon" type="button" aria-label="Clear all loops" disabled></button>
         </div>
 
-        <div id="host-pad" class="pad host-pad is-locked">
-          <canvas id="host-pad-canvas" class="pad__canvas"></canvas>
-          <div class="pad__pulse" aria-hidden="true"></div>
-          <div class="bar-readout">
-            <p id="bar-label" class="bar-label">Bar —</p>
-            <div id="beat-dots" class="beat-dots" aria-hidden="true">
-              <span class="beat-dot"></span>
-              <span class="beat-dot"></span>
-              <span class="beat-dot"></span>
-              <span class="beat-dot"></span>
+        <div class="pad-stage">
+          <div id="host-pad" class="pad host-pad is-locked">
+            <canvas id="host-pad-canvas" class="pad__canvas"></canvas>
+            <div class="pad__pulse" aria-hidden="true"></div>
+            <div class="bar-readout">
+              <p id="bar-label" class="bar-label">Bar —</p>
+              <div id="beat-dots" class="beat-dots" aria-hidden="true">
+                <span class="beat-dot"></span>
+                <span class="beat-dot"></span>
+                <span class="beat-dot"></span>
+                <span class="beat-dot"></span>
+              </div>
+            </div>
+            <p id="harmony-label" class="harmony-label" aria-live="polite">—</p>
+            <div id="host-y-zones" class="y-zones" hidden>
+              <span>9</span>
+              <span>7</span>
+              <span>sus</span>
+              <span>triad</span>
+            </div>
+            <p class="pad__hint" id="host-pad-hint">Slide on Pad or Bass to move the note.</p>
+          </div>
+          <div class="pad-mode" id="host-pad-mode">
+            <div class="pad-mode__chips" role="group" aria-label="Pad mode">
+              <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+              <button class="chip" type="button" data-padmode="fx">FX</button>
             </div>
           </div>
-          <p id="harmony-label" class="harmony-label" aria-live="polite">—</p>
-          <div id="host-y-zones" class="y-zones" hidden>
-            <span>9</span>
-            <span>7</span>
-            <span>sus</span>
-            <span>triad</span>
-          </div>
-          <p class="pad__hint" id="host-pad-hint">Slide on Pad or Bass to move the note.</p>
         </div>
 
         <div class="host-tools">
@@ -149,9 +159,8 @@
           </div>
 
           <div class="drum-picker">
-            <button id="drum-preset-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous drum pattern"></button>
-            <button id="btn-drums" class="btn btn--ghost btn--xl drum-picker__open" type="button">Drums</button>
-            <button id="drum-preset-next" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Next drum pattern"></button>
+            <div class="tool-row drum-presets drum-picker__presets" id="host-drum-presets" role="group" aria-label="Drum patterns"></div>
+            <button id="btn-drums" class="btn btn--ghost drum-picker__open" type="button">Drums</button>
           </div>
 
           <div class="fx-stack">
@@ -243,18 +252,35 @@
             <button class="chip is-picked" type="button" data-bpm="120">120</button>
             <button class="chip" type="button" data-bpm="140">140</button>
           </div>
-          <div class="tool-row" id="host-drum-write">
-            <span class="tool-row__label">Add</span>
-            <button class="chip is-picked" type="button" data-write="single">Single</button>
-            <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+          <label class="adv-check" for="host-drum-adv-check">
+            <input id="host-drum-adv-check" type="checkbox" />
+            <span>Advanced</span>
+          </label>
+          <div id="host-drum-adv" class="drum-adv" hidden>
+            <div class="tool-row" id="host-drum-length">
+              <span class="tool-row__label">Loop</span>
+              <button class="chip" type="button" data-steps="16">1 bar</button>
+              <button class="chip is-picked" type="button" data-steps="32">2 bars</button>
+              <button class="chip" type="button" data-steps="64">4 bars</button>
+            </div>
+            <div class="tool-row" id="host-drum-write">
+              <span class="tool-row__label">Add</span>
+              <button class="chip is-picked" type="button" data-write="single">Single</button>
+              <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+            </div>
+            <div class="tool-row" id="host-drum-repeat">
+              <span class="tool-row__label">Repeat</span>
+              <button class="chip" type="button" data-repeat-bars="off">Off</button>
+              <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
+              <button class="chip" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
+            </div>
+            <label class="fx-slider drum-pitch" for="host-drum-pitch">
+              <span id="host-drum-pitch-label">Drum pitch · 0 st</span>
+              <input id="host-drum-pitch" type="range" min="-12" max="12" step="1" value="0" aria-label="Drum pitch" />
+            </label>
+            <p class="seq-hint">Repeat copies the first bars into the rest — switch it off to make bars differ. Pitch retunes every drum voice.</p>
           </div>
-          <div class="tool-row" id="host-drum-repeat">
-            <span class="tool-row__label">Repeat</span>
-            <button class="chip" type="button" data-repeat-bars="off">Off</button>
-            <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
-            <button class="chip" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
-          </div>
-          <p class="seq-hint">Tap a cell or drag across cells like a brush. Repeat copies the first bars into the rest — switch it off to make bars differ.</p>
+          <p class="seq-hint">Tap a cell or drag across cells like a brush.</p>
           <label class="zoom-row">
             <span>Zoom</span>
             <input id="drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
@@ -289,16 +315,8 @@
 
       <div id="host-master-sheet" class="fx-sheet" hidden>
         <div class="fx-sheet__card">
-          <h2>Master Effects</h2>
-          <div class="master-repeat">
-            <span class="master-repeat__label">Stutter</span>
-            <div class="stutter-div" id="master-stutter" role="group" aria-label="Stutter hold">
-              <button class="chip stutter-hold" type="button" data-repeat="4n" aria-pressed="false">1/4</button>
-              <button class="chip stutter-hold" type="button" data-repeat="8n" aria-pressed="false">1/8</button>
-              <button class="chip stutter-hold" type="button" data-repeat="16n" aria-pressed="false">1/16</button>
-              <button class="chip stutter-hold" type="button" data-repeat="32n" aria-pressed="false">1/32</button>
-            </div>
-          </div>
+          <h2>Master</h2>
+          <p class="seq-hint">Stutter and cutoff live on the main pad — switch it to FX.</p>
           <div id="host-master-sliders" class="fx-sliders"></div>
           <button id="host-master-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>
@@ -354,7 +372,9 @@
           <button class="chip" type="button" data-mode="chords">Chords</button>
         </div>
         <button id="controller-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
-        <button id="controller-loop-clear" class="btn btn--ghost" type="button" disabled>clr all</button>
+        <button id="controller-loop-undo" class="btn btn--ghost btn--icon" type="button" aria-label="Undo your last change" disabled></button>
+        <button id="controller-loop-redo" class="btn btn--ghost btn--icon" type="button" aria-label="Redo" disabled></button>
+        <button id="controller-loop-clear" class="btn btn--ghost btn--icon" type="button" aria-label="Clear all loops" disabled></button>
       </div>
 
       <main class="pad-wrap">
@@ -379,6 +399,12 @@
           </div>
           <p class="pad__hint" id="pad-hint">X is one note in the host key.</p>
         </div>
+        <div class="pad-mode" id="controller-pad-mode">
+          <div class="pad-mode__chips" role="group" aria-label="Pad mode">
+            <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+            <button class="chip" type="button" data-padmode="fx">FX</button>
+          </div>
+        </div>
       </main>
 
       <footer class="controller-foot">
@@ -389,19 +415,29 @@
           <button class="chip" type="button" data-instrument="kalimba">Kalimba</button>
           <button class="chip" type="button" data-instrument="synth">Synth</button>
         </div>
-        <section class="fx-panel">
-          <span class="tool-row__label">Sound</span>
-          <div class="fx-tiles">
-            <div class="tool-row fx-row" id="controller-fx" aria-label="Effects for your instrument"></div>
-            <button id="controller-fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
-          </div>
-        </section>
+        <div class="tool-row drum-presets" id="controller-drum-presets-main" role="group" aria-label="Drum patterns"></div>
         <div class="loop-actions">
-          <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
           <button id="controller-drums" class="btn btn--ghost btn--xl" type="button">Drums</button>
           <button id="controller-notes" class="btn btn--ghost btn--xl" type="button" disabled>Notes</button>
+          <button id="controller-advanced" class="btn btn--ghost btn--xl" type="button">Advanced</button>
         </div>
       </footer>
+
+      <div id="controller-advanced-sheet" class="fx-sheet" hidden>
+        <div class="fx-sheet__card">
+          <h2>Advanced</h2>
+          <p class="seq-hint">The key and scale come from the host. These extras still sync for everyone.</p>
+          <section class="fx-panel">
+            <span class="tool-row__label">Sound</span>
+            <div class="fx-tiles">
+              <div class="tool-row fx-row" id="controller-fx" aria-label="Effects for your instrument"></div>
+              <button id="controller-fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
+            </div>
+          </section>
+          <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
+          <button id="controller-advanced-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
 
       <div id="controller-notes-sheet" class="fx-sheet fx-sheet--stage" hidden>
         <div class="fx-sheet__card">
@@ -442,18 +478,35 @@
             <button class="chip" type="button" data-bpm="120">120</button>
             <button class="chip" type="button" data-bpm="140">140</button>
           </div>
-          <div class="tool-row" id="controller-drum-write">
-            <span class="tool-row__label">Add</span>
-            <button class="chip is-picked" type="button" data-write="single">Single</button>
-            <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+          <label class="adv-check" for="controller-drum-adv-check">
+            <input id="controller-drum-adv-check" type="checkbox" />
+            <span>Advanced</span>
+          </label>
+          <div id="controller-drum-adv" class="drum-adv" hidden>
+            <div class="tool-row" id="controller-drum-length">
+              <span class="tool-row__label">Loop</span>
+              <button class="chip" type="button" data-steps="16">1 bar</button>
+              <button class="chip is-picked" type="button" data-steps="32">2 bars</button>
+              <button class="chip" type="button" data-steps="64">4 bars</button>
+            </div>
+            <div class="tool-row" id="controller-drum-write">
+              <span class="tool-row__label">Add</span>
+              <button class="chip is-picked" type="button" data-write="single">Single</button>
+              <button class="chip" type="button" data-write="triplet" title="Each cell plays 3 hits">Triplet</button>
+            </div>
+            <div class="tool-row" id="controller-drum-repeat">
+              <span class="tool-row__label">Repeat</span>
+              <button class="chip" type="button" data-repeat-bars="off">Off</button>
+              <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
+              <button class="chip" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
+            </div>
+            <label class="fx-slider drum-pitch" for="controller-drum-pitch">
+              <span id="controller-drum-pitch-label">Drum pitch · 0 st</span>
+              <input id="controller-drum-pitch" type="range" min="-12" max="12" step="1" value="0" aria-label="Drum pitch" />
+            </label>
+            <p class="seq-hint">Repeat copies the first bars into the rest — switch it off to make bars differ. Pitch retunes every drum voice.</p>
           </div>
-          <div class="tool-row" id="controller-drum-repeat">
-            <span class="tool-row__label">Repeat</span>
-            <button class="chip" type="button" data-repeat-bars="off">Off</button>
-            <button class="chip is-picked" type="button" data-repeat-bars="1" title="Bar 1 is copied to every bar">1 bar</button>
-            <button class="chip is-picked" type="button" data-repeat-bars="2" title="Bars 1–2 are copied to bars 3–4">2 bars</button>
-          </div>
-          <p class="seq-hint">Tap a cell or drag across cells like a brush. Repeat copies the first bars into the rest — switch it off to make bars differ.</p>
+          <p class="seq-hint">Tap a cell or drag across cells like a brush.</p>
           <label class="zoom-row">
             <span>Zoom</span>
             <input id="controller-drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
@@ -464,16 +517,8 @@
 
       <div id="controller-master-sheet" class="fx-sheet" hidden>
         <div class="fx-sheet__card">
-          <h2>Master Effects</h2>
-          <div class="master-repeat">
-            <span class="master-repeat__label">Stutter</span>
-            <div class="stutter-div" id="controller-stutter" role="group" aria-label="Stutter hold">
-              <button class="chip stutter-hold" type="button" data-repeat="4n" aria-pressed="false">1/4</button>
-              <button class="chip stutter-hold" type="button" data-repeat="8n" aria-pressed="false">1/8</button>
-              <button class="chip stutter-hold" type="button" data-repeat="16n" aria-pressed="false">1/16</button>
-              <button class="chip stutter-hold" type="button" data-repeat="32n" aria-pressed="false">1/32</button>
-            </div>
-          </div>
+          <h2>Master</h2>
+          <p class="seq-hint">Stutter and cutoff live on the main pad — switch it to FX.</p>
           <div id="controller-master-sliders" class="fx-sliders"></div>
           <button id="controller-master-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>

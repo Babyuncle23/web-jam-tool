@@ -41,18 +41,18 @@ export const INSTRUMENT_IDS = INSTRUMENTS.map((item) => item.id);
 
 export const DEFAULT_OCTAVE = 3;
 
-/** Bass sits one octave under the other instruments. The slider can move it later. */
+/** Bass sits two octaves under the organ; pad, kalimba and synth sit one above. The slider can move them later. */
 export function defaultOctaves() {
   return {
-    pad: DEFAULT_OCTAVE,
-    bass: DEFAULT_OCTAVE - 1,
+    pad: DEFAULT_OCTAVE + 1,
+    bass: DEFAULT_OCTAVE - 2,
     organ: DEFAULT_OCTAVE,
-    kalimba: DEFAULT_OCTAVE,
-    synth: DEFAULT_OCTAVE,
+    kalimba: DEFAULT_OCTAVE + 1,
+    synth: DEFAULT_OCTAVE + 1,
   };
 }
 
-/** Root of the octave this instrument usually sounds in. Bass defaults to C2, the others to C3. */
+/** Root of the octave this instrument usually sounds in. Bass defaults to C1, organ to C3, the others to C4. */
 export function instrumentHomeMidi(root, octave) {
   const name = NOTE_NAMES.includes(root) ? root : 'C';
   const register = Math.min(6, Math.max(1, Math.round(Number(octave)) || DEFAULT_OCTAVE));
@@ -189,13 +189,16 @@ export function midiInScale(midi, root, scale) {
 /**
  * Chords mode, bottom → top: triad, sus2, sus4, seventh, ninth.
  * The split inside the sus band is how both suspensions stay reachable.
+ * The pad renderer draws these same edges, so they are exported.
  */
+export const CHORD_ZONE_EDGES = [0.25, 0.375, 0.5, 0.75];
+
 export function extensionFromY(y) {
   const clamped = clamp01(y);
-  if (clamped < 0.25) return 'triad';
-  if (clamped < 0.375) return 'sus2';
-  if (clamped < 0.5) return 'sus4';
-  if (clamped < 0.75) return 'seventh';
+  if (clamped < CHORD_ZONE_EDGES[0]) return 'triad';
+  if (clamped < CHORD_ZONE_EDGES[1]) return 'sus2';
+  if (clamped < CHORD_ZONE_EDGES[2]) return 'sus4';
+  if (clamped < CHORD_ZONE_EDGES[3]) return 'seventh';
   return 'ninth';
 }
 
@@ -230,7 +233,7 @@ export function chordLabel(rootMidi, midis) {
  * The one mapping from a finger to a label and to the notes that will sound.
  * Host playback and the guest caption both call this.
  * Bass is always one scale degree. Its register is the octave passed in,
- * which defaults an octave below the other instruments.
+ * which defaults two octaves below the other instruments.
  */
 function storedDegree(degree) {
   if (degree == null || degree === '') return undefined;
@@ -282,9 +285,7 @@ export function resolveGesture({
   const safeMode = mode === 'chords' ? 'chords' : 'single';
   const register = Number.isFinite(Number(octave))
     ? Number(octave)
-    : safeInstrument === 'bass'
-      ? DEFAULT_OCTAVE - 1
-      : DEFAULT_OCTAVE;
+    : defaultOctaves()[safeInstrument];
   const rootMidi = noteNameToMidi(root, register);
   const explicitDegree = storedDegree(degree);
   const resolvedDegree = explicitDegree == null
@@ -622,7 +623,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'fatsine', count: 3, spread: 18 },
           envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: 2.2 },
-          volume: -7,
+          volume: -6,
         },
         inputs.pad,
         16,
@@ -632,7 +633,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'fatsawtooth', count: 2, spread: 12 },
           envelope: { attack: 0.01, decay: 0.18, sustain: 0.75, release: 0.28 },
-          volume: -3,
+          volume: -1,
         },
         inputs.bass,
       ),
@@ -642,7 +643,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'sine4' },
           envelope: { attack: 0.012, decay: 0.08, sustain: 0.9, release: 0.16 },
-          volume: -7.5,
+          volume: -9,
         },
         inputs.organ,
         16,
@@ -667,7 +668,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'triangle' },
           envelope: { attack: 0.005, decay: 0.4, sustain: 0.55, release: 0.5 },
-          volume: -5,
+          volume: -6.5,
         },
         inputs.synth,
         12,
@@ -677,8 +678,10 @@ export class TouchSynth {
     this.#octave = octave;
     this.#octaves = defaultOctaves();
     if (octave !== DEFAULT_OCTAVE) {
+      const shift = octave - DEFAULT_OCTAVE;
+      const home = defaultOctaves();
       for (const id of Object.keys(this.#octaves)) {
-        this.#octaves[id] = id === 'bass' ? Math.max(1, octave - 1) : octave;
+        this.#octaves[id] = Math.min(6, Math.max(1, home[id] + shift));
       }
     }
     this.#scale = scale;

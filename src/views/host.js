@@ -4,7 +4,7 @@
  * Audio only boots on the splash "Start sound" gesture.
  */
 
-import { AudioEngine } from '../audio/engine.js';
+import { AudioEngine, DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { buildLoopMidi, readRepeats, renderLoopWav, saveBlob } from '../audio/export-loop.js';
 import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import {
@@ -16,8 +16,10 @@ import {
   PerformanceRecorder,
   barCountLabel,
   nextLoopSteps,
+  normalizeLoopSteps,
   TouchSynth,
   defaultOctaves,
+  extensionFromY,
   instrumentHomeMidi,
   normalizeInstrument,
   midiInScale,
@@ -35,7 +37,10 @@ import {
   defaultFxState,
   defaultLevels,
   fxAmountLabel,
+  FX_PAD_DIVISIONS,
   masterCutoffHz,
+  masterHipassHz,
+  REPEAT_ORDER,
 } from '../audio/effects.js';
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
@@ -123,6 +128,7 @@ export async function createHostView() {
     rootPrev: document.getElementById('root-prev'),
     rootNext: document.getElementById('root-next'),
     drumPresets: document.getElementById('drum-presets'),
+    drumPresetsMain: document.getElementById('host-drum-presets'),
     instrumentFx: document.getElementById('instrument-fx'),
     drumFx: document.getElementById('drum-fx'),
     hostScreen: document.getElementById('host-screen'),
@@ -135,6 +141,8 @@ export async function createHostView() {
     spinner: document.getElementById('splash-spinner'),
     loop: document.getElementById('btn-loop'),
     loopClear: document.getElementById('btn-loop-clear'),
+    loopUndo: document.getElementById('btn-loop-undo'),
+    loopRedo: document.getElementById('btn-loop-redo'),
     notes: document.getElementById('btn-notes'),
     notesSheet: document.getElementById('host-notes-sheet'),
     noteTape: document.getElementById('host-note-tape'),
@@ -160,17 +168,23 @@ export async function createHostView() {
     exportClose: document.getElementById('export-close'),
     exportError: document.getElementById('export-error'),
     drumsOpen: document.getElementById('btn-drums'),
-    drumPresetPrev: document.getElementById('drum-preset-prev'),
-    drumPresetNext: document.getElementById('drum-preset-next'),
     drumsSheet: document.getElementById('host-drums-sheet'),
     drumsClose: document.getElementById('host-drums-close'),
     drumWriteRow: document.getElementById('host-drum-write'),
     drumRepeatRow: document.getElementById('host-drum-repeat'),
+    drumAdvCheck: document.getElementById('host-drum-adv-check'),
+    drumAdvPanel: document.getElementById('host-drum-adv'),
+    drumLengthRow: document.getElementById('host-drum-length'),
+    drumPitch: document.getElementById('host-drum-pitch'),
+    drumPitchLabel: document.getElementById('host-drum-pitch-label'),
     masterSheet: document.getElementById('host-master-sheet'),
     masterSliders: document.getElementById('host-master-sliders'),
     masterClose: document.getElementById('host-master-close'),
     instruments: document.getElementById('instrument-row'),
     hint: document.getElementById('host-pad-hint'),
+    padMode: document.getElementById('host-pad-mode'),
+    playBar: document.getElementById('play-bar'),
+    modeRow: document.getElementById('mode-row'),
   };
 
   const state = {
@@ -188,7 +202,8 @@ export async function createHostView() {
     octaves: defaultOctaves(),
     mute: { pad: false, bass: false, organ: false, kalimba: false, synth: false, drums: false },
     solo: { pad: false, bass: false, organ: false, kalimba: false, synth: false, drums: false },
-    masterFx: { division: '16n', cutoff: 0, grit: 0, wah: 0, hold: false },
+    masterFx: { division: '16n', cutoff: 0, hipass: 0, grit: 0, wah: 0, hold: false, volume: DEFAULT_MASTER_GAIN },
+    padMode: 'notes',
     activeTouches: new Set(),
     audioReady: false,
     audioError: null,
@@ -199,6 +214,7 @@ export async function createHostView() {
     drumPreset: 'break',
     drumWrite: 'single',
     drumRepeat: DRUM_PRESETS.break.repeat ?? 1,
+    drumPitch: 0,
   };
   const initialPreset = DRUM_PRESETS[state.drumPreset];
   for (const track of TRACKS) {
@@ -261,9 +277,11 @@ export async function createHostView() {
       masterFx: {
         division: state.masterFx.division,
         cutoff: state.masterFx.cutoff,
+        hipass: state.masterFx.hipass,
         grit: state.masterFx.grit,
         wah: state.masterFx.wah,
         hold: Boolean(state.masterFx.hold),
+        volume: state.masterFx.volume,
       },
     });
   }
@@ -284,16 +302,35 @@ export async function createHostView() {
     setRoot(next);
   }
 
+  /** Zone labels sit top→bottom: 9, 7, sus, triad. Both sus bands share one. */
+  const ZONE_SPAN = { ninth: 0, seventh: 1, sus2: 2, sus4: 2, triad: 3 };
+
+  function paintZone(y) {
+    const spans = el.zones?.children;
+    if (!spans?.length) return;
+    const hit = y == null ? -1 : ZONE_SPAN[extensionFromY(y)] ?? -1;
+    [...spans].forEach((span, index) => span.classList.toggle('is-active', index === hit));
+  }
+
   function syncModeChrome() {
     const bass = state.instrument === 'bass';
-    const chords = state.mode === 'chords' && !bass;
+    const fxMode = state.padMode === 'fx';
+    const chords = !fxMode && state.mode === 'chords' && !bass;
     el.zones.hidden = !chords;
-    el.hostScreen.querySelectorAll('[data-mode="chords"]').forEach((chip) => {
-      chip.hidden = bass;
+    renderer.setMode(fxMode ? 'fx' : chords ? 'chords' : 'single');
+    if (!chords) paintZone(null);
+    // FX owns the pad: the note-mode row and the loop buttons it rides with
+    // step aside. Bass never plays chords, so its mode chips hide too.
+    el.playBar.hidden = fxMode;
+    if (el.modeRow) el.modeRow.hidden = bass;
+    selectInRow(el.modeRow, 'mode', bass ? 'single' : state.mode, 'is-on');
+    el.padMode?.querySelectorAll('[data-padmode]').forEach((chip) => {
+      chip.classList.toggle('is-on', chip.dataset.padmode === state.padMode);
     });
-    selectInRow(el.hostScreen.querySelector('#mode-row'), 'mode', bass ? 'single' : state.mode, 'is-on');
     if (!el.hint) return;
-    if (bass) {
+    if (fxMode) {
+      el.hint.textContent = '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.';
+    } else if (bass) {
       el.hint.textContent = 'One scale step. Hold and slide.';
     } else if (state.mode === 'chords') {
       el.hint.textContent = 'X is the step. Y is triad, sus, 7th, 9th.';
@@ -415,6 +452,7 @@ export async function createHostView() {
       steps: state.drumSteps,
       preset: state.drumPreset,
       repeat: state.drumRepeat,
+      pitch: state.drumPitch,
       grid: Object.fromEntries(
         TRACKS.map(({ id }) => [
           id,
@@ -512,6 +550,12 @@ export async function createHostView() {
     }
   }
 
+  function paintDrumLength() {
+    el.drumLengthRow?.querySelectorAll('[data-steps]').forEach((chip) => {
+      chip.classList.toggle('is-picked', Number(chip.dataset.steps) === state.drumSteps);
+    });
+  }
+
   function paintDrumEditRows() {
     el.drumWriteRow?.querySelectorAll('[data-write]').forEach((chip) => {
       chip.classList.toggle('is-picked', chip.dataset.write === state.drumWrite);
@@ -526,6 +570,34 @@ export async function createHostView() {
       chip.setAttribute('aria-pressed', picked ? 'true' : 'false');
     });
   }
+
+  function drumPitchLabel() {
+    const st = state.drumPitch;
+    return `Drum pitch · ${st > 0 ? '+' : ''}${st} st`;
+  }
+
+  function setDrumPitch(value, { republish = true } = {}) {
+    const next = Math.min(12, Math.max(-12, Math.round(Number(value) || 0)));
+    if (next === state.drumPitch) return;
+    state.drumPitch = next;
+    audio?.drums.setPitch(next);
+    if (el.drumPitch && String(el.drumPitch.value) !== String(next)) el.drumPitch.value = String(next);
+    if (el.drumPitchLabel) el.drumPitchLabel.textContent = drumPitchLabel();
+    // A dragged slider fires input at pointer rate — batch through the drum push.
+    if (republish) queueDrumPush();
+  }
+
+  el.drumPitch?.addEventListener('input', () => setDrumPitch(el.drumPitch.value));
+  el.drumAdvCheck?.addEventListener('change', () => {
+    const on = Boolean(el.drumAdvCheck.checked);
+    if (el.drumAdvPanel) el.drumAdvPanel.hidden = !on;
+    if (!on) setDrumWrite('single');
+  });
+  el.drumLengthRow?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-steps]');
+    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
+    setSharedLength(Number(chip.dataset.steps));
+  });
 
   function setDrumRepeat(mode) {
     const next = mode === 'off' || mode === '0' || mode === 0 ? 'off' : Math.min(2, Math.max(1, Number(mode) || 1));
@@ -655,9 +727,9 @@ export async function createHostView() {
   }
 
   function markDrumPreset(id) {
-    el.drumPresets.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('is-picked', chip.dataset.preset === id));
-    const preset = DRUM_PRESETS[id];
-    if (el.drumsOpen) el.drumsOpen.textContent = preset ? `Drums · ${preset.label}` : 'Drums';
+    for (const row of [el.drumPresets, el.drumPresetsMain]) {
+      row?.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('is-picked', chip.dataset.preset === id));
+    }
   }
 
   function pickDrumPreset(id) {
@@ -673,29 +745,20 @@ export async function createHostView() {
     publishDrums();
   }
 
-  function cycleDrumPreset(direction) {
-    const ids = Object.keys(DRUM_PRESETS);
-    const index = ids.indexOf(state.drumPreset);
-    const next = index < 0 ? (direction > 0 ? 0 : ids.length - 1) : (index + direction + ids.length) % ids.length;
-    pickDrumPreset(ids[next]);
-  }
-
   function renderDrumPresets() {
-    el.drumPresets.replaceChildren();
-    for (const preset of Object.values(DRUM_PRESETS)) {
-      const button = pressable(`chip${preset.id === state.drumPreset ? ' is-picked' : ''}`);
-      button.dataset.preset = preset.id;
-      button.textContent = preset.label;
-      button.addEventListener('click', () => pickDrumPreset(preset.id));
-      el.drumPresets.append(button);
+    for (const row of [el.drumPresets, el.drumPresetsMain]) {
+      if (!row) continue;
+      row.replaceChildren();
+      for (const preset of Object.values(DRUM_PRESETS)) {
+        const button = pressable(`chip${preset.id === state.drumPreset ? ' is-picked' : ''}`);
+        button.dataset.preset = preset.id;
+        button.textContent = preset.label;
+        button.addEventListener('click', () => pickDrumPreset(preset.id));
+        row.append(button);
+      }
     }
     markDrumPreset(state.drumPreset);
   }
-
-  el.drumPresetPrev?.replaceChildren(chipIcon('prev'));
-  el.drumPresetNext?.replaceChildren(chipIcon('next'));
-  el.drumPresetPrev?.addEventListener('click', () => cycleDrumPreset(-1));
-  el.drumPresetNext?.addEventListener('click', () => cycleDrumPreset(1));
 
   el.drumsOpen?.addEventListener('click', () => {
     el.drumsSheet.hidden = false;
@@ -772,8 +835,9 @@ export async function createHostView() {
     });
   }
 
+  /** The master slider under a finger (element), so remote echoes don't fight it. */
   let masterDrag = null;
-  const MASTER_DIVISIONS = new Set(['4n', '8n', '16n', '32n']);
+  const MASTER_DIVISIONS = new Set(REPEAT_ORDER);
 
   function applyMasterFx({ prime = false } = {}) {
     const fx = audio?.engine.masterFx;
@@ -784,8 +848,10 @@ export async function createHostView() {
       if (state.masterFx.hold) fx.setHold(true);
     }
     fx.setCutoff(state.masterFx.cutoff);
+    fx.setHipass(state.masterFx.hipass);
     fx.setCrush(state.masterFx.grit);
     fx.setWah(state.masterFx.wah);
+    audio.engine.setMasterVolume(state.masterFx.volume);
   }
 
   function masterLabel(key) {
@@ -797,21 +863,16 @@ export async function createHostView() {
     if (key === 'grit') {
       return `8-bit grit · ${state.masterFx.grit < 0.02 ? 'Off' : `${Math.round(state.masterFx.grit * 100)}%`}`;
     }
+    if (key === 'volume') {
+      return `Master volume · ${Math.round(state.masterFx.volume * 100)}%`;
+    }
     return `Wah frequency · ${state.masterFx.wah < 0.02 ? 'Off' : `${Math.round(160 * Math.pow(2400 / 160, state.masterFx.wah))} Hz`}`;
-  }
-
-  function paintMasterHold() {
-    document.querySelectorAll('#master-stutter [data-repeat]').forEach((button) => {
-      const on = Boolean(state.masterFx.hold) && button.dataset.repeat === state.masterFx.division;
-      button.classList.toggle('is-on', on);
-      button.setAttribute('aria-pressed', on ? 'true' : 'false');
-    });
   }
 
   function syncMasterSliderInputs() {
     el.masterSliders?.querySelectorAll('[data-master]').forEach((input) => {
       const key = input.dataset.master;
-      if (key === masterDrag) return;
+      if (input === masterDrag) return;
       const next = String(Math.round(state.masterFx[key] * 100));
       if (input.value !== next) input.value = next;
       const name = input.previousElementSibling;
@@ -834,10 +895,10 @@ export async function createHostView() {
       input.dataset.master = key;
       input.value = String(value);
       const claim = () => {
-        masterDrag = key;
+        masterDrag = input;
       };
       const release = () => {
-        if (masterDrag === key) masterDrag = null;
+        if (masterDrag === input) masterDrag = null;
       };
       input.addEventListener('pointerdown', claim);
       input.addEventListener('pointerup', release);
@@ -849,18 +910,6 @@ export async function createHostView() {
       row.append(name, input);
       rows.push(row);
     };
-    add(
-      'cutoff',
-      () => masterLabel('cutoff'),
-      Math.round(state.masterFx.cutoff * 100),
-      100,
-      1,
-      (value) => {
-        state.masterFx.cutoff = value / 100;
-        applyMasterFx();
-        publishHarmony();
-      },
-    );
     add(
       'grit',
       () => masterLabel('grit'),
@@ -885,6 +934,18 @@ export async function createHostView() {
         publishHarmony();
       },
     );
+    add(
+      'volume',
+      () => masterLabel('volume'),
+      Math.round(state.masterFx.volume * 100),
+      100,
+      1,
+      (value) => {
+        state.masterFx.volume = value / 100;
+        applyMasterFx();
+        publishHarmony();
+      },
+    );
     el.masterSliders.replaceChildren(...rows);
   }
 
@@ -904,55 +965,154 @@ export async function createHostView() {
     el.masterSheet.hidden = false;
   });
   el.masterClose?.addEventListener('click', () => {
-    endStutter();
     el.masterSheet.hidden = true;
   });
 
-  let stutterPointer = null;
-  let stutterButton = null;
+  /* ---------- Pad mode: Notes, or the master FX surface ---------- */
+
+  /** Who currently holds the stutter: 'host', or a guest peerId. */
   let masterHolder = null;
-  function endStutter(event) {
-    if (stutterPointer == null) return;
-    if (event?.pointerId != null && event.pointerId !== stutterPointer) return;
-    stutterPointer = null;
-    stutterButton = null;
-    if (masterHolder === 'host') {
+  /** FX pad fingers, insertion-ordered — the newest finger drives the master. */
+  const fxFingers = new Map();
+
+  function fxZone(point) {
+    const index = Math.min(FX_PAD_DIVISIONS.length - 1, Math.max(0, Math.floor(point.x * FX_PAD_DIVISIONS.length)));
+    const division = FX_PAD_DIVISIONS[index];
+    return { division, label: division ? `1/${division.replace('n', '')}` : '—' };
+  }
+
+  /** Filter amount above/below the Y middle. |y − 0.5| inside the dead band is Off. */
+  const FX_DEAD = 0.04;
+  function fxFilter(point) {
+    const t = point.y * 2 - 1;
+    const edge = FX_DEAD * 2;
+    const amount = Math.abs(t) <= edge ? 0 : clampFx((Math.abs(t) - edge) / (1 - edge));
+    return {
+      cutoff: t < 0 ? amount : 0,
+      hipass: t > 0 ? amount : 0,
+      label:
+        amount < 0.02
+          ? 'open'
+          : t > 0
+            ? `${masterHipassHz(amount) >= 1000 ? `${(masterHipassHz(amount) / 1000).toFixed(1)} kHz` : `${Math.round(masterHipassHz(amount))} Hz`} HP`
+            : `${masterCutoffHz(amount) >= 1000 ? `${(masterCutoffHz(amount) / 1000).toFixed(1)} kHz` : `${Math.round(masterCutoffHz(amount))} Hz`} LP`,
+    };
+  }
+
+  function fxCaption(point) {
+    return `${fxZone(point).label} · ${fxFilter(point).label}`;
+  }
+
+  /** Harmless echo throttle: audio applies instantly, guests can lag a frame or two. */
+  let harmonyPushTimer = 0;
+  function queueHarmony() {
+    if (harmonyPushTimer) return;
+    harmonyPushTimer = setTimeout(() => {
+      harmonyPushTimer = 0;
+      publishHarmony();
+    }, 90);
+  }
+
+  /** One finger on the FX pad: X = stutter division (held), Y = master cutoff. */
+  function driveFxPad() {
+    const point = [...fxFingers.values()].pop();
+    if (!point) {
+      // A guest mid-hold keeps both: don't open the filter under their finger.
+      const owned = masterHolder === 'host';
+      if (owned) {
+        masterHolder = null;
+        state.masterFx.hold = false;
+        audio?.engine.masterFx?.setHold(false);
+      }
+      if (owned || !masterHolder) {
+        if (state.masterFx.cutoff !== 0) {
+          state.masterFx.cutoff = 0;
+          audio?.engine.masterFx?.setCutoff(0);
+        }
+        if (state.masterFx.hipass !== 0) {
+          state.masterFx.hipass = 0;
+          audio?.engine.masterFx?.setHipass(0);
+        }
+      }
+      setLabel('—');
+      publishHarmony();
+      return;
+    }
+    const { division } = fxZone(point);
+    const { cutoff, hipass } = fxFilter(point);
+    // The left lane is filter-only: sliding into it releases the stutter
+    // without lifting the finger, sliding back out re-grabs the slice.
+    const wantsHold = Boolean(division);
+    const wasHeld = state.masterFx.hold && masterHolder === 'host';
+    state.masterFx.cutoff = cutoff;
+    state.masterFx.hipass = hipass;
+    if (wantsHold) {
+      const divisionChanged = state.masterFx.division !== division;
+      state.masterFx.division = division;
+      state.masterFx.hold = true;
+      if (!wasHeld) {
+        masterHolder = 'host';
+        audio?.engine.masterFx?.setDivision(division);
+        audio?.engine.masterFx?.setHold(true);
+      } else if (divisionChanged) {
+        // A held stutter re-grabs the slice on a zone crossing.
+        audio?.engine.masterFx?.setDivision(division);
+      }
+      if (!wasHeld || divisionChanged) {
+        setLabel(fxCaption(point));
+        audio?.engine.masterFx?.setCutoff(cutoff);
+        audio?.engine.masterFx?.setHipass(hipass);
+        publishHarmony();
+        return;
+      }
+    } else if (wasHeld) {
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
       publishHarmony();
     }
-    paintMasterHold();
+    audio?.engine.masterFx?.setCutoff(cutoff);
+    audio?.engine.masterFx?.setHipass(hipass);
+    setLabel(fxCaption(point));
+    queueHarmony();
   }
-  document.querySelectorAll('#master-stutter [data-repeat]').forEach((button) => {
-    button.addEventListener('pointerdown', (event) => {
-      if (event.pointerType === 'mouse' && event.button !== 0) return;
-      event.preventDefault();
-      if (stutterPointer != null) endStutter();
-      stutterPointer = event.pointerId;
-      stutterButton = button;
-      try {
-        button.setPointerCapture(event.pointerId);
-      } catch {
-        // Capture can fail if the pointer already ended.
-      }
-      masterHolder = 'host';
-      state.masterFx.division = button.dataset.repeat;
-      state.masterFx.hold = true;
-      audio?.engine.masterFx?.setDivision(state.masterFx.division);
-      audio?.engine.masterFx?.setHold(true);
-      paintMasterHold();
-      publishHarmony();
-    });
-    button.addEventListener('pointerup', endStutter);
-    button.addEventListener('pointercancel', endStutter);
-    button.addEventListener('lostpointercapture', endStutter);
-    const quiet = (event) => event.preventDefault();
-    button.addEventListener('contextmenu', quiet);
-    button.addEventListener('selectstart', quiet);
+
+  function fxPadDown(point) {
+    fxFingers.set(point.id, { x: point.x, y: point.y });
+    paintTouch(`host:${point.id}`, { x: point.x, y: point.y });
+    driveFxPad();
+  }
+
+  function fxPadMove(point) {
+    if (!fxFingers.has(point.id)) return;
+    fxFingers.set(point.id, { x: point.x, y: point.y });
+    paintTouch(`host:${point.id}`, { x: point.x, y: point.y });
+    driveFxPad();
+  }
+
+  function fxPadUp(point) {
+    fxFingers.delete(point.id);
+    paintTouch(`host:${point.id}`, null);
+    driveFxPad();
+  }
+
+  /**
+   * Held fingers leave through the OLD mode first: notes get their note-off,
+   * an FX hold releases the stutter — nothing rings across the flip.
+   */
+  function setPadMode(next) {
+    const mode = next === 'fx' ? 'fx' : 'notes';
+    if (mode === state.padMode) return;
+    hostPad.releaseHeld();
+    fxFingers.clear();
+    state.padMode = mode;
+    syncModeChrome();
+  }
+
+  el.padMode?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-padmode]');
+    if (chip) setPadMode(chip.dataset.padmode);
   });
-  window.addEventListener('pointerup', endStutter);
-  window.addEventListener('pointercancel', endStutter);
 
   /* ---------- Harmony, tempo, instruments, loop ---------- */
 
@@ -1083,6 +1243,7 @@ export async function createHostView() {
     const recorder = recorderFor('host');
     if (!recorder) return;
     if (next) {
+      rememberEdit('host', ['host']);
       ensureTransport();
       recorder.start();
       el.loop.classList.add('is-on');
@@ -1103,7 +1264,8 @@ export async function createHostView() {
   });
 
   function paintHostClear(undo) {
-    paintIconButton(el.loopClear, undo ? 'undo' : 'erase', undo ? 'undo' : 'clr all');
+    el.loopClear.replaceChildren(chipIcon(undo ? 'undo' : 'erase'));
+    el.loopClear.setAttribute('aria-label', undo ? 'Undo clear' : 'Clear all loops');
   }
 
   function armClearUndo(playerId, targets) {
@@ -1151,9 +1313,16 @@ export async function createHostView() {
     log('all loops cleared', 'loop');
   });
 
+  el.loopUndo.addEventListener('click', () => {
+    if (undoOwn('host')) log('change undone', 'loop');
+  });
+  el.loopRedo.addEventListener('click', () => {
+    if (redoShared()) log('change redone', 'loop');
+  });
+
   function rollFocusMidi() {
     const instrument = normalizeInstrument(state.instrument);
-    const octave = state.octaves[instrument] ?? (instrument === 'bass' ? 2 : 3);
+    const octave = state.octaves[instrument] ?? defaultOctaves()[instrument];
     return instrumentHomeMidi(state.root, octave);
   }
 
@@ -1176,7 +1345,7 @@ export async function createHostView() {
       instrument,
       root: state.root,
       scale: state.scale,
-      octave: state.octaves[instrument] ?? (instrument === 'bass' ? 2 : 3),
+      octave: state.octaves[instrument] ?? defaultOctaves()[instrument],
       degree: note.degree,
       midi: note.midi,
     }).soundingMidis;
@@ -1259,6 +1428,8 @@ export async function createHostView() {
     setControlEnabled(el.noteUndo, Boolean(ownPast.get('host')?.length));
     setControlEnabled(el.noteUndoAll, globalPast.length > 0);
     setControlEnabled(el.noteRedo, sharedFuture.length > 0);
+    setControlEnabled(el.loopUndo, Boolean(ownPast.get('host')?.length));
+    setControlEnabled(el.loopRedo, sharedFuture.length > 0);
   }
 
   function hostNoteStepPx() {
@@ -1328,8 +1499,13 @@ export async function createHostView() {
     }
   }
 
-  function cycleSharedLength() {
-    const next = nextLoopSteps(state.noteSteps);
+  /** The loop and the drum machine share one length: 1, 2 or 4 bars. */
+  function setSharedLength(length) {
+    const next = normalizeLoopSteps(length);
+    if (next === state.noteSteps && next === state.drumSteps) {
+      paintDrumLength();
+      return next;
+    }
     state.noteSteps = next;
     state.drumSteps = audio?.drums.setLength(next) ?? next;
     fitDrumRows(next);
@@ -1341,6 +1517,7 @@ export async function createHostView() {
       renderSequencer();
     }
     paintDrumEditRows();
+    paintDrumLength();
     publishDrums();
     if (audio) {
       for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
@@ -1353,7 +1530,7 @@ export async function createHostView() {
     return next;
   }
 
-  el.bars.addEventListener('click', () => cycleSharedLength());
+  el.bars.addEventListener('click', () => setSharedLength(nextLoopSteps(state.noteSteps)));
 
   /** Every player's loop, broadcast as one map so all editors see all notes. */
   function shareLoop() {
@@ -1393,6 +1570,7 @@ export async function createHostView() {
   /** Any loop changed: repaint the open sheet and push the map to the guests. */
   function refreshLoops() {
     if (!el.notesSheet.hidden) paintHostRoll();
+    syncHostHistory();
     shareLoop();
   }
 
@@ -1420,7 +1598,7 @@ export async function createHostView() {
     });
     volumeRow.append(volumeName, volume);
     rows.push(volumeRow);
-    const octaveValue = state.octaves[instrument] ?? (instrument === 'bass' ? 2 : 3);
+    const octaveValue = state.octaves[instrument] ?? defaultOctaves()[instrument];
     const octaveRow = document.createElement('label');
     octaveRow.className = 'fx-slider fx-slider--octave';
     octaveRow.style.setProperty('--chip', INSTRUMENT_COLORS[instrument] || '#e2b43a');
@@ -1731,6 +1909,7 @@ export async function createHostView() {
       mute: state.mute,
       solo: state.solo,
       masterFx: { ...state.masterFx },
+      drumPitch: state.drumPitch,
     };
   }
 
@@ -1830,6 +2009,7 @@ export async function createHostView() {
     else if (payload.type === 'move') gesture = audio.synth.move(payload);
     else audio.synth.release(payload.id);
     paintTouch(payload.id, payload.type === 'up' ? null : { x: payload.x, y: payload.y });
+    paintZone(payload.type !== 'up' && payload.mode === 'chords' ? payload.y : null);
     if (payload.type === 'up') padFingers.delete(payload.id);
     else padFingers.set(payload.id, { instrument, x: payload.x, y: payload.y });
     if (sameInstrument(instrument)) {
@@ -1844,12 +2024,24 @@ export async function createHostView() {
   const hostPad = new TouchPad(el.pad, {
     locked: true,
     onStart: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadDown(point);
+        return;
+      }
       soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
     },
     onMove: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadMove(point);
+        return;
+      }
       soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
     },
     onEnd: (point) => {
+      if (state.padMode === 'fx') {
+        fxPadUp(point);
+        return;
+      }
       soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
     },
   });
@@ -1906,8 +2098,8 @@ export async function createHostView() {
     const patch = data?.masterFx;
     if (!patch || typeof patch !== 'object') return;
     let changed = false;
-    for (const key of ['cutoff', 'grit', 'wah']) {
-      if (!Number.isFinite(Number(patch[key])) || masterDrag === key) continue;
+    for (const key of ['cutoff', 'hipass', 'grit', 'wah', 'volume']) {
+      if (!Number.isFinite(Number(patch[key])) || masterDrag?.dataset?.master === key) continue;
       const value = clampFx(patch[key]);
       if (state.masterFx[key] !== value) {
         state.masterFx[key] = value;
@@ -1939,7 +2131,6 @@ export async function createHostView() {
       publishHarmony();
       return;
     }
-    paintMasterHold();
     publishHarmony();
   }
 
@@ -1971,6 +2162,8 @@ export async function createHostView() {
       log(`${data.name ?? 'guest'} · drums ${DRUM_PRESETS[data.drumPreset].label}`, 'drums');
     }
     if (data.drumRepeat !== undefined) setDrumRepeat(data.drumRepeat);
+    if (Number.isFinite(Number(data.drumLength))) setSharedLength(Number(data.drumLength));
+    if (Number.isFinite(Number(data.drumPitch))) setDrumPitch(Number(data.drumPitch));
     if (Number.isFinite(Number(data.bpm))) setSharedBpm(Number(data.bpm));
     if (data.preview) {
       previewRoll(Boolean(data.preview.down), data.preview.midi, data.preview.pointerId, data.peerId || 'guest', data.preview.instrument);
@@ -2038,6 +2231,7 @@ export async function createHostView() {
     const recorder = recorderFor(data.peerId);
     if (!recorder) return;
     if (data.loop === 'record') {
+      rememberEdit(data.peerId, [data.peerId]);
       ensureTransport();
       recorder.start();
       log(`${data.name ?? 'guest'} is recording a loop`, 'loop');
@@ -2161,7 +2355,6 @@ export async function createHostView() {
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
-      paintMasterHold();
     }
     if (audio) {
       for (const [playerId, recorder] of audio.loops) {
@@ -2197,7 +2390,6 @@ export async function createHostView() {
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
-      paintMasterHold();
       publishHarmony();
     }
     log(`${name ?? peerId} left`, 'guest');
@@ -2213,6 +2405,8 @@ export async function createHostView() {
 
   function paintHostActions() {
     paintIconButton(el.loop, 'loop', 'Rec');
+    el.loopUndo.replaceChildren(chipIcon('undo'));
+    el.loopRedo.replaceChildren(chipIcon('redo'));
     paintHostClear(clearUndos.has('host'));
     paintIconButton(el.notes, 'notes', 'Notes');
     paintIconButton(el.bars, 'bars', barCountLabel(state.noteSteps));
@@ -2229,6 +2423,8 @@ export async function createHostView() {
   renderSequencer();
   paintHostActions();
   paintDrumEditRows();
+  paintDrumLength();
+  if (el.drumPitchLabel) el.drumPitchLabel.textContent = drumPitchLabel();
   renderRootChips();
   renderDrumPresets();
   publishDrums();
@@ -2258,6 +2454,7 @@ export async function createHostView() {
 
   function forgetFingers() {
     hostPad.releaseHeld();
+    fxFingers.clear();
     for (const id of [...state.activeTouches]) paintTouch(id, null);
     setLabel('—');
   }
@@ -2365,6 +2562,7 @@ export async function createHostView() {
       document.removeEventListener('visibilitychange', onVisibility);
       clearTimeout(parkTimer);
       clearTimeout(drumPushTimer);
+      clearTimeout(harmonyPushTimer);
       drumGrid.destroy();
       hostPad.destroy();
       if (audio) {

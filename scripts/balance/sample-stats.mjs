@@ -5,7 +5,7 @@
 const CDN = 'https://cdn.jsdelivr.net/gh/fluid-music/open-drums/tr-808/TR808WAV';
 const URLS = {
   kick: `${CDN}/BD/BD0025.WAV`,
-  snare: `${CDN}/SD/SD2525.WAV`,
+  snare: `${CDN}/SD/SD2575.WAV`,
   hat: `${CDN}/CH/CH.WAV`,
   openhat: `${CDN}/OH/OH75.WAV`,
   tom: `${CDN}/MT/MT25.WAV`,

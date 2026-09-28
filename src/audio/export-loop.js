@@ -5,7 +5,7 @@
  */
 
 import { DrumMachine, TRACKS } from './drums.js';
-import { createDrumBus, createInstrumentBus, createMasterFx } from './effects.js';
+import { createDrumBus, createInstrumentBus, createMasterFx, clampFx } from './effects.js';
 import { PerformanceRecorder, TouchSynth, normalizeInstrument, resolveGesture } from './synth.js';
 
 export const REPEAT_GUARD = 128;
@@ -219,7 +219,7 @@ export async function renderLoopWav(tone, spec) {
     masterFx.setWah(spec.masterFx?.wah || 0);
     compressor.connect(masterFx.input);
     masterFx.output.connect(limiter);
-    const master = new tone.Gain(0.78).connect(compressor);
+    const master = new tone.Gain(clampFx(spec.masterFx?.volume ?? 0.78)).connect(compressor);
     const engine = { tone };
     const bus = createInstrumentBus(tone);
     const drumsFx = createDrumBus(tone);
@@ -228,6 +228,7 @@ export async function renderLoopWav(tone, spec) {
     for (const [id, octave] of Object.entries(spec.octaves || {})) synth.setInstrumentOctave(id, octave);
     const drums = new DrumMachine(engine);
     drums.setLength(spec.steps);
+    drums.setPitch(spec.drumPitch || 0);
     drums.output.connect(drumsFx.input);
     drumsFx.output.connect(master);
     bus.mix.connect(master);
