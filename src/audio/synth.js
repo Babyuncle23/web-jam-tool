@@ -370,6 +370,66 @@ export function pitchChoice(targetMidi, { root, scale, octave, instrument, mode,
   return best ?? { degree: 0, x: 0.04, sounding: wanted, distance: Infinity };
 }
 
+const MARK_BASE_RADIUS = 10;
+const MARK_OCTAVE_STEP = 2;
+
+/**
+ * Loop notes → dots on the touch pad: one mark per scale column the pad can
+ * voice, ignoring octave for position. A column can stack several octaves —
+ * one layer per octave, lowest drawn biggest and first, highest on top — but
+ * only when octaves actually overlap there; otherwise every dot is the same
+ * base size. Layers the selected instrument owns take its colour, the rest
+ * stay grey. `ranges` keeps each note's { s, e, o } span so the renderer can
+ * halo exactly the layer that is sounding.
+ */
+export function padNoteMarks(notes, instrument, { columns = 12, root = 'C', scale = 'major', octaves } = {}) {
+  const target = normalizeInstrument(instrument);
+  const marks = [];
+  const byDegree = new Map();
+  for (const note of notes || []) {
+    const degree = storedDegree(note.degree);
+    if (degree == null || degree < 0 || degree >= columns) continue;
+    const own = normalizeInstrument(note.instrument);
+    const octave = octaves?.[own] ?? defaultOctaves()[own];
+    const midi = storedMidi(note.midi) ?? scaleDegreeToMidi(instrumentHomeMidi(root, octave), scale, degree);
+    const layerOctave = Math.floor(midi / 12) - 1;
+    let mark = byDegree.get(degree);
+    if (!mark) {
+      mark = {
+        x: (degree + 0.5) / columns,
+        y: 0.5,
+        degree,
+        layers: new Map(),
+        ranges: [],
+      };
+      byDegree.set(degree, mark);
+      marks.push(mark);
+    }
+    let layer = mark.layers.get(layerOctave);
+    if (!layer) {
+      layer = { octave: layerOctave, own: false };
+      mark.layers.set(layerOctave, layer);
+    }
+    if (own === target) layer.own = true;
+    const start = Math.max(0, Math.round(Number(note.step) || 0));
+    const end = Math.max(0, Math.round(Number(note.endStep) || 0));
+    mark.ranges.push({ s: start, e: end === start ? start + 1 : end, o: layerOctave });
+  }
+  for (const mark of marks) {
+    const layers = [...mark.layers.values()].sort((a, b) => a.octave - b.octave);
+    const highest = layers[layers.length - 1].octave;
+    const stacked = layers.length > 1;
+    mark.layers = layers.map((layer) => ({
+      octave: layer.octave,
+      radius: stacked ? MARK_BASE_RADIUS + (highest - layer.octave) * MARK_OCTAVE_STEP : MARK_BASE_RADIUS,
+      color: layer.own
+        ? INSTRUMENT_COLORS[target] || '#e2b43a'
+        : 'rgba(122, 114, 102, 0.55)',
+    }));
+  }
+  return marks;
+}
+
 function samePitchSet(left, right) {
   if (!left || left.length !== right.length) return false;
   const a = [...left].sort((x, y) => x - y);
@@ -1010,7 +1070,6 @@ export class PerformanceRecorder {
   #synth;
   #tone;
   #playerId;
-  #onPlayback;
   #events = [];
   #byKey = new Map();
   #takes = new Map();
@@ -1024,13 +1083,19 @@ export class PerformanceRecorder {
 
   #loopSteps = LOOP_STEPS;
   #placed = 0;
+  /** Take base → loop snapshot at its first note-on, for per-take undo. */
+  #takePre = new Map();
+  /** Takes that closed while others were still open: { base, events }. */
+  #closedLog = [];
+  /** Called with the pre-take event list each time a take completes. */
+  #onTake;
 
-  constructor(engine, synth, { playerId = 'host', onPlayback, loopSteps = LOOP_STEPS } = {}) {
+  constructor(engine, synth, { playerId = 'host', loopSteps = LOOP_STEPS, onTake } = {}) {
     this.#tone = engine.tone;
     this.#synth = synth;
     this.#playerId = playerId;
-    this.#onPlayback = onPlayback;
     this.#loopSteps = normalizeLoopSteps(loopSteps);
+    this.#onTake = typeof onTake === 'function' ? onTake : null;
   }
 
   get playerId() {
@@ -1135,14 +1200,18 @@ export class PerformanceRecorder {
     for (const voiceId of [...this.#line.keys()]) {
       const segment = this.#line.get(voiceId) ?? voiceId;
       const last = this.#events.filter((event) => event.voiceId === segment && event.type === 'on').pop();
-      if (last) this.#closeSingleTake(voiceId, step, last);
+      if (last && this.#closeSingleTake(voiceId, step, last)) this.#commitTake(voiceId);
+      else this.#takePre.delete(voiceId);
     }
     this.#line.clear();
     for (const voiceId of [...this.#chordTakes.keys()]) {
       const member = this.#chordTakes.get(voiceId)?.[0];
       const on = member && this.#events.find((event) => event.voiceId === member && event.type === 'on');
-      if (on) this.#closeChordTake(voiceId, step, on);
-      else this.#chordTakes.delete(voiceId);
+      if (on && this.#closeChordTake(voiceId, step, on)) this.#commitTake(voiceId);
+      else {
+        this.#chordTakes.delete(voiceId);
+        this.#takePre.delete(voiceId);
+      }
     }
     this.#chordTakes.clear();
   }
@@ -1163,6 +1232,9 @@ export class PerformanceRecorder {
     }
     const take = this.#takes.get(event.id) ?? 1;
     const voiceId = `${event.id}#${take}`;
+    if (event.type === 'down' && !this.#takePre.has(voiceId)) {
+      this.#takePre.set(voiceId, { events: this.exportEvents(), index: this.#closedLog.length });
+    }
 
     const heard = typeof this.#synth.describe === 'function' ? this.#synth.describe(event) : null;
     const degree = heard?.degree ?? event.degree;
@@ -1171,15 +1243,21 @@ export class PerformanceRecorder {
     // A re-press whose previous note-off never arrived must not orphan it.
     if (event.type === 'down' && take > 1) {
       const stale = `${event.id}#${take - 1}`;
-      if (this.#chordTakes.has(stale)) this.#closeChordTake(stale, step, pitched);
-      if (this.#line.has(stale)) this.#closeSingleTake(stale, step, pitched);
+      if (this.#chordTakes.has(stale) && this.#closeChordTake(stale, step, pitched)) this.#commitTake(stale);
+      if (this.#line.has(stale) && this.#closeSingleTake(stale, step, pitched)) this.#commitTake(stale);
     }
 
     // The 'up' closes whichever kind of take is open — its own mode may
     // differ after a Notes/Chords flip while the finger is held.
     if (event.type === 'up') {
-      if (this.#chordTakes.has(voiceId)) return this.#closeChordTake(voiceId, step, pitched);
-      return this.#closeSingleTake(voiceId, step, pitched);
+      const closed = this.#chordTakes.has(voiceId)
+        ? this.#closeChordTake(voiceId, step, pitched)
+        : this.#closeSingleTake(voiceId, step, pitched);
+      if (closed) this.#commitTake(voiceId);
+      // A restore wiped this take's events: nothing to close and the finger
+      // is gone, so its stashed undo target is dead weight.
+      else this.#takePre.delete(voiceId);
+      return closed;
     }
 
     const chord = this.#chordDegrees(event);
@@ -1225,6 +1303,56 @@ export class PerformanceRecorder {
   }
 
   /**
+   * Events one finger's take wrote: its base voice, `~` slide segments and
+   * `@` chord members all share the `${id}#${take}` prefix. Other takes —
+   * including one from a later `down` of the same finger — never match.
+   */
+  #takeEvents(base) {
+    return this.#events
+      .filter((event) => event.voiceId === base
+        || event.voiceId.startsWith(`${base}~`)
+        || event.voiceId.startsWith(`${base}@`))
+      .map((event) => ({ ...event }));
+  }
+
+  /**
+   * A take completed: hand its undo target to the view. The pre-state is the
+   * snapshot from the take's first note-on plus everything takes that closed
+   * while it was open wrote — so undoing this take keeps those notes and
+   * drops only this finger's own events.
+   */
+  #commitTake(base) {
+    const stash = this.#takePre.get(base);
+    this.#takePre.delete(base);
+    if (stash) {
+      const merged = new Map(stash.events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
+      for (const closed of this.#closedLog.slice(stash.index)) {
+        for (const event of closed.events) {
+          merged.set(`${event.voiceId}:${event.step}:${event.type}`, event);
+        }
+      }
+      this.#onTake?.([...merged.values()]);
+    }
+    this.#closedLog.push({ base, events: this.#takeEvents(base) });
+    if (!this.#takePre.size) this.#closedLog.length = 0;
+  }
+
+  /**
+   * A wipe or an undo replaces the loop wholesale while fingers stay down.
+   * Rebase every open take's undo target to the new world — its old snapshot
+   * would otherwise resurrect events the restore just removed.
+   */
+  #rebaseTakeStashes() {
+    if (!this.#takePre.size) return;
+    const events = this.exportEvents();
+    this.#closedLog.length = 0;
+    for (const stash of this.#takePre.values()) {
+      stash.events = events;
+      stash.index = 0;
+    }
+  }
+
+  /**
    * Write the note-off for whatever strip this finger's take is playing. `pitched`
    * describes where the note ended, so a release pitch differing from the last
    * recorded position is stored as its own tiny segment — same as the old 'up' path.
@@ -1234,6 +1362,12 @@ export class PerformanceRecorder {
     const segment = this.#line.get(voiceId) ?? voiceId;
     const ons = this.#events.filter((item) => item.voiceId === segment && item.type === 'on');
     const last = ons[ons.length - 1];
+    // A restore mid-take wipes the take's events: a stranded 'up' must not
+    // write a note-off for a note that is not there.
+    if (!last) {
+      this.#line.delete(voiceId);
+      return false;
+    }
     // Fallback to the recorded on-step: a zero-length on/up pair would ring
     // almost forever — every cycle the 'up' fires just before the 'on'.
     const attackStep = this.#attackStep.get(segment) ?? this.#attackStep.get(voiceId) ?? last?.step;
@@ -1260,15 +1394,22 @@ export class PerformanceRecorder {
   #closeChordTake(voiceId, step, event) {
     this.#silenceTake(voiceId);
     const members = this.#chordTakes.get(voiceId) || [];
-    if (!members.length) return false;
-    const memberStarts = members
+    // After a mid-take restore only members whose 'on' is still there can
+    // take a note-off; a wiped take leaves nothing to close.
+    const sounding = members.filter((member) =>
+      this.#events.some((item) => item.voiceId === member && item.type === 'on'));
+    if (!sounding.length) {
+      this.#chordTakes.delete(voiceId);
+      return false;
+    }
+    const memberStarts = sounding
       .map((member) => this.#events.find((item) => item.voiceId === member && item.type === 'on')?.step)
       .filter((item) => item !== undefined);
     const attackStep = this.#attackStep.get(voiceId) ?? (memberStarts.length ? Math.min(...memberStarts) : undefined);
     let upStep = step;
     if (attackStep !== undefined && upStep === attackStep) upStep = (attackStep + 1) % this.#loopSteps;
     const instrument = normalizeInstrument(event.instrument);
-    for (const member of members) {
+    for (const member of sounding) {
       const on = this.#events.find((item) => item.voiceId === member && item.type === 'on');
       this.#put({
         voiceId: member,
@@ -1515,13 +1656,12 @@ export class PerformanceRecorder {
     if (event.type === 'up') {
       if (this.#cutByNewChord(event)) this.#synth.choke(id, time);
       else this.#synth.release(id, time);
-      this.#onPlayback?.({ ...event, type: 'up' }, null);
       return;
     }
     // A note with no 'up' yet — the finger is still down or the off was lost —
     // would ring the whole cycle, so the live take does not preview.
     if (!this.#hasUp(event.voiceId)) return;
-    const gesture = this.#synth.attack({
+    this.#synth.attack({
       id,
       x: event.x,
       y: event.y,
@@ -1534,7 +1674,6 @@ export class PerformanceRecorder {
       until: this.#bassUntil(event, time),
       chordGroup: event.group || undefined,
     });
-    this.#onPlayback?.(event, gesture);
   }
 
   /**
@@ -1629,6 +1768,7 @@ export class PerformanceRecorder {
         group: event.group || undefined,
       });
     }
+    this.#rebaseTakeStashes();
   }
 
   /**
@@ -1823,5 +1963,6 @@ export class PerformanceRecorder {
     this.#chordGen.clear();
     this.#line.clear();
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
+    this.#rebaseTakeStashes();
   }
 }

@@ -213,6 +213,16 @@ export function setRollSelectMode(scrollEl, on) {
   scrollEl.querySelectorAll('.roll__note.is-selected').forEach((item) => item.classList.remove('is-selected'));
 }
 
+/** Ring the notes an undo/redo press would touch; null clears the preview. */
+export function setRollUndoPreview(scrollEl, voiceIds) {
+  if (!scrollEl) return;
+  const set = voiceIds?.size ? voiceIds : null;
+  scrollEl.querySelectorAll('.roll__note').forEach((item) => {
+    const base = String(item.dataset.voice || '').split('@@')[0];
+    item.classList.toggle('is-undo-preview', Boolean(set?.has(item.dataset.voice) || set?.has(base)));
+  });
+}
+
 export function setRollPlayhead(scrollEl, step) {
   const head = scrollEl.querySelector('.roll__playhead');
   if (!head) return;

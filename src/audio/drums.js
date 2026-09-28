@@ -12,15 +12,22 @@ export const DRUM_STEPS_MAX = 64;
 /** Presets are written as one bar of sixteenths and tile to the live drum length. */
 export const PRESET_STEPS = 16;
 
-export function tileHits(hits, length, native = PRESET_STEPS) {
-  const source = new Set(hits || []);
-  const on = [];
+/**
+ * Tile a preset pattern over the live loop. Entries are bare step numbers or
+ * `{ s: step, d: 3 }` for a triplet cell. Returns Map(step → division).
+ */
+export function tileCells(hits, length, native = PRESET_STEPS) {
+  const cells = new Map();
   const span = Math.max(1, native);
   const total = Math.max(0, length);
-  for (let step = 0; step < total; step += 1) {
-    if (source.has(step % span)) on.push(step);
+  for (const hit of hits || []) {
+    const raw = typeof hit === 'object' && hit !== null ? Number(hit.s) : Number(hit);
+    if (!Number.isFinite(raw)) continue;
+    const base = ((Math.round(raw) % span) + span) % span;
+    const division = typeof hit === 'object' && hit !== null && Number(hit.d) === 3 ? 3 : 1;
+    for (let step = base; step < total; step += span) cells.set(step, division);
   }
-  return on;
+  return cells;
 }
 
 export const TRACKS = [
@@ -158,6 +165,26 @@ export const DRUM_PRESETS = {
     span: 32,
     repeat: 2,
     pattern: { kick: [0, 4, 8, 11, 16, 20, 24, 27, 30], snare: [], hat: [], clap: [], openhat: [], tom: [], cowbell: [] },
+  },
+  trap: {
+    id: 'trap',
+    label: 'Trap',
+    span: 32,
+    repeat: 2,
+    pattern: {
+      kick: [0, 10, 16, 26, 30],
+      snare: [8, 24],
+      // First bar rides eighths; the second runs sixteenths. { s, d: 3 } cells
+      // are the closed-hat rolls — three hits squeezed into one step.
+      hat: [
+        0, 2, 4, 6, { s: 7, d: 3 }, 8, 10, 12, 14, { s: 15, d: 3 },
+        16, 17, 18, 19, 20, 21, { s: 22, d: 3 }, 23, 24, 25, 26, 27, 28, 29, 30, { s: 31, d: 3 },
+      ],
+      clap: [],
+      openhat: [4, 20],
+      tom: [],
+      cowbell: [],
+    },
   },
   clear: {
     id: 'clear',

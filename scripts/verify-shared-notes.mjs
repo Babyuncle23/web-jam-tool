@@ -156,18 +156,40 @@ try {
     ok: document.querySelectorAll('#controller-note-tape .roll__note').length >= 1,
   }))()`);
 
-  // Host also places a note, then guest B's clr all wipes every loop.
+  // Host also places a note. A tap on guest B's clr clears only B's own
+  // (empty) loop — nobody else's notes move. Holding it clears every loop.
   await placeNote(host, '#host-note-tape', 8);
   await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 2, total: ${loopTotal} }))()`);
   await clickSelector(guestB, '#controller-notes-close');
-  await clickSelector(guestB, '#controller-loop-clear');
+  await guestB.evaluate(() => {
+    const btn = document.getElementById('controller-loop-clear');
+    btn.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, bubbles: true }));
+  });
+  await sleep(80);
+  await guestB.evaluate(() => {
+    const btn = document.getElementById('controller-loop-clear');
+    btn.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+  });
+  await sleep(400);
+  await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 2, total: ${loopTotal} }))()`);
+
+  await guestB.evaluate(() => {
+    const btn = document.getElementById('controller-loop-clear');
+    btn.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, bubbles: true }));
+  });
+  await sleep(700);
+  await guestB.evaluate(() => {
+    const btn = document.getElementById('controller-loop-clear');
+    btn.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+  });
   await pollExpr(host, `(() => ({ ok: ${loopTotal} === 0, total: ${loopTotal} }))()`);
   await pollExpr(guestA, `(() => ({
     ok: document.querySelectorAll('#controller-note-tape .roll__note').length === 0,
   }))()`);
 
-  // clr all is undoable: the button turns into undo until the next bar wrap.
-  await clickSelector(guestB, '#controller-loop-clear');
+  // The held clear-all lands in the shared history: the guest's own undo
+  // arrow restores it.
+  await clickSelector(guestB, '#controller-loop-undo');
   await pollExpr(host, `(() => ({ ok: ${loopTotal} >= 2, total: ${loopTotal} }))()`);
 
   const serious = errors.filter((line) => /pageerror|TypeError|ReferenceError|is not a function/i.test(line));

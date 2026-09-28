@@ -5,12 +5,12 @@
  */
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
-import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, pitchChoice, resolveGesture } from '../audio/synth.js';
+import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, padNoteMarks, pitchChoice, resolveGesture } from '../audio/synth.js';
 import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
 import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
-import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileHits, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
+import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
-import { chipIcon, paintIconButton } from '../ui/icons.js';
+import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
@@ -98,7 +98,6 @@ export async function createControllerView({ code, name } = {}) {
     canUndo: false,
     canUndoAll: false,
     canRedo: false,
-    clearUndo: false,
     peerId: null,
     drumWrite: 'single',
     drums: { steps: DRUM_STEPS, preset: 'break', repeat: 1, grid: null, pitch: 0 },
@@ -164,6 +163,7 @@ export async function createControllerView({ code, name } = {}) {
     el.zones.hidden = !chords;
     renderer.setMode(fxMode ? 'fx' : chords ? 'chords' : 'single');
     if (!chords) paintZone(null);
+    syncPadMarks();
     el.hint.textContent = fxMode
       ? '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.'
       : bass
@@ -171,6 +171,15 @@ export async function createControllerView({ code, name } = {}) {
         : chords
           ? 'X is the chord. Y is triad, sus, 7th, 9th.'
           : 'X is one note in the host key.';
+  }
+
+  /** Recorded loop notes of the selected instrument show as dots on the pad. */
+  function syncPadMarks() {
+    if (state.padMode === 'fx') {
+      renderer.setMarks([]);
+      return;
+    }
+    renderer.setMarks(padNoteMarks(state.marks, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves }));
   }
 
   function renderGuestFx() {
@@ -429,7 +438,7 @@ export async function createControllerView({ code, name } = {}) {
       });
     }
     const preset = DRUM_PRESETS[state.drums.preset];
-    if (el.drumsOpen) el.drumsOpen.textContent = preset ? `Drums · ${preset.label}` : 'Drums';
+    if (el.drumsOpen) setIconLabel(el.drumsOpen, 'Edit drums', preset?.label);
   }
 
   function renderGuestDrumPresets() {
@@ -451,9 +460,9 @@ export async function createControllerView({ code, name } = {}) {
   function applyGuestPattern(pattern, span) {
     ensureGuestDrumRows();
     for (const { id } of TRACKS) {
-      const on = new Set(tileHits(pattern[id] ?? [], state.drums.steps, span));
+      const cells = tileCells(pattern[id] ?? [], state.drums.steps, span);
       for (let i = 0; i < state.drums.steps; i += 1) {
-        state.drums.grid[id][i] = { on: on.has(i), division: 1 };
+        state.drums.grid[id][i] = { on: cells.has(i), division: cells.get(i) ?? 1 };
       }
     }
   }
@@ -659,6 +668,7 @@ export async function createControllerView({ code, name } = {}) {
       const value = Number(octave.value);
       octaveName.textContent = `Octave · ${value}`;
       state.octaves[state.instrument] = value;
+      syncPadMarks();
       socket.sendControl({ octave: { instrument: state.instrument, value } });
     });
     octaveRow.append(octaveName, octave);
@@ -755,6 +765,7 @@ export async function createControllerView({ code, name } = {}) {
     paintGuestBar(step);
     if (typeof running === 'boolean') syncGuestTransport(running);
     syncGuestPulse(Boolean(running), step);
+    renderer.setLitStep(running ? step % Math.max(1, state.noteSteps) : -1);
     if (!el.drumsSheet.hidden) drumGrid.setLit(step % Math.max(1, state.drums.steps));
     if (el.notesSheet.hidden || !(state.noteSteps > 0)) return;
     setRollPlayhead(el.noteTape, step % state.noteSteps);
@@ -969,6 +980,7 @@ export async function createControllerView({ code, name } = {}) {
     }
     if (payload?.octaves && typeof payload.octaves === 'object') {
       state.octaves = { ...state.octaves, ...payload.octaves };
+      syncPadMarks();
     }
     if (Number.isFinite(Number(payload?.bpm))) {
       const next = Math.min(200, Math.max(40, Number(payload.bpm)));
@@ -999,12 +1011,16 @@ export async function createControllerView({ code, name } = {}) {
       const mine = players[state.peerId];
       state.canUndo = Boolean(mine?.canUndo);
       state.canUndoAll = Boolean(pack.canUndoAll);
-      state.canRedo = Boolean(pack.canRedo);
-      if (typeof mine?.clearUndo === 'boolean') {
-        state.clearUndo = mine.clearUndo;
-        paintGuestClear();
+      state.canRedo = Boolean(mine?.canRedo);
+      // The host's recorder flag is authoritative — the Rec chip follows it,
+      // not our local toggle, so a rejoin or a drifted tap can't desync it.
+      if (typeof mine?.recording === 'boolean' && mine.recording !== state.recording) {
+        state.recording = mine.recording;
+        el.loop.classList.toggle('is-on', state.recording);
+        el.loop.setAttribute('aria-pressed', state.recording ? 'true' : 'false');
       }
       syncGuestHistory();
+      syncPadMarks();
       if (!el.notesSheet.hidden) paintGuestNotes();
     }
     updateKey();
@@ -1152,22 +1168,49 @@ export async function createControllerView({ code, name } = {}) {
   });
 
   function paintGuestClear() {
-    el.loopClear.replaceChildren(chipIcon(state.clearUndo ? 'undo' : 'erase'));
-    el.loopClear.setAttribute('aria-label', state.clearUndo ? 'Undo clear' : 'Clear all loops');
+    el.loopClear.replaceChildren(chipIcon('erase'));
+    el.loopClear.setAttribute('aria-label', 'Clear your loop — hold to clear all loops');
+    el.loopClear.title = 'Tap clears your loop. Hold clears all loops.';
   }
 
-  el.loopClear.addEventListener('click', () => {
+  /** Tap clears only your own loop; holding clears everyone's — the hold is
+   * the confirmation, so a stray tap can't wipe the whole jam. */
+  function fireGuestClear(scope) {
     if (!state.audioReady) return;
-    if (state.clearUndo) {
-      socket.sendControl({ loop: 'undo-clear' });
+    state.marks = scope === 'mine' ? state.marks.filter((mark) => mark.owner !== state.peerId) : [];
+    syncPadMarks();
+    if (!el.notesSheet.hidden) paintGuestNotes();
+    socket.sendControl(scope === 'mine' ? { loop: 'clear', scope: 'mine' } : { loop: 'clear' });
+  }
+
+  let guestClearHold = null;
+  const disarmGuestClear = () => {
+    el.loopClear.classList.remove('is-arming');
+    if (!guestClearHold) return;
+    clearTimeout(guestClearHold);
+    guestClearHold = null;
+  };
+  el.loopClear.addEventListener('pointerdown', () => {
+    if (!state.audioReady || guestClearHold) return;
+    el.loopClear.classList.add('is-arming');
+    guestClearHold = setTimeout(() => {
+      guestClearHold = null;
+      disarmGuestClear();
+      fireGuestClear('all');
+    }, 600);
+  });
+  el.loopClear.addEventListener('pointerup', () => {
+    if (!guestClearHold) {
+      el.loopClear.classList.remove('is-arming');
       return;
     }
-    state.marks = [];
-    state.clearUndo = true;
-    paintGuestClear();
-    if (!el.notesSheet.hidden) paintGuestNotes();
-    socket.sendControl({ loop: 'clear' });
+    disarmGuestClear();
+    fireGuestClear('mine');
   });
+  // Dragging off or a cancelled press aborts the hold — no clear at all.
+  for (const type of ['pointerleave', 'pointercancel']) {
+    el.loopClear.addEventListener(type, disarmGuestClear);
+  }
 
   el.loopUndo.addEventListener('click', () => socket.sendControl({ history: 'undo' }));
   el.loopRedo.addEventListener('click', () => socket.sendControl({ history: 'redo' }));
@@ -1236,6 +1279,7 @@ export async function createControllerView({ code, name } = {}) {
   paintGuestDrumLength();
   syncGuestDrumPitch();
   paintIconButton(el.notes, 'notes', 'Notes');
+  paintIconButton(el.drumsOpen, 'edit', 'Edit drums');
   paintIconButton(el.noteUndo, 'undo', 'Undo');
   paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
   paintIconButton(el.noteRedo, 'redo', 'Redo');

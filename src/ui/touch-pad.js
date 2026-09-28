@@ -222,6 +222,8 @@ export class TouchPadRenderer {
   #ctx;
   #points = new Map();
   #marks = [];
+  #litStep = -1;
+  #previewDegrees = null;
   #columns;
   #mode = 'single';
   #frame = null;
@@ -283,6 +285,20 @@ export class TouchPadRenderer {
   /** Recorded-note dots. One frame, no polling loop. */
   setMarks(marks) {
     this.#marks = Array.isArray(marks) ? marks : [];
+    this.#schedule();
+  }
+
+  /** The loop step sounding right now; -1 parks every recorded mark unlit. */
+  setLitStep(step) {
+    const next = Number.isFinite(Number(step)) ? Math.round(Number(step)) : -1;
+    if (next === this.#litStep) return;
+    this.#litStep = next;
+    if (this.#marks.length) this.#schedule();
+  }
+
+  /** Columns an undo/redo would touch — ringed while the button is held. */
+  setUndoPreview(degrees) {
+    this.#previewDegrees = degrees?.size ? degrees : null;
     this.#schedule();
   }
 
@@ -481,13 +497,44 @@ export class TouchPadRenderer {
     for (const mark of this.#marks) {
       const x = mark.x * width;
       const y = (1 - mark.y) * height;
-      ctx.beginPath();
-      ctx.arc(x, y, 16, 0, Math.PI * 2);
-      ctx.fillStyle = mark.color || '#e2b43a';
-      ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#1c140c';
-      ctx.stroke();
+      // Which octave layers of this column have a note sounding right now.
+      const hitOctaves = new Set();
+      if (this.#litStep >= 0) {
+        for (const { s, e, o } of mark.ranges || []) {
+          const playing = e > s
+            ? this.#litStep >= s && this.#litStep < e
+            : this.#litStep >= s || this.#litStep < e;
+          if (playing) hitOctaves.add(o);
+        }
+      }
+      // Lowest octave first so each higher layer sits on top of the bigger
+      // one beneath. Size and outline never change during playback — a
+      // sounding layer only gains its yellow halo.
+      const maxRadius = (mark.layers || []).reduce((max, layer) => Math.max(max, layer.radius), 0);
+      for (const layer of mark.layers || []) {
+        if (hitOctaves.has(layer.octave)) {
+          ctx.beginPath();
+          ctx.arc(x, y, layer.radius + 9, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(242, 193, 75, 0.3)';
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
+        ctx.fillStyle = layer.color || '#e2b43a';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
+        ctx.stroke();
+      }
+      if (this.#previewDegrees?.has(mark.degree) && maxRadius) {
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.arc(x, y, maxRadius + 7, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(242, 193, 75, 0.9)';
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     for (const point of this.#points.values()) {
