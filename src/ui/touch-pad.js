@@ -475,7 +475,7 @@ export class TouchPadRenderer {
 
   /**
    * Lite bakes the note dots into an offscreen canvas: a busy loop used to
-   * cost a stroke+fill per layer on every repaint, now it is one blit.
+   * cost a stroke+fill per dot on every repaint, now it is one blit.
    * Rebuilt only when the marks or the size change; halos stay dynamic.
    */
   #buildMarksLayer() {
@@ -491,15 +491,13 @@ export class TouchPadRenderer {
     for (const mark of this.#marks) {
       const x = mark.x * width;
       const y = (1 - mark.y) * height;
-      for (const layer of mark.layers || []) {
-        ctx.beginPath();
-        ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
-        ctx.fillStyle = layer.color || '#e2b43a';
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
-        ctx.stroke();
-      }
+      ctx.beginPath();
+      ctx.arc(x, y, mark.radius, 0, Math.PI * 2);
+      ctx.fillStyle = mark.color || '#e2b43a';
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
+      ctx.stroke();
     }
     this.#marksLayer = canvas;
   }
@@ -569,36 +567,29 @@ export class TouchPadRenderer {
       const x = mark.x * width;
       const y = (1 - mark.y) * height;
       const lit = this.#litStep;
-      // Which layers of this column have a note sounding right now — flat
-      // marks (lite) match any range, stacked marks match their octave.
-      const litLayer = (layer) => lit >= 0 && (mark.ranges || []).some(({ s, e, o }) =>
-        (mark.flat || o === layer.octave) && (e > s ? lit >= s && lit < e : lit >= s || lit < e));
-      // Lowest octave first so each higher layer sits on top of the bigger
-      // one beneath. Size and outline never change during playback — a
-      // sounding layer only gains its yellow halo.
-      const maxRadius = (mark.layers || []).reduce((max, layer) => Math.max(max, layer.radius), 0);
-      for (const layer of mark.layers || []) {
-        if (litLayer(layer)) {
-          ctx.beginPath();
-          ctx.arc(x, y, layer.radius + 9, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(242, 193, 75, 0.3)';
-          ctx.fill();
-        }
-        // In lite the base dots are baked into #marksLayer above.
-        if (!this.#marksLayer) {
-          ctx.beginPath();
-          ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
-          ctx.fillStyle = layer.color || '#e2b43a';
-          ctx.fill();
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
-          ctx.stroke();
-        }
+      // One dot per column: any of its note spans sounding lights the halo.
+      const sounding = lit >= 0 && (mark.ranges || []).some(({ s, e }) =>
+        e > s ? lit >= s && lit < e : lit >= s || lit < e);
+      if (sounding) {
+        ctx.beginPath();
+        ctx.arc(x, y, mark.radius + 9, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(242, 193, 75, 0.3)';
+        ctx.fill();
       }
-      if (this.#previewDegrees?.has(mark.degree) && maxRadius) {
+      // In lite the base dots are baked into #marksLayer above.
+      if (!this.#marksLayer) {
+        ctx.beginPath();
+        ctx.arc(x, y, mark.radius, 0, Math.PI * 2);
+        ctx.fillStyle = mark.color || '#e2b43a';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
+        ctx.stroke();
+      }
+      if (this.#previewDegrees?.has(mark.degree) && mark.radius) {
         ctx.beginPath();
         ctx.setLineDash([4, 4]);
-        ctx.arc(x, y, maxRadius + 7, 0, Math.PI * 2);
+        ctx.arc(x, y, mark.radius + 7, 0, Math.PI * 2);
         ctx.lineWidth = 2;
         ctx.strokeStyle = 'rgba(242, 193, 75, 0.9)';
         ctx.stroke();

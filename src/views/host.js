@@ -1684,7 +1684,7 @@ export async function createHostView({ lite } = {}) {
     }
     const notes = [];
     for (const recorder of audio.loops.values()) notes.push(...recorder.notes());
-    renderer.setMarks(padNoteMarks(notes, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves, flat: Boolean(lite?.cheapViz) }));
+    renderer.setMarks(padNoteMarks(notes, state.instrument));
   }
 
   /** Notes from every recorder, tagged with the owning player. */
@@ -1761,7 +1761,6 @@ export async function createHostView({ lite } = {}) {
       octaveName.textContent = `Octave · ${value}`;
       state.octaves[instrument] = value;
       audio?.synth.setInstrumentOctave(instrument, value);
-      syncPadMarks();
       publishHarmony();
     });
     octaveRow.append(octaveName, octave);

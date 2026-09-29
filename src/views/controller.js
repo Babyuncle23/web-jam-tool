@@ -16,14 +16,6 @@ import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode }
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 
-/** Flat shallow compare for `{ instrument: number }` maps. */
-function sameFlatMap(a, b) {
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    if (a[key] !== b[key]) return false;
-  }
-  return true;
-}
-
 /** Two-level compare for `{ instrument: { fxId: level } }` state patches. */
 function sameFxMap(a, b) {
   for (const key of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
@@ -201,7 +193,7 @@ export async function createControllerView({ code, name } = {}) {
       renderer.setMarks([]);
       return;
     }
-    renderer.setMarks(padNoteMarks(state.marks, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves, flat: state.lite }));
+    renderer.setMarks(padNoteMarks(state.marks, state.instrument));
   }
 
   function renderGuestFx() {
@@ -742,7 +734,6 @@ export async function createControllerView({ code, name } = {}) {
       const value = Number(octave.value);
       octaveName.textContent = `Octave · ${value}`;
       state.octaves[state.instrument] = value;
-      syncPadMarks();
       socket.sendControlThrottled({ octave: { instrument: state.instrument, value } });
     });
     octaveRow.append(octaveName, octave);
@@ -1047,7 +1038,6 @@ export async function createControllerView({ code, name } = {}) {
     if (typeof payload?.lite === 'boolean' && payload.lite !== state.lite) {
       state.lite = payload.lite;
       renderer.setLite(payload.lite);
-      syncPadMarks();
       renderGuestFx();
     }
     if (payload?.masterFx && typeof payload.masterFx === 'object') {
@@ -1074,11 +1064,7 @@ export async function createControllerView({ code, name } = {}) {
       state.levels = { ...state.levels, ...payload.levels };
     }
     if (payload?.octaves && typeof payload.octaves === 'object') {
-      const next = { ...state.octaves, ...payload.octaves };
-      if (!sameFlatMap(next, state.octaves)) {
-        state.octaves = next;
-        syncPadMarks();
-      }
+      state.octaves = { ...state.octaves, ...payload.octaves };
     }
     if (Number.isFinite(Number(payload?.bpm))) {
       const next = Math.min(200, Math.max(40, Number(payload.bpm)));

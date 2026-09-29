@@ -370,75 +370,43 @@ export function pitchChoice(targetMidi, { root, scale, octave, instrument, mode,
   return best ?? { degree: 0, x: 0.04, sounding: wanted, distance: Infinity };
 }
 
-const MARK_BASE_RADIUS = 10;
-const MARK_OCTAVE_STEP = 2;
+const MARK_RADIUS = 10;
 
 /**
- * Loop notes → dots on the touch pad: one mark per scale column the pad can
- * voice, ignoring octave for position. A column can stack several octaves —
- * one layer per octave, lowest drawn biggest and first, highest on top — but
- * only when octaves actually overlap there; otherwise every dot is the same
- * base size. Layers the selected instrument owns take its colour, the rest
- * stay grey. `ranges` keeps each note's { s, e, o } span so the renderer can
- * halo exactly the layer that is sounding.
+ * Loop notes → dots on the touch pad: one dot per scale column the pad can
+ * voice, ignoring octave. The dot takes the selected instrument's colour
+ * when that instrument owns a note there, else stays grey. `ranges` keeps
+ * each note's { s, e } step span so the renderer can halo the dot while it
+ * sounds.
  */
-export function padNoteMarks(notes, instrument, { columns = 12, root = 'C', scale = 'major', octaves, flat = false } = {}) {
+export function padNoteMarks(notes, instrument, { columns = 12 } = {}) {
   const target = normalizeInstrument(instrument);
   const marks = [];
   const byDegree = new Map();
   for (const note of notes || []) {
     const degree = storedDegree(note.degree);
     if (degree == null || degree < 0 || degree >= columns) continue;
-    const own = normalizeInstrument(note.instrument);
-    const octave = octaves?.[own] ?? defaultOctaves()[own];
-    const midi = storedMidi(note.midi) ?? scaleDegreeToMidi(instrumentHomeMidi(root, octave), scale, degree);
-    const layerOctave = Math.floor(midi / 12) - 1;
     let mark = byDegree.get(degree);
     if (!mark) {
       mark = {
         x: (degree + 0.5) / columns,
         y: 0.5,
         degree,
-        layers: new Map(),
+        own: false,
         ranges: [],
       };
       byDegree.set(degree, mark);
       marks.push(mark);
     }
-    let layer = mark.layers.get(layerOctave);
-    if (!layer) {
-      layer = { octave: layerOctave, own: false };
-      mark.layers.set(layerOctave, layer);
-    }
-    if (own === target) layer.own = true;
+    if (normalizeInstrument(note.instrument) === target) mark.own = true;
     const start = Math.max(0, Math.round(Number(note.step) || 0));
     const end = Math.max(0, Math.round(Number(note.endStep) || 0));
-    mark.ranges.push({ s: start, e: end === start ? start + 1 : end, o: layerOctave });
+    mark.ranges.push({ s: start, e: end === start ? start + 1 : end });
   }
+  const ownColor = INSTRUMENT_COLORS[target] || '#e2b43a';
   for (const mark of marks) {
-    const layers = [...mark.layers.values()].sort((a, b) => a.octave - b.octave);
-    if (flat) {
-      // Lite drops the per-octave stack: one dot per column, its halo fires
-      // on any sounding range (the renderer reads `flat`).
-      mark.flat = true;
-      mark.layers = [{
-        octave: null,
-        radius: MARK_BASE_RADIUS,
-        color: layers.some((layer) => layer.own)
-          ? INSTRUMENT_COLORS[target] || '#e2b43a'
-          : 'rgba(122, 114, 102, 0.55)',
-      }];
-      continue;
-    }
-    const highest = layers[layers.length - 1].octave;
-    const stacked = layers.length > 1;
-    mark.layers = layers.map((layer) => ({
-      octave: layer.octave,
-      radius: stacked ? MARK_BASE_RADIUS + (highest - layer.octave) * MARK_OCTAVE_STEP : MARK_BASE_RADIUS,
-      color: layer.own
-        ? INSTRUMENT_COLORS[target] || '#e2b43a'
-        : 'rgba(122, 114, 102, 0.55)',
-    }));
+    mark.radius = MARK_RADIUS;
+    mark.color = mark.own ? ownColor : 'rgba(122, 114, 102, 0.55)';
   }
   return marks;
 }
