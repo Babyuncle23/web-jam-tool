@@ -269,10 +269,9 @@ export class DrumMachine {
     license: SAMPLE_LIBRARY.license,
   };
 
-  constructor(engine, { pattern = DEFAULT_PATTERN, lite = null } = {}) {
+  constructor(engine, { pattern = DEFAULT_PATTERN } = {}) {
     this.#tone = engine.tone;
-    /** Lite trims the kit bus: the synth voices have no SAMPLE_GAIN taming. */
-    this.#output = new this.#tone.Gain(lite?.synthDrums ? 1.2 : 1.35);
+    this.#output = new this.#tone.Gain(1.35);
 
     this.#voices.kick = new this.#tone.MembraneSynth({
       pitchDecay: 0.03,

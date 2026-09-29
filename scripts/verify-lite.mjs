@@ -75,8 +75,8 @@ try {
   if (!/^[A-Z2-9]{4}$/.test(fullUi.code || '')) errors.push(`full host: bad session code "${fullUi.code}"`);
   await full.close();
 
-  // Lite host: the default-on effects keep running but the UI shows none of
-  // them — both chip rows render empty and stay hidden.
+  // Lite host: instruments run dry (bass cutoff is the only surviving node)
+  // and the UI shows no FX controls — both chip rows stay empty and hidden.
   const lite = await openHost(browser, `${BASE}/?role=host&lite=1`);
   const liteUi = await lite.evaluate(`({
     pillHidden: document.getElementById('host-lite-pill')?.hidden,
@@ -98,7 +98,8 @@ try {
   console.log('lite kalimba chips:', JSON.stringify(kalimbaFx));
   if (kalimbaFx.includes('reverse')) errors.push('lite host: kalimba still shows reverse');
 
-  // The deeper cuts: 24 kHz context, wide lookAhead, only the open-hat WAV loads.
+  // The deeper cuts: 24 kHz context, wide lookAhead. The drums are the
+  // tradeoff — lite loads the full 808 kit just like the full rig.
   const liteAudio = await lite.evaluate(`({
     rate: globalThis.__jam?.audio?.engine?.sampleRate,
     lookAhead: globalThis.__jam?.audio?.engine?.tone?.getContext?.().lookAhead,
@@ -109,12 +110,12 @@ try {
   console.log('lite audio:', JSON.stringify(liteAudio));
   if (!(liteAudio.rate > 0 && liteAudio.rate <= 24000)) errors.push(`lite host: sampleRate ${liteAudio.rate}, expected ≤24000`);
   if (!(liteAudio.lookAhead >= 0.04)) errors.push(`lite host: lookAhead ${liteAudio.lookAhead}, expected ≥0.04`);
-  if (liteAudio.usingSamples !== false) errors.push('lite host: all drum samples were still loaded');
+  if (liteAudio.usingSamples !== true) errors.push('lite host: drum samples did not load');
   if (liteAudio.openhat !== 'sample') errors.push('lite host: the 808 open-hat sample did not load');
-  if (liteAudio.kick !== 'synth') errors.push('lite host: kick should stay on the synth voice');
+  if (liteAudio.kick !== 'sample') errors.push('lite host: kick should play the 808 sample');
 
-  // Guest on the lite host sees no chips either — the default-on effects
-  // still run on the host, they are just not adjustable.
+  // Guest on the lite host sees no chips either — lite exposes no FX
+  // controls at all.
   const code = await lite.evaluate(`document.getElementById('host-code').textContent`);
   const guest = await browser.newPage();
   guest.on('pageerror', (e) => errors.push(`guest pageerror: ${e.message}`));

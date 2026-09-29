@@ -49,11 +49,8 @@ export const DRUM_FX = [
 export const LITE = {
   lowPolyphony: true, // smaller voice pools: pad 8, organ 8, kalimba 4, synth 6 (synth.js)
   singleFat: true, // fat oscillators drop to count 1 — no ×3 oscillators per note (pad, bass)
-  noOversample: true, // distortions run at oversample 'none' instead of '2x'
-  reducedFx: true, // only the effects that are ON by default keep a node — the rest are never built
-  singleReverb: true, // one shared room convolver for instruments — no pad hall; drums keep their own short room
+  reducedFx: true, // instruments run dry — only the bass cutoff keeps a node; no convolvers at all
   lowSampleRate: true, // AudioContext runs at 24 kHz — every audio-node cost roughly halves (engine.js)
-  synthDrums: true, // TR-808 WAVs are never fetched or decoded — the synth voices play instead (drums.js)
   wideLookAhead: true, // context lookAhead 0.05 s instead of 0.02 — fewer scheduler wake-ups, more jitter headroom
   lowDpi: true, // the pad canvas is capped at 1.5× device pixels — a 3× phone paints ~4× fewer pixels (touch-pad.js)
   shortTails: true, // pad release 1.4 s instead of 2.2 s — released voices go quiet sooner (synth.js)
@@ -420,13 +417,11 @@ export const FX_COLORS = {
 /**
  * One effect rig per instrument plus two shared send reverbs, built once.
  * Nothing here is shared with the drum machine or constructed per touch.
- * `lite` is the LITE flags object (or null): reducedFx builds only the
- * effects that are on by default, singleReverb builds only the shared room,
- * and noOversample strips the 2x stage from the bass drive.
+ * `lite` is the LITE flags object (or null): reducedFx runs the instruments
+ * dry — the only survivor is the bass cutoff.
  */
 export function createInstrumentBus(tone, lite) {
   const liteFx = Boolean(lite?.reducedFx);
-  const oversample = lite?.noOversample ? 'none' : '2x';
   const mix = new tone.Gain(1);
   const nodes = [];
   const voiceGains = {};
@@ -478,24 +473,24 @@ export function createInstrumentBus(tone, lite) {
    * Shared send reverbs replace the private per-chain convolvers: a short
    * room feeds organ/kalimba/synth, a long hall feeds pad. Both stay at
    * wet:1; each instrument owns a send gain, so the live path keeps two
-   * convolvers instead of four. Lite builds only the room — the pad send
-   * then aims at it, and a convolver costs CPU even at wet 0.
+   * convolvers instead of four. Lite builds neither — the instruments run
+   * dry, so no convolver bills the audio thread even at wet 0.
    */
-  /** Lite shortens the only convolver too: cost scales with IR length. */
-  const roomReverb = keep(new tone.Reverb({ decay: lite?.singleReverb ? 1.4 : 1.8, wet: 1, preDelay: 0.01 }));
-  const hallReverb = lite?.singleReverb ? null : keep(new tone.Reverb({ decay: 5.5, wet: 1, preDelay: 0.02 }));
-  roomReverb.connect(mix);
+  const roomReverb = liteFx ? null : keep(new tone.Reverb({ decay: 1.8, wet: 1, preDelay: 0.01 }));
+  const hallReverb = liteFx ? null : keep(new tone.Reverb({ decay: 5.5, wet: 1, preDelay: 0.02 }));
+  roomReverb?.connect(mix);
   hallReverb?.connect(mix);
 
   const padIn = keep(new tone.Gain(1));
-  const padDelay = keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.28, wet: 0 }));
-  const padChorus = keep(new tone.Chorus({ frequency: 0.35, delayTime: 3.2, depth: 0.45, wet: 0 }));
-  if (typeof padChorus.start === 'function') padChorus.start();
-  chain('pad', padIn, padDelay, padChorus, makeUp('pad'));
+  /** Null in lite: instruments run dry — only the bass cutoff survives. */
+  const padDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.28, wet: 0 }));
+  const padChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 0.35, delayTime: 3.2, depth: 0.45, wet: 0 }));
+  if (typeof padChorus?.start === 'function') padChorus.start();
+  chain('pad', padIn, ...[padDelay, padChorus].filter(Boolean), makeUp('pad'));
 
   const bassIn = keep(new tone.Gain(1));
   /** Null in lite: distortion is off by default, so the node is never built. */
-  const bassDrive = liteFx ? null : keep(new tone.Distortion({ distortion: 0.4, wet: 0, oversample }));
+  const bassDrive = liteFx ? null : keep(new tone.Distortion({ distortion: 0.4, wet: 0, oversample: '2x' }));
   const bassFilter = keep(new tone.Filter({ type: 'lowpass', frequency: 750, Q: 0.5, rolloff: -24 }));
   const bassSlap = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '16n', feedback: 0.18, wet: 0 }));
   chain('bass', bassIn, ...[bassDrive, bassFilter, bassSlap].filter(Boolean), makeUp('bass'));
@@ -526,10 +521,10 @@ export function createInstrumentBus(tone, lite) {
   finish('kalimba', kalimbaMakeup, { darken: true });
 
   const synthIn = keep(new tone.Gain(1));
-  const synthDelay = keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.2, wet: 0 }));
+  const synthDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.2, wet: 0 }));
   const synthChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 1.8, delayTime: 3.5, depth: 0.7, wet: 0 }));
   if (typeof synthChorus?.start === 'function') synthChorus.start();
-  chain('synth', synthIn, synthDelay, ...[synthChorus].filter(Boolean), makeUp('synth'));
+  chain('synth', synthIn, ...[synthDelay, synthChorus].filter(Boolean), makeUp('synth'));
 
   /** Send taps sit after the audible gate: muting a voice also starves its
    * tail, and the send inherits level/makeup/darken like the dry path. */
@@ -539,14 +534,15 @@ export function createInstrumentBus(tone, lite) {
     gain.connect(target);
     return gain;
   };
-  const padSend = send('pad', hallReverb ?? roomReverb);
-  const organSend = send('organ', roomReverb);
-  const kalimbaSend = send('kalimba', roomReverb);
-  const synthSend = send('synth', roomReverb);
+  const padSend = liteFx ? null : send('pad', hallReverb ?? roomReverb);
+  const organSend = liteFx ? null : send('organ', roomReverb);
+  const kalimbaSend = liteFx ? null : send('kalimba', roomReverb);
+  const synthSend = liteFx ? null : send('synth', roomReverb);
 
   const apply = {
     pad: {
       reverb: (amount) => {
+        if (!padSend) return;
         const wet = blend([0, 0.34, 0.62], amount);
         padSend.gain.rampTo(sendLevel(wet, 'reverb'), 0.06);
       },
@@ -558,6 +554,7 @@ export function createInstrumentBus(tone, lite) {
         punch('pad');
       },
       chorus: (amount) => {
+        if (!padChorus) return;
         const wet = blend([0, 0.28, 0.55], amount);
         wetNow.pad.chorus = wet;
         padChorus.wet.rampTo(wet, 0.06);
@@ -598,6 +595,7 @@ export function createInstrumentBus(tone, lite) {
         punch('organ');
       },
       room: (amount) => {
+        if (!organSend) return;
         const wet = blend([0, 0.2, 0.42], amount);
         organSend.gain.rampTo(sendLevel(wet, 'room'), 0.06);
       },
@@ -611,6 +609,7 @@ export function createInstrumentBus(tone, lite) {
         punch('kalimba');
       },
       reverb: (amount) => {
+        if (!kalimbaSend) return;
         const wet = blend([0, 0.18, 0.4], amount);
         kalimbaSend.gain.rampTo(sendLevel(wet, 'reverb'), 0.05);
       },
@@ -623,10 +622,12 @@ export function createInstrumentBus(tone, lite) {
     },
     synth: {
       room: (amount) => {
+        if (!synthSend) return;
         const wet = blend([0, 0.28, 0.5], amount);
         synthSend.gain.rampTo(sendLevel(wet, 'room'), 0.06);
       },
       delay: (amount) => {
+        if (!synthDelay) return;
         const wet = blend([0, 0.16, 0.36], amount);
         wetNow.synth.delay = wet;
         synthDelay.wet.rampTo(wet, 0.06);
@@ -675,23 +676,22 @@ export function createInstrumentBus(tone, lite) {
 
 /**
  * Drum-only distortion, cutoff and a small room. Not wired to the synth.
- * Lite drops the nodes that are off by default — cutoff — but keeps the
- * kit's own short room convolver: routing it as a send into the shared
- * instrument reverb sounded different enough to be audible.
+ * Lite keeps the kit identical to full — the FX cuts landed on the
+ * instrument bus instead.
  */
-export function createDrumBus(tone, lite) {
+export function createDrumBus(tone) {
   const input = new tone.Gain(1);
   const output = new tone.Gain(1);
   const audible = new tone.Gain(1);
   const makeup = new tone.Gain(1);
-  const drive = new tone.Distortion({ distortion: 0.35, wet: 0, oversample: lite?.noOversample ? 'none' : '2x' });
-  const filter = lite?.reducedFx ? null : new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
+  const drive = new tone.Distortion({ distortion: 0.35, wet: 0, oversample: '2x' });
+  const filter = new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
   const room = new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
   const wetNow = { drive: 0, room: 0 };
   const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow), 0.05);
   input.connect(drive);
-  drive.connect(filter || room);
-  filter?.connect(room);
+  drive.connect(filter);
+  filter.connect(room);
   room.connect(makeup);
   makeup.connect(audible);
   audible.connect(output);
@@ -704,7 +704,6 @@ export function createDrumBus(tone, lite) {
       punch();
     },
     cutoff: (amount) => {
-      if (!filter) return;
       filter.frequency.rampTo(blend([14000, 4200, 900], amount), 0.05);
     },
     room: (amount) => {
@@ -728,7 +727,7 @@ export function createDrumBus(tone, lite) {
     },
     dispose() {
       drive.dispose();
-      filter?.dispose();
+      filter.dispose();
       room.dispose();
       makeup.dispose();
       audible.dispose();

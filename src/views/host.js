@@ -6,7 +6,7 @@
 
 import { AudioEngine, DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { buildLoopMidi, readRepeats, renderLoopWav, saveBlob } from '../audio/export-loop.js';
-import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, SAMPLE_URLS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
+import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import {
   INSTRUMENT_COLORS,
   INSTRUMENT_IDS,
@@ -1881,11 +1881,6 @@ export async function createHostView({ lite } = {}) {
 
   function describeSamples(sampleState) {
     if (sampleState.usingSamples) return 'drums: TR-808 samples';
-    if (lite?.synthDrums) {
-      return sampleState.tracks?.openhat === 'sample'
-        ? 'drums: 808 open hat + synth (lite)'
-        : 'drums: synthesis (lite)';
-    }
     if (sampleState.mode === 'mixed') {
       const synthTracks = Object.entries(sampleState.tracks)
         .filter(([, kind]) => kind === 'synth')
@@ -1963,8 +1958,8 @@ export async function createHostView({ lite } = {}) {
     const partial = { engine };
     try {
       partial.bus = createInstrumentBus(engine.tone, lite);
-      partial.drumsFx = createDrumBus(engine.tone, lite);
-      partial.drums = new DrumMachine(engine, { lite });
+      partial.drumsFx = createDrumBus(engine.tone);
+      partial.drums = new DrumMachine(engine);
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,
         scale: state.scale,
@@ -1984,9 +1979,8 @@ export async function createHostView({ lite } = {}) {
         }
       }
 
-      /** Lite fetches just the open hat — its synth voice is the weakest of
-       * the kit. The other six WAVs, their decodes and pools are skipped. */
-      const samples = partial.drums.loadSamples(lite?.synthDrums ? { openhat: SAMPLE_URLS.openhat } : undefined);
+      /** Lite keeps the full kit — the FX cuts landed on the instruments. */
+      const samples = partial.drums.loadSamples();
       const [sampleState] = await Promise.all([samples, partial.bus.ready, partial.drumsFx.ready]);
       for (const [id, octave] of Object.entries(state.octaves)) partial.synth.setInstrumentOctave(id, octave);
       partial.synth.warmUp();
@@ -2006,17 +2000,13 @@ export async function createHostView({ lite } = {}) {
       paintBar(parkedLoopStep());
 
       el.drumSource.textContent = describeSamples(sampleState);
-      el.drumSource.dataset.state = sampleState.usingSamples || lite?.synthDrums ? 'online' : 'error';
+      el.drumSource.dataset.state = sampleState.usingSamples ? 'online' : 'error';
       log(
-        sampleState.usingSamples
-          ? 'TR-808 from the CDN'
-          : lite?.synthDrums
-            ? sampleState.tracks?.openhat === 'sample' ? 'synth kit + 808 open hat' : 'synthesis — samples skipped'
-            : 'synthesis, sample CDN unavailable',
+        sampleState.usingSamples ? 'TR-808 from the CDN' : 'synthesis, sample CDN unavailable',
         'drums',
       );
       log(`Tone.js ${globalThis.Tone.version}, context ${engine.contextState} @ ${Math.round(engine.sampleRate / 100) / 10} kHz`, 'audio');
-      if (lite) log('lite mode — 24 kHz context, fewer voices, one reverb, trimmed FX, synth drums', 'audio');
+      if (lite) log('lite mode — 24 kHz context, fewer voices, dry instruments, no reverb', 'audio');
       return sampleState;
     } catch (error) {
       disposePartial(partial);
@@ -2033,8 +2023,7 @@ export async function createHostView({ lite } = {}) {
     try {
       const sampleState = await startAudio();
       state.audioError = null;
-      // In lite the synth drums are the plan, not a failure — no warn splash.
-      if (sampleState?.fallback && !lite?.synthDrums) {
+      if (sampleState?.fallback) {
         setSplashPhase('warn', describeSamples(sampleState));
         setControlEnabled(el.splashStart, true);
         return;
