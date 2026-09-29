@@ -1408,6 +1408,7 @@ export async function createControllerView({ code, name } = {}) {
       pad.destroy();
       drumGrid.destroy();
       renderer.destroy();
+      clearTimeout(guestNotesTimer);
       el.screen.removeEventListener('click', onChipClick);
       document.removeEventListener('gesturestart', preventGesture);
       socket.disconnect();

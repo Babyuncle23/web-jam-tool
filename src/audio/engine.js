@@ -16,6 +16,10 @@ export const DEFAULT_MASTER_GAIN = 0.78;
  */
 const LITE_SAMPLE_RATE = 24000;
 let liteContext = null;
+/** Device-rate context a full session gets after a lite swap. Created lazily:
+ * a lite-only page never pays for a second AudioContext. */
+let nativeContext = null;
+let onLiteContext = false;
 
 export class AudioEngine {
   #tone;
@@ -77,20 +81,41 @@ export class AudioEngine {
   }
 
   /**
-   * Swap Tone onto a 24 kHz AudioContext before anything touches the default
-   * one. Must run before tone.start()/getContext() — once a context exists,
-   * replacing it strands the nodes built on it. A native AudioContext is
-   * wrapped by setContext; old Safari/Firefox refuse the option — lite then
-   * just keeps the device rate.
+   * Point Tone at the right context for this rig before anything is built:
+   * lite gets the shared 24 kHz context, full gets a device-rate one. Must
+   * run before tone.start()/getContext() builds nodes — after a swap the old
+   * context strands whatever was constructed on it. The swap back matters on
+   * re-entry: without it a full session after a lite one would silently keep
+   * rendering at 24 kHz. Old Safari/Firefox may refuse the sampleRate option
+   * — then lite just keeps the device rate.
    */
-  #pickLiteContext() {
-    if (!this.#lite?.lowSampleRate || typeof this.#tone.setContext !== 'function') return;
+  #pickContext() {
+    if (typeof this.#tone.setContext !== 'function') return;
     const Ctor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
     if (!Ctor) return;
     try {
-      if (!liteContext) liteContext = new Ctor({ sampleRate: LITE_SAMPLE_RATE });
-      this.#tone.setContext(liteContext);
+      if (this.#lite?.lowSampleRate) {
+        if (!onLiteContext) {
+          // Capture the context Tone is leaving so a later full session swaps
+          // back to it instead of spawning a third AudioContext. rawContext is
+          // Tone's standardized-audio-context facade — setContext takes it back.
+          const current = this.#tone.getContext()?.rawContext;
+          if (current && current.sampleRate !== LITE_SAMPLE_RATE) nativeContext ??= current;
+          if (!liteContext) liteContext = new Ctor({ sampleRate: LITE_SAMPLE_RATE });
+          this.#tone.setContext(liteContext);
+          onLiteContext = true;
+        }
+        return;
+      }
+      if (onLiteContext) {
+        if (!nativeContext) nativeContext = new Ctor();
+        this.#tone.setContext(nativeContext);
+        onLiteContext = false;
+      }
     } catch {
+      // Context creation can fail at the browser's AudioContext cap — keep
+      // whatever context Tone already has rather than break audio start.
+      // onLiteContext is left as it was: a failed swap-back retries next time.
       liteContext = null;
     }
   }
@@ -101,7 +126,7 @@ export class AudioEngine {
     this.#phase = 'starting';
     this.#error = null;
     try {
-      this.#pickLiteContext();
+      this.#pickContext();
       await this.#tone.start();
       this.#limiter = new this.#tone.Limiter(-2).toDestination();
       this.#compressor = new this.#tone.Compressor({

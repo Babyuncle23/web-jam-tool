@@ -2772,6 +2772,9 @@ export async function createHostView({ lite } = {}) {
       clearTimeout(drumPushTimer);
       clearTimeout(loopPushTimer);
       clearTimeout(harmonyPushTimer);
+      clearTimeout(rollPaintTimer);
+      // A clear-hold pending past destroy would fire clearAllLoops on a null audio.
+      clearTimeout(clearHold);
       drumGrid.destroy();
       hostPad.destroy();
       if (audio) {
