@@ -957,8 +957,11 @@ export async function createControllerView({ code, name } = {}) {
       state.masterFx.cutoff = 0;
       state.masterFx.hipass = 0;
       setLabel('—');
+      // Both releases are final values and ride the reliable channel: a
+      // dropped volatile here left the host filter clamped after the finger
+      // was already gone. sendControl also drops any queued move value.
       socket.sendControl({ masterHold: { hold: false } });
-      socket.sendControlThrottled({ masterFx: { cutoff: 0, hipass: 0 } });
+      socket.sendControl({ masterFx: { cutoff: 0, hipass: 0 } });
       return;
     }
     const { division } = fxZone(point);
@@ -1400,9 +1403,15 @@ export async function createControllerView({ code, name } = {}) {
   markScrollEdges(document.querySelector('.controller-foot'), 'y');
   markPageEdges();
 
-  return {
+  const view = {
     get code() {
       return joined.code;
+    },
+    get socket() {
+      return socket;
+    },
+    get masterFx() {
+      return { ...state.masterFx };
     },
     destroy() {
       pad.destroy();
@@ -1412,6 +1421,10 @@ export async function createControllerView({ code, name } = {}) {
       el.screen.removeEventListener('click', onChipClick);
       document.removeEventListener('gesturestart', preventGesture);
       socket.disconnect();
+      if (globalThis.__jam === view) delete globalThis.__jam;
     },
   };
+
+  globalThis.__jam = view;
+  return view;
 }

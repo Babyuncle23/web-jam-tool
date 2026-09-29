@@ -1051,6 +1051,8 @@ export async function createHostView({ lite } = {}) {
 
   /** Who currently holds the stutter: 'host', or a guest peerId. */
   let masterHolder = null;
+  /** Who last steered the bipolar filter — reset on vanish so it can't stick. */
+  let filterHolder = null;
   /** FX pad fingers, insertion-ordered — the newest finger drives the master. */
   const fxFingers = new Map();
 
@@ -1112,6 +1114,7 @@ export async function createHostView({ lite } = {}) {
           state.masterFx.hipass = 0;
           audio?.engine.masterFx?.setHipass(0);
         }
+        if (filterHolder === 'host') filterHolder = null;
       }
       setLabel('—');
       queueHarmony();
@@ -1119,6 +1122,7 @@ export async function createHostView({ lite } = {}) {
     }
     const { division } = fxZone(point);
     const { cutoff, hipass } = fxFilter(point);
+    filterHolder = 'host';
     // The left lane is filter-only: sliding into it releases the stutter
     // without lifting the finger, sliding back out re-grabs the slice.
     const wantsHold = Boolean(division);
@@ -2266,6 +2270,13 @@ export async function createHostView({ lite } = {}) {
   function applyGuestMaster(data) {
     const patch = data?.masterFx;
     if (!patch || typeof patch !== 'object') return;
+    // The bipolar filter is owned by whoever last steered it — a guest who
+    // vanishes mid-gesture then gets their leftover clamp reset on peer:leave.
+    if (patch.cutoff !== undefined || patch.hipass !== undefined) {
+      const peerId = data.peerId || 'guest';
+      if (Number(patch.cutoff) > 0 || Number(patch.hipass) > 0) filterHolder = peerId;
+      else if (filterHolder === peerId) filterHolder = null;
+    }
     let changed = false;
     for (const key of ['cutoff', 'hipass', 'grit', 'wah', 'volume']) {
       if (!Number.isFinite(Number(patch[key])) || masterDrag?.dataset?.master === key) continue;
@@ -2551,6 +2562,14 @@ export async function createHostView({ lite } = {}) {
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
     }
+    // Every peer is gone with the old room — a leftover guest filter opens.
+    if (filterHolder && filterHolder !== 'host') {
+      filterHolder = null;
+      state.masterFx.cutoff = 0;
+      state.masterFx.hipass = 0;
+      audio?.engine.masterFx?.setCutoff(0);
+      audio?.engine.masterFx?.setHipass(0);
+    }
     if (audio) {
       for (const [playerId, recorder] of audio.loops) {
         if (playerId === 'host') continue;
@@ -2586,6 +2605,16 @@ export async function createHostView({ lite } = {}) {
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
+      publishHarmony();
+    }
+    // A socket that dies mid-gesture never sends the filter release — open
+    // the master filter if the gone peer was the one steering it.
+    if (filterHolder === peerId) {
+      filterHolder = null;
+      state.masterFx.cutoff = 0;
+      state.masterFx.hipass = 0;
+      audio?.engine.masterFx?.setCutoff(0);
+      audio?.engine.masterFx?.setHipass(0);
       publishHarmony();
     }
     log(`${name ?? peerId} left`, 'guest');
@@ -2740,6 +2769,9 @@ export async function createHostView({ lite } = {}) {
     },
     get effects() {
       return state.effects;
+    },
+    get masterFx() {
+      return { ...state.masterFx };
     },
     get drumSteps() {
       return state.drumSteps;

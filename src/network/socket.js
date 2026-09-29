@@ -195,7 +195,11 @@ export class JamSocket {
   }
 
   sendControl(control) {
-    this.#socket?.emit(EVENTS.control, control);
+    if (!this.#socket || !control) return;
+    // A reliable value supersedes whatever is queued for the same slot —
+    // otherwise a stale volatile could flush after it and undo a release.
+    this.#controlPending.delete(controlSlotKey(control));
+    this.#socket.emit(EVENTS.control, control);
   }
 
   /**

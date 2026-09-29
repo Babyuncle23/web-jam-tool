@@ -55,6 +55,9 @@ const hostHeld = await host.evaluate(() => {
   return { holding: fx?.holding?.(), repeat: fx?.repeatGain?.(), division: fx?.sliceSeconds?.() > 0 };
 });
 console.log('host while guest holds:', JSON.stringify(hostHeld));
+const heldFx = await host.evaluate(() => globalThis.__jam?.masterFx);
+console.log('host masterFx while held:', JSON.stringify(heldFx));
+if (!(heldFx?.cutoff > 0)) console.log('FAIL: guest filter never reached the host');
 await guest.screenshot({ path: `${OUT}/fx-guest-held.png` });
 await guest.mouse.up();
 await new Promise((r) => setTimeout(r, 400));
@@ -63,6 +66,39 @@ const hostReleased = await host.evaluate(() => {
   return { holding: fx?.holding?.(), repeat: fx?.repeatGain?.(), live: fx?.liveGain?.() };
 });
 console.log('host after guest release:', JSON.stringify(hostReleased));
+const releasedFx = await host.evaluate(() => globalThis.__jam?.masterFx);
+console.log('host masterFx after release:', JSON.stringify(releasedFx));
+if (releasedFx?.cutoff !== 0 || releasedFx?.hipass !== 0) {
+  console.log('FAIL: master filter stuck after guest release');
+}
+
+// Regression: the release used to fly volatile. Drag normally so the host
+// clamps the filter, then black-hole volatile emits and let go — the
+// reliable {cutoff:0,hipass:0} must still land.
+await guest.mouse.move(...gpx(0.55, 0.3));
+await guest.mouse.down();
+await guest.mouse.move(...gpx(0.6, 0.25), { steps: 3 });
+await new Promise((r) => setTimeout(r, 400));
+const clamped = await host.evaluate(() => globalThis.__jam?.masterFx?.cutoff);
+if (!(clamped > 0)) console.log('FAIL: second drag did not clamp the filter');
+await guest.evaluate(() => {
+  const sock = globalThis.__jam?.socket?.socket;
+  const original = sock.emit.bind(sock);
+  sock.emit = function emit(...args) {
+    if (sock.flags?.volatile) return sock;
+    return original(...args);
+  };
+});
+await guest.mouse.up();
+await guest.evaluate(() => {
+  delete globalThis.__jam?.socket?.socket.emit;
+});
+await new Promise((r) => setTimeout(r, 400));
+const afterDrop = await host.evaluate(() => globalThis.__jam?.masterFx);
+console.log('host masterFx after dropped-volatile release:', JSON.stringify(afterDrop));
+if (afterDrop?.cutoff !== 0 || afterDrop?.hipass !== 0 || afterDrop?.hold) {
+  console.log('FAIL: dropped volatile release left the filter clamped');
+}
 
 // Guest wah lives only in the master sheet now (inside Advanced): wah + volume → host
 await guest.click('#controller-advanced');
@@ -92,5 +128,27 @@ await guest.screenshot({ path: `${OUT}/fx-guest-master-sheet.png` });
 // Guest back to notes
 await guest.click('#controller-pad-mode [data-padmode="notes"]');
 await new Promise((r) => setTimeout(r, 300));
+
+// Guest dies mid-gesture: peer:leave must open the filter they held.
+// The master/advanced sheets still cover the pad — close them first.
+await guest.click('#controller-master-close');
+await guest.click('#controller-advanced-close');
+await new Promise((r) => setTimeout(r, 300));
+await guest.click('#controller-pad-mode [data-padmode="fx"]');
+await new Promise((r) => setTimeout(r, 300));
+await guest.mouse.move(...gpx(0.55, 0.3));
+await guest.mouse.down();
+await guest.mouse.move(...gpx(0.6, 0.22), { steps: 3 });
+await new Promise((r) => setTimeout(r, 400));
+const heldBeforeLeave = await host.evaluate(() => globalThis.__jam?.masterFx?.cutoff);
+if (!(heldBeforeLeave > 0)) console.log('FAIL: guest filter did not engage before leave test');
+await guest.close();
+await new Promise((r) => setTimeout(r, 1200));
+const afterLeave = await host.evaluate(() => globalThis.__jam?.masterFx);
+console.log('host masterFx after guest left mid-hold:', JSON.stringify(afterLeave));
+if (afterLeave?.cutoff !== 0 || afterLeave?.hipass !== 0 || afterLeave?.hold) {
+  console.log('FAIL: filter stayed clamped after the guest vanished');
+}
+
 await browser.close();
 console.log('done');
