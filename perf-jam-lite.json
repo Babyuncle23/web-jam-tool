@@ -1,0 +1,108 @@
+{
+  "label": "jam-lite",
+  "url": "http://127.0.0.1:43117",
+  "code": "Q7XV",
+  "browserPids": {
+    "host": 19672,
+    "controller": 9140
+  },
+  "phases": {
+    "host": [
+      {
+        "phase": "idle",
+        "from": 1790642581162,
+        "to": 1790642591172,
+        "seconds": 10.01,
+        "cpuPercent": 2.9,
+        "scriptPercent": 1.6,
+        "layoutPercent": 0,
+        "stylePercent": 0.1,
+        "rafPerSecond": 8,
+        "wsSendPerSecond": 8,
+        "wsRecvPerSecond": 0,
+        "audioNodesCreated": 165,
+        "domNodes": 3944
+      },
+      {
+        "phase": "rec-drag",
+        "from": 1790642591196,
+        "to": 1790642601233,
+        "seconds": 10.04,
+        "cpuPercent": 11.7,
+        "scriptPercent": 3.2,
+        "layoutPercent": 0.7,
+        "stylePercent": 0.5,
+        "rafPerSecond": 44.7,
+        "wsSendPerSecond": 17.4,
+        "wsRecvPerSecond": 30.7,
+        "audioNodesCreated": 174,
+        "domNodes": 5120
+      },
+      {
+        "phase": "fxpad",
+        "from": 1790642601249,
+        "to": 1790642611281,
+        "seconds": 10.03,
+        "cpuPercent": 7.7,
+        "scriptPercent": 2.6,
+        "layoutPercent": 0,
+        "stylePercent": 0.2,
+        "rafPerSecond": 16.2,
+        "wsSendPerSecond": 20.2,
+        "wsRecvPerSecond": 21.6,
+        "audioNodesCreated": 165,
+        "domNodes": 5133
+      }
+    ],
+    "controller": [
+      {
+        "phase": "idle",
+        "from": 1790642581164,
+        "to": 1790642591175,
+        "seconds": 10.01,
+        "cpuPercent": 0.7,
+        "scriptPercent": 0.1,
+        "layoutPercent": 0,
+        "stylePercent": 0,
+        "rafPerSecond": 0,
+        "wsSendPerSecond": 0,
+        "wsRecvPerSecond": 8,
+        "audioNodesCreated": 0,
+        "domNodes": 3323
+      },
+      {
+        "phase": "rec-drag",
+        "from": 1790642591198,
+        "to": 1790642601235,
+        "seconds": 10.04,
+        "cpuPercent": 10.6,
+        "scriptPercent": 1.8,
+        "layoutPercent": 0.7,
+        "stylePercent": 0.7,
+        "rafPerSecond": 38.7,
+        "wsSendPerSecond": 30.7,
+        "wsRecvPerSecond": 17.4,
+        "audioNodesCreated": 0,
+        "domNodes": 3694
+      },
+      {
+        "phase": "fxpad",
+        "from": 1790642601251,
+        "to": 1790642611283,
+        "seconds": 10.03,
+        "cpuPercent": 11.9,
+        "scriptPercent": 2,
+        "layoutPercent": 1,
+        "stylePercent": 0.9,
+        "rafPerSecond": 31.1,
+        "wsSendPerSecond": 21.6,
+        "wsRecvPerSecond": 20.1,
+        "audioNodesCreated": 0,
+        "domNodes": 2374
+      }
+    ]
+  },
+  "dispatchedMoves": 601,
+  "dispatchedFxMoves": 600,
+  "hostTouchLogEntries": 6
+}

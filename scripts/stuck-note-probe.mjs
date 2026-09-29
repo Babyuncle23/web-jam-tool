@@ -8,8 +8,15 @@
  * but the attack was still pending on the transport clock and re-armed the
  * envelope afterwards.
  *
- * Usage: node scripts/stuck-note-probe.mjs [--url http://127.0.0.1:43117]
- * Requires the dev server and a Chrome binary.
+ * A recorded loop note legitimately re-attacks every cycle, so a single
+ * sample can land inside its sounding span and look identical to a stuck
+ * voice. Any flagged voice is therefore re-verified one full loop cycle
+ * later: only an attack that outlived the whole cycle without a release is
+ * reported as stuck.
+ *
+ * Usage: node scripts/stuck-note-probe.mjs [--url http://127.0.0.1:43117] [--debug 1]
+ * Requires the dev server and a Chrome binary. --debug wraps TouchSynth
+ * attack/release/choke and dumps the recorder's events on a real failure.
  */
 
 import puppeteer from 'puppeteer-core';
@@ -24,6 +31,7 @@ const args = Object.fromEntries(
 
 const BASE_URL = args.url ?? 'http://127.0.0.1:43117';
 const CHROME = args.chrome ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const DEBUG = 'debug' in args || process.env.STUCK_DEBUG === '1';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Runs inside the page before audio starts: wraps Monophonic note on/off. */
@@ -88,6 +96,101 @@ function instrumentVoices() {
     }
     return origTrigRel.call(this, notes, time);
   };
+}
+
+/** Debug: wrap TouchSynth entry points to trace id-level attack/release. */
+function instrumentSynthOps() {
+  const Tone = globalThis.Tone;
+  const synth = globalThis.__jam?.audio?.synth;
+  if (!synth) return;
+  window.__ops = [];
+  const stamp = (op, data) => window.__ops.push({ op, now: Tone.now(), ...data });
+  for (const name of ['attack', 'move', 'release', 'choke', 'releaseMatching', 'silence']) {
+    const orig = synth[name].bind(synth);
+    synth[name] = (...callArgs) => {
+      const out = orig(...callArgs);
+      const arg = callArgs[0];
+      stamp(name, { id: arg?.id ?? arg, ok: out === undefined ? '-' : out, inst: arg?.instrument, type: arg?.type });
+      return out;
+    };
+  }
+}
+
+/** Debug snapshot: recent synth ops plus every recorder's raw events. */
+function debugDump() {
+  const loops = {};
+  for (const [playerId, recorder] of globalThis.__jam?.audio?.loops ?? []) {
+    loops[playerId] = recorder.exportEvents();
+  }
+  return { ops: (window.__ops || []).slice(-80), loops };
+}
+
+/**
+ * Snapshot every tracked voice so a later compare can tell a real stuck voice
+ * from a transient mid-span read — a recorded loop note legitimately replays
+ * and looks identical to a stuck one in a single sample.
+ */
+function snapshotVoices() {
+  window.__snap = [...window.__voices].map((voice) => ({
+    voice,
+    logLen: (voice.__log || []).length,
+  }));
+}
+
+/**
+ * One loop cycle in ms: a legit note's span is always shorter than the loop,
+ * so any voice still unreleased after this wait cannot be a recorded note.
+ */
+function loopCycleMs() {
+  const Tone = globalThis.Tone;
+  const steps = globalThis.__jam?.loopFor?.('host')?.loopSteps ?? 32;
+  return Math.max(2000, steps * Tone.Time('16n').toSeconds() * 1000 + 600);
+}
+
+/**
+ * Voices still ringing since the snapshot that never got a note-off. A
+ * release anywhere in the new log tail clears the voice; an attack older
+ * than a whole loop cycle with no release since outlived every legit span.
+ */
+function stillRinging() {
+  const Tone = globalThis.Tone;
+  const now = Tone.now();
+  const steps = globalThis.__jam?.loopFor?.('host')?.loopSteps ?? 32;
+  const cycleSec = steps * Tone.Time('16n').toSeconds();
+  const out = [];
+  for (const { voice, logLen } of window.__snap || []) {
+    const tail = (voice.__log || []).slice(logLen);
+    if (tail.some((event) => event.ev === 'R')) continue;
+    const osc = voice.oscillator?.state || voice._oscillator?.state || '?';
+    if (osc === 'stopped') continue;
+    let envNow = 0;
+    try {
+      envNow = voice.envelope?.getValueAtTime?.(now) ?? 0;
+    } catch {
+      // no envelope
+    }
+    const log = voice.__log || [];
+    // Oldest unreleased attack: a voice that re-fires its 'on' every cycle
+    // without ever releasing stays held — age the hold, not the latest attack.
+    let heldSince = null;
+    for (let i = log.length - 1; i >= 0; i -= 1) {
+      if (log[i].ev === 'A') heldSince = log[i].now;
+      else if (log[i].ev === 'R') break;
+    }
+    const aged = voice.__held ? heldSince != null && now - heldSince > cycleSec : envNow > 0.02;
+    if ((voice.__held || envNow > 0.02) && aged) {
+      out.push({
+        ctor: voice.constructor?.name || voice.name || '?',
+        held: Boolean(voice.__held),
+        note: voice.__note,
+        envNow: Number(envNow.toFixed(3)),
+        osc,
+        newEvents: tail,
+        log: log.slice(-14),
+      });
+    }
+  }
+  return out;
 }
 
 /** Voices that never got their release, or whose envelope is still up. */
@@ -164,6 +267,7 @@ async function launch() {
   await page.waitForFunction(() => document.getElementById('host-audio-status').dataset.state === 'online', {
     timeout: 20000,
   });
+  if (DEBUG) await page.evaluate(instrumentSynthOps);
   return { browser, page };
 }
 
@@ -180,9 +284,33 @@ async function pickInstrument(page, instrument) {
   }, instrument);
 }
 
-async function stuckAfter(page, settleMs = 400) {
+/**
+ * Settle, sample, and — only when something rings — prove it is actually
+ * stuck: a recorded loop note caught mid-span gets its release within one
+ * loop cycle, a stuck voice never does.
+ */
+async function checkStuck(page, settleMs = 400) {
   await sleep(settleMs);
-  return page.evaluate(stuckVoices);
+  const flagged = await page.evaluate(stuckVoices);
+  if (!flagged.length) return [];
+  await page.evaluate(snapshotVoices);
+  await sleep(await page.evaluate(loopCycleMs));
+  const stuck = await page.evaluate(stillRinging);
+  if (DEBUG && stuck.length) {
+    const dump = await page.evaluate(debugDump);
+    console.log('  ops tail:', JSON.stringify(dump.ops.slice(-40)));
+    console.log('  loops:', JSON.stringify(dump.loops));
+  }
+  return stuck;
+}
+
+/** btn-loop-clear only listens to pointerdown/up (hold = clear all): a plain .click() is a no-op, so tap it with real pointer events — a short tap clears the host's own loop. */
+async function pressClear(page) {
+  await page.evaluate(() => {
+    const btn = document.getElementById('btn-loop-clear');
+    btn.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, bubbles: true }));
+    btn.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+  });
 }
 
 const { browser, page } = await launch();
@@ -193,7 +321,7 @@ for (const instrument of ['pad', 'organ', 'kalimba', 'synth', 'bass']) {
   await page.evaluate(firePointer, 'pointerdown', 1, 0.4, 0.5);
   await sleep(300);
   await page.evaluate(firePointer, 'pointerup', 1, 0.4, 0.5);
-  record(`tap ${instrument}`, await stuckAfter(page));
+  record(`tap ${instrument}`, await checkStuck(page));
 }
 
 // --- Scenario 2: press, slide across columns, release ------------------
@@ -205,7 +333,7 @@ for (const instrument of ['pad', 'organ']) {
     await sleep(60);
   }
   await page.evaluate(firePointer, 'pointerup', 1, 0.84, 0.5);
-  record(`slide ${instrument}`, await stuckAfter(page));
+  record(`slide ${instrument}`, await checkStuck(page));
 }
 
 // --- Scenario 3: chords mode, two overlapping fingers -------------------
@@ -220,7 +348,7 @@ for (const instrument of ['organ', 'pad']) {
   await sleep(250);
   await page.evaluate(firePointer, 'pointerup', 2, 0.6, 0.6);
   await page.evaluate(firePointer, 'pointerup', 1, 0.3, 0.4);
-  record(`chords two fingers ${instrument}`, await stuckAfter(page));
+  record(`chords two fingers ${instrument}`, await checkStuck(page));
 }
 await page.evaluate(() => {
   document.querySelector('#mode-row [data-mode="single"]')?.click();
@@ -238,9 +366,9 @@ await page.evaluate(() => document.getElementById('btn-transport').click()); // 
 await sleep(300);
 await page.evaluate(() => document.getElementById('btn-transport').click()); // restart so the loop plays
 await sleep(2500); // let at least one loop boundary pass
-record('rec stopped mid-hold (organ)', await page.evaluate(stuckVoices));
+record('rec stopped mid-hold (organ)', await checkStuck(page, 0));
 // cleanup the recorded drone
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 5: long note, then shrink the loop (bars 32→64→16) -------
@@ -256,8 +384,8 @@ await page.evaluate(() => document.getElementById('btn-bars').click()); // 32 �
 await sleep(200);
 await page.evaluate(() => document.getElementById('btn-bars').click()); // 64 → 16
 await sleep(500);
-record('shrink loop below note end (organ)', await page.evaluate(stuckVoices));
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+record('shrink loop below note end (organ)', await checkStuck(page, 0));
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 6: record, flip Notes→Chords while the finger is down -----
@@ -272,10 +400,10 @@ await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
 await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]')?.click());
 // The orphaned take rings while the loop keeps playing — check before stop.
 await sleep(2600);
-record('mode flip mid-hold (organ)', await page.evaluate(stuckVoices));
+record('mode flip mid-hold (organ)', await checkStuck(page, 0));
 await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
 await sleep(300);
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 7: record, flip Chords→Notes while the finger is down -----
@@ -289,10 +417,10 @@ await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]
 await sleep(250);
 await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
 await sleep(2600);
-record('mode flip chord→note (organ)', await page.evaluate(stuckVoices));
+record('mode flip chord→note (organ)', await checkStuck(page, 0));
 await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
 await sleep(300);
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 8: hold a note across the loop boundary while recording ---
@@ -304,10 +432,10 @@ await page.evaluate(firePointer, 'pointerdown', 1, 0.5, 0.5);
 await sleep(4600);
 await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
 await sleep(2600);
-record('hold across loop boundary (organ)', await page.evaluate(stuckVoices));
+record('hold across loop boundary (organ)', await checkStuck(page, 0));
 await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
 await sleep(300);
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 9: switch instrument while the finger is down, recording --
@@ -320,10 +448,10 @@ await pickInstrument(page, 'pad');
 await sleep(250);
 await page.evaluate(firePointer, 'pointerup', 1, 0.5, 0.5);
 await sleep(2600);
-record('instrument flip mid-hold', await page.evaluate(stuckVoices));
+record('instrument flip mid-hold', await checkStuck(page, 0));
 await page.evaluate(() => document.getElementById('btn-loop').click()); // stop rec
 await sleep(300);
-await page.evaluate(() => document.getElementById('btn-loop-clear').click());
+await pressClear(page);
 await sleep(300);
 
 // --- Scenario 10: transport stop right after a loop attack --------------
@@ -343,7 +471,7 @@ for (let attempt = 0; attempt < 8; attempt += 1) {
 }
 await sleep(200);
 await page.evaluate(() => document.getElementById('btn-transport').click()); // final stop
-record('transport stop/start race (organ)', await stuckAfter(page, 600));
+record('transport stop/start race (organ)', await checkStuck(page, 600));
 
 console.log('\nsummary:', report.filter((r) => r.stuck.length).length, 'of', report.length, 'scenarios stuck');
 const diagnostics = await page.evaluate(() => ({

@@ -42,6 +42,43 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   const safeSteps = Math.max(16, steps);
   const rows = buildRows(notes, pitchesFor, focusMidi);
   const rowOf = new Map(rows.map((midi, index) => [midi, index]));
+
+  const selectionKey = instrument || '';
+  if (scrollEl.__selectionKey !== selectionKey) {
+    scrollEl.__selected = new Set();
+    scrollEl.__selectionKey = selectionKey;
+  }
+  if (!scrollEl.__selected) scrollEl.__selected = new Set();
+  scrollEl.__place = onPlace || null;
+  scrollEl.__onDelete = onDelete || null;
+  scrollEl.__onMove = onMove || null;
+  scrollEl.__onMoveGroup = onMoveGroup || onMove || null;
+  scrollEl.__inScale = inScale || null;
+  scrollEl.__instrument = selectionKey;
+  scrollEl.__selectMode = Boolean(selectMode);
+  scrollEl.__midis = rows;
+  scrollEl.__steps = safeSteps;
+  bindPan(scrollEl);
+
+  /* Rows, steps, zoom, instrument, owner and the scale mask make the frame.
+     A recording burst changes none of them — only the strips — so patch
+     those in place and keep keys, beats, scroll position and playhead. */
+  const frame = [
+    rows.join(','),
+    safeSteps,
+    stepPx,
+    selectionKey,
+    owner || '',
+    inScale ? rows.map((midi) => (inScale(midi) ? '1' : '0')).join('') : '-',
+  ].join('|');
+  const liveGrid = scrollEl.__frame === frame ? scrollEl.querySelector('.roll__grid') : null;
+  if (liveGrid) {
+    patchRollNotes(liveGrid, scrollEl, notes, { steps: safeSteps, pitchesFor, colorFor, onResize, owner });
+    markScrollEdges(scrollEl, 'both');
+    return { notes: notes.length, steps: safeSteps };
+  }
+  scrollEl.__frame = frame;
+
   const sheet = document.createElement('div');
   sheet.className = 'roll__sheet';
   sheet.style.width = `${KEY_PX + safeSteps * stepPx}px`;
@@ -114,35 +151,13 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   }
 
   for (const note of notes) {
-    const midis = pitchesFor(note);
     const duration = noteDuration(note, safeSteps);
-    for (const midi of midis) {
+    for (const midi of pitchesFor(note) || []) {
       const row = rowOf.get(Math.round(midi));
       if (row == null) continue;
-      const strip = pressable('roll__note');
-      strip.dataset.voice = note.voiceId;
-      strip.dataset.step = String(note.step);
-      strip.dataset.midi = String(Math.round(midi));
-      strip.dataset.duration = String(duration);
-      strip.dataset.instrument = note.instrument || '';
-      strip.dataset.owner = note.owner || '';
-      if (note.owner && owner && note.owner !== owner) strip.classList.add('is-remote');
-      if (scrollEl.__selected?.has(note.voiceId)) strip.classList.add('is-selected');
-      const width = Math.max(stepPx - 2, duration * stepPx - 2);
-      strip.style.left = `${note.step * stepPx + 1}px`;
-      strip.style.width = `${width}px`;
-      strip.style.top = `${row * ROW_PX + 3}px`;
-      strip.style.background = colorFor(note);
-      strip.textContent = midiToName(midi);
-      strip.setAttribute('aria-label', `${midiToName(midi)}, delete, move, or drag the right edge`);
-      const grip = document.createElement('span');
-      grip.className = 'roll__resize';
-      grip.setAttribute('aria-hidden', 'true');
-      grip.style.width = `${Math.min(22, Math.max(8, Math.round(width * 0.3)))}px`;
-      strip.append(grip);
-      bindStrip(strip, scrollEl, safeSteps);
-      bindResize(grip, strip, note, duration, safeSteps, onResize);
-      grid.append(strip);
+      grid.append(
+        makeStrip(scrollEl, note, Math.round(midi), row, duration, { steps: safeSteps, stepPx, colorFor, onResize, owner }),
+      );
     }
   }
 
@@ -157,22 +172,6 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   keys.style.height = `${rows.length * ROW_PX}px`;
   sheet.append(corner, ruler, keys, grid);
   scrollEl.replaceChildren(sheet);
-  const selectionKey = instrument || '';
-  if (scrollEl.__selectionKey !== selectionKey) {
-    scrollEl.__selected = new Set();
-    scrollEl.__selectionKey = selectionKey;
-  }
-  if (!scrollEl.__selected) scrollEl.__selected = new Set();
-  scrollEl.__place = onPlace || null;
-  scrollEl.__onDelete = onDelete || null;
-  scrollEl.__onMove = onMove || null;
-  scrollEl.__onMoveGroup = onMoveGroup || onMove || null;
-  scrollEl.__inScale = inScale || null;
-  scrollEl.__instrument = selectionKey;
-  scrollEl.__selectMode = Boolean(selectMode);
-  scrollEl.__midis = rows;
-  scrollEl.__steps = safeSteps;
-  bindPan(scrollEl);
   scrollEl.scrollLeft = previousLeft;
   if (anchorMidi != null && rowOf.has(anchorMidi)) {
     scrollEl.scrollTop = Math.max(0, RULER_PX + rowOf.get(anchorMidi) * ROW_PX + anchorDelta);
@@ -181,6 +180,92 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   }
   markScrollEdges(scrollEl, 'both');
   return { notes: notes.length, steps: safeSteps };
+}
+
+/** Everything one strip paints — an identical signature keeps the element. */
+function stripSignature(note, midi, row, duration, colorFor, owner) {
+  const remote = Boolean(note.owner && owner && note.owner !== owner);
+  return [note.step, midi, row, duration, note.instrument || '', remote ? 1 : 0, colorFor(note)].join('|');
+}
+
+/** One note strip: geometry, colors and the drag/resize bindings for a row. */
+function makeStrip(scrollEl, note, midi, row, duration, { steps, stepPx, colorFor, onResize, owner }) {
+  const strip = pressable('roll__note');
+  strip.dataset.voice = note.voiceId;
+  strip.dataset.step = String(note.step);
+  strip.dataset.midi = String(midi);
+  strip.dataset.duration = String(duration);
+  strip.dataset.instrument = note.instrument || '';
+  strip.dataset.owner = note.owner || '';
+  if (note.owner && owner && note.owner !== owner) strip.classList.add('is-remote');
+  if (scrollEl.__selected?.has(note.voiceId)) strip.classList.add('is-selected');
+  const width = Math.max(stepPx - 2, duration * stepPx - 2);
+  strip.style.left = `${note.step * stepPx + 1}px`;
+  strip.style.width = `${width}px`;
+  strip.style.top = `${row * ROW_PX + 3}px`;
+  strip.style.background = colorFor(note);
+  strip.textContent = midiToName(midi);
+  strip.setAttribute('aria-label', `${midiToName(midi)}, delete, move, or drag the right edge`);
+  const grip = document.createElement('span');
+  grip.className = 'roll__resize';
+  grip.setAttribute('aria-hidden', 'true');
+  grip.style.width = `${Math.min(22, Math.max(8, Math.round(width * 0.3)))}px`;
+  strip.append(grip);
+  bindStrip(strip, scrollEl, steps);
+  bindResize(grip, strip, note, duration, steps, onResize);
+  strip.__sig = stripSignature(note, midi, row, duration, colorFor, owner);
+  return strip;
+}
+
+/**
+ * Intact frame, new notes: sync the strips with the note list instead of a
+ * rebuild. Keyed by voice+midi — a strip whose signature is unchanged keeps
+ * its element and pointer bindings, a changed note swaps in a fresh strip,
+ * a gone note's strip is removed.
+ */
+function patchRollNotes(grid, scrollEl, notes, { steps, pitchesFor, colorFor, onResize, owner }) {
+  const stepPx = stepSize(scrollEl);
+  const rowOf = new Map((scrollEl.__midis || []).map((midi, index) => [midi, index]));
+  const wanted = new Map();
+  for (const note of notes) {
+    const duration = noteDuration(note, steps);
+    for (const midi of pitchesFor(note) || []) {
+      const row = rowOf.get(Math.round(midi));
+      if (row == null) continue;
+      wanted.set(`${note.voiceId}@${Math.round(midi)}`, { note, midi: Math.round(midi), row, duration });
+    }
+  }
+  const kept = new Map();
+  for (const strip of grid.querySelectorAll('.roll__note')) {
+    const key = `${strip.dataset.voice}@${strip.dataset.midi}`;
+    if (!wanted.has(key) || kept.has(key)) strip.remove();
+    else kept.set(key, strip);
+  }
+  for (const [key, item] of wanted) {
+    const strip = kept.get(key);
+    const sig = stripSignature(item.note, item.midi, item.row, item.duration, colorFor, owner);
+    if (strip && strip.__sig === sig) {
+      strip.classList.toggle('is-selected', Boolean(scrollEl.__selected?.has(item.note.voiceId)));
+      continue;
+    }
+    const next = makeStrip(scrollEl, item.note, item.midi, item.row, item.duration, {
+      steps,
+      stepPx,
+      colorFor,
+      onResize,
+      owner,
+    });
+    if (strip) strip.replaceWith(next);
+    else grid.append(next);
+  }
+  const empty = grid.querySelector('.roll__empty');
+  if (wanted.size && empty) empty.remove();
+  else if (!wanted.size && !empty) {
+    const hint = document.createElement('p');
+    hint.className = 'roll__empty';
+    hint.textContent = 'Tap a cell to place a note';
+    grid.append(hint);
+  }
 }
 
 /** Put one pitch row in the middle of the roll. Used when Notes opens. */

@@ -673,25 +673,31 @@ export class TouchSynth {
   /** Chord fingers already cut by a newer chord. A slide inside that same chord must not restart it. */
   #chopped = new Map();
 
-  constructor(engine, bus, { root = 'C', octave = DEFAULT_OCTAVE, scale = 'major', mode = 'single' } = {}) {
+  constructor(engine, bus, { root = 'C', octave = DEFAULT_OCTAVE, scale = 'major', mode = 'single', lite } = {}) {
     this.#tone = engine.tone;
     this.#output = bus.mix;
     const inputs = bus.inputs;
+    /** Lite halves the voice pools; the smallest one still fits a 9th chord. */
+    const poly = lite?.lowPolyphony
+      ? { pad: 8, organ: 8, kalimba: 4, synth: 6 }
+      : { pad: 16, organ: 16, kalimba: 8, synth: 12 };
+    /** Lite runs one oscillator per note instead of a detuned fat stack. */
+    const fat = lite?.singleFat ? 1 : 0;
     this.#voices = {
       pad: createGlideVoice(
         this.#tone,
         {
-          oscillator: { type: 'fatsine', count: 3, spread: 18 },
+          oscillator: { type: 'fatsine', count: fat || 3, spread: 18 },
           envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: 2.2 },
           volume: -6,
         },
         inputs.pad,
-        16,
+        poly.pad,
       ),
       bass: createMonoVoice(
         this.#tone,
         {
-          oscillator: { type: 'fatsawtooth', count: 2, spread: 12 },
+          oscillator: { type: 'fatsawtooth', count: fat || 2, spread: 12 },
           envelope: { attack: 0.01, decay: 0.18, sustain: 0.75, release: 0.28 },
           volume: -1,
         },
@@ -706,7 +712,7 @@ export class TouchSynth {
           volume: -9,
         },
         inputs.organ,
-        16,
+        poly.organ,
       ),
       kalimba: createSustainedVoice(
         this.#tone,
@@ -721,7 +727,7 @@ export class TouchSynth {
           volume: 0,
         },
         inputs.kalimba,
-        8,
+        poly.kalimba,
       ),
       synth: createGlideVoice(
         this.#tone,
@@ -731,7 +737,7 @@ export class TouchSynth {
           volume: -6.5,
         },
         inputs.synth,
-        12,
+        poly.synth,
       ),
     };
     this.#root = root;
@@ -1062,9 +1068,10 @@ export function quantizeToStep(seconds, stepSeconds) {
 
 /**
  * One player's live loop. Events are quantised onto the Tone.Transport
- * 16th-note grid and armed with scheduleRepeat, so the layer stays locked to
- * the drum machine without setTimeout. Each new take stacks; clear wipes only
- * this player.
+ * 16th-note grid and played by a single scheduleRepeat('16n') tick that reads
+ * the #byStep index, so the layer stays locked to the drum machine without
+ * setTimeout. Edits rewrite the index — the transport timeline is never
+ * touched. Each new take stacks; clear wipes only this player.
  */
 export class PerformanceRecorder {
   #synth;
@@ -1072,6 +1079,8 @@ export class PerformanceRecorder {
   #playerId;
   #events = [];
   #byKey = new Map();
+  /** step → event[] in #events order — the armed grid tick performs through this. */
+  #byStep = new Map();
   /** voiceId → { ons, up, seq } — per-voice lookups skip the O(n) #events scan. */
   #byVoice = new Map();
   /** Insertion order per voiceId — the numeric notes() tie-break (was localeCompare). */
@@ -1085,6 +1094,7 @@ export class PerformanceRecorder {
   /** Finger take → the note strip currently being held. A new pitch starts a new strip. */
   #line = new Map();
   #recording = false;
+  /** 0 or 1 ids: the loop's single grid tick (armed iff #events is non-empty). */
   #scheduled = [];
 
   #loopSteps = LOOP_STEPS;
@@ -1160,6 +1170,7 @@ export class PerformanceRecorder {
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
     this.#byVoice.clear();
     for (const event of this.#events) this.#indexEvent(event);
+    this.#rebuildStepIndex();
     this.#notesCache = null;
     // Chord takes key #attackStep by the finger id, which never appears as an
     // event voiceId — keep steps for every take that is still open.
@@ -1172,10 +1183,10 @@ export class PerformanceRecorder {
       if (kept.length) this.#chordTakes.set(finger, kept);
       else this.#chordTakes.delete(finger);
     }
-    this.#rearmAll();
-    // Live loop voices were armed against the old schedule: the cleared 'up'
-    // callbacks will never fire, so cut whatever is still sounding. Notes that
-    // should keep playing re-attack on their next step.
+    this.#syncTick();
+    // Dropped or moved events can no longer stop a voice that is still
+    // sounding, so cut every loop voice — kept notes re-attack on their next
+    // step anyway.
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
     return this.#loopSteps;
   }
@@ -1534,13 +1545,11 @@ export class PerformanceRecorder {
     }
   }
 
-  #disarm(event) {
-    if (event.eventId == null) return;
-    const transport = this.#tone.getTransport();
-    transport.clear(event.eventId);
-    const index = this.#scheduled.indexOf(event.eventId);
-    if (index >= 0) this.#scheduled.splice(index, 1);
-    event.eventId = null;
+  /** Cut the single grid tick — the timeline keeps nothing for an empty loop. */
+  #disarmLoop() {
+    if (!this.#scheduled.length) return;
+    this.#tone.getTransport().clear(this.#scheduled[0]);
+    this.#scheduled = [];
   }
 
   #setReleaseStep(voiceId, step) {
@@ -1555,12 +1564,7 @@ export class PerformanceRecorder {
     const up = entry.up;
     if (up?.step === step) return;
     if (up) {
-      this.#disarm(up);
-      this.#byKey.delete(`${voiceId}:${up.step}:up`);
-      up.step = step;
-      this.#byKey.set(`${voiceId}:${step}:up`, up);
-      this.#notesCache = null;
-      this.#arm(up);
+      this.#moveEventStep(up, step);
       return;
     }
     const template = ons[0];
@@ -1601,6 +1605,41 @@ export class PerformanceRecorder {
     else entry.up = event;
   }
 
+  /** Drop a single event from its step bucket (voice-removal paths). */
+  #unindexEvent(event) {
+    const bucket = this.#byStep.get(event.step);
+    if (!bucket) return;
+    const index = bucket.indexOf(event);
+    if (index >= 0) bucket.splice(index, 1);
+    if (!bucket.length) this.#byStep.delete(event.step);
+  }
+
+  /**
+   * Re-point an event at another step in place — #byKey and #byStep follow;
+   * #events order is untouched so undo snapshots and export stay stable.
+   */
+  #moveEventStep(event, step) {
+    if (event.step === step) return;
+    this.#unindexEvent(event);
+    this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
+    event.step = step;
+    this.#byKey.set(`${event.voiceId}:${step}:${event.type}`, event);
+    const bucket = this.#byStep.get(step);
+    if (bucket) bucket.push(event);
+    else this.#byStep.set(step, [event]);
+    this.#notesCache = null;
+  }
+
+  /** Rebuild the step index after bulk step rewrites (setLoopSteps). */
+  #rebuildStepIndex() {
+    this.#byStep.clear();
+    for (const event of this.#events) {
+      const bucket = this.#byStep.get(event.step);
+      if (bucket) bucket.push(event);
+      else this.#byStep.set(event.step, [event]);
+    }
+  }
+
   #put(event) {
     this.#notesCache = null;
     const key = `${event.voiceId}:${event.step}:${event.type}`;
@@ -1619,18 +1658,43 @@ export class PerformanceRecorder {
     this.#byKey.set(key, event);
     this.#indexEvent(event);
     this.#events.push(event);
-    this.#arm(event);
+    const bucket = this.#byStep.get(event.step);
+    if (bucket) bucket.push(event);
+    else this.#byStep.set(event.step, [event]);
+    this.#armLoop();
   }
 
-  #arm(event) {
-    const transport = this.#tone.getTransport();
-    const ppq = transport.PPQ || 192;
-    const placed = loopEventTicks(event.step, this.#loopSteps, transport.ticks, ppq);
-    const bar = Math.floor(placed.startTicks / (ppq * 4));
-    const when = `${bar}:${placed.beat}:${placed.sixteenth}`;
-    const eventId = transport.scheduleRepeat((time) => this.#perform(event, time), `${placed.bars}m`, when);
-    event.eventId = eventId;
+  /**
+   * The loop's only transport event: a 16th-note tick anchored at tick 0.
+   * Tone re-syncs a repeat on every transport start/seek, and the index is
+   * keyed by absolute step — a dense loop keeps one live timeline entry while
+   * notes come and go freely.
+   */
+  #armLoop() {
+    if (this.#scheduled.length) return;
+    const eventId = this.#tone.getTransport().scheduleRepeat((time) => this.#tick(time), '16n', 0);
     this.#scheduled.push(eventId);
+  }
+
+  /** Armed iff the loop holds events: scheduledCount is 0 or 1, never 2×events. */
+  #syncTick() {
+    if (this.#events.length) this.#armLoop();
+    else this.#disarmLoop();
+  }
+
+  /**
+   * Grid tick → perform every event on this step. The step comes from the
+   * event's audio time, not transport.ticks — inside the look-ahead window
+   * the clock still reports the previous tick.
+   */
+  #tick(time) {
+    const transport = this.#tone.getTransport();
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    let step = Math.round(transport.getTicksAtTime(time) / ticksPerStep) % this.#loopSteps;
+    if (step < 0) step += this.#loopSteps;
+    const events = this.#byStep.get(step);
+    if (!events) return;
+    for (const event of events) this.#perform(event, time);
   }
 
   /** Schedule the loop again after the audio clock was parked. */
@@ -1639,13 +1703,8 @@ export class PerformanceRecorder {
   }
 
   #rearmAll() {
-    const transport = this.#tone.getTransport();
-    for (const eventId of this.#scheduled) transport.clear(eventId);
-    this.#scheduled = [];
-    for (const event of this.#events) {
-      event.eventId = null;
-      this.#arm(event);
-    }
+    this.#disarmLoop();
+    this.#syncTick();
   }
 
   /** Audio-clock time when this bass strip ends, matching the roll length. */
@@ -1759,11 +1818,10 @@ export class PerformanceRecorder {
   }
 
   restoreEvents(events) {
-    const transport = this.#tone.getTransport();
-    for (const eventId of this.#scheduled) transport.clear(eventId);
-    this.#scheduled = [];
+    this.#disarmLoop();
     this.#events = [];
     this.#byKey.clear();
+    this.#byStep.clear();
     this.#byVoice.clear();
     this.#notesCache = null;
     this.#attackStep.clear();
@@ -1791,7 +1849,7 @@ export class PerformanceRecorder {
   }
 
   /**
-   * A note that was not recorded. One step long, armed on the transport
+   * A note that was not recorded. One step long, written into the step index
    * like every other loop event.
    */
   addNote({ step, x, y, instrument, mode = 'single', direction = 'down', degree, midi } = {}) {
@@ -1866,7 +1924,6 @@ export class PerformanceRecorder {
   }
 
   #forgetVoice(voiceId) {
-    const transport = this.#tone.getTransport();
     const entry = this.#byVoice.get(voiceId);
     const removed = entry ? [...entry.ons] : [];
     if (entry?.up) removed.push(entry.up);
@@ -1875,13 +1932,10 @@ export class PerformanceRecorder {
     this.#notesCache = null;
     for (const event of removed) {
       this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
-      if (event.eventId != null) {
-        transport.clear(event.eventId);
-        const index = this.#scheduled.indexOf(event.eventId);
-        if (index >= 0) this.#scheduled.splice(index, 1);
-      }
+      this.#unindexEvent(event);
     }
     this.#attackStep.delete(voiceId);
+    this.#syncTick();
     this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
   }
 
@@ -1912,12 +1966,7 @@ export class PerformanceRecorder {
     const key = `${event.voiceId}:${step}:${event.type}`;
     const occupied = this.#byKey.get(key);
     if (occupied && occupied !== event) return;
-    this.#disarm(event);
-    this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
-    event.step = step;
-    this.#byKey.set(key, event);
-    this.#notesCache = null;
-    this.#arm(event);
+    this.#moveEventStep(event, step);
   }
 
   /** Drop one recorded note and its note-off. The rest of the loop stays. */
@@ -1935,7 +1984,7 @@ export class PerformanceRecorder {
       if (entry) entry.ons = entry.ons.filter((event) => event.step !== segment.step);
       for (const event of removed) {
         this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
-        this.#disarm(event);
+        this.#unindexEvent(event);
       }
       const still = Boolean(entry?.ons.length);
       if (!still) {
@@ -1948,14 +1997,14 @@ export class PerformanceRecorder {
         if (entry) entry.up = null;
         for (const event of ups) {
           this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
-          this.#disarm(event);
+          this.#unindexEvent(event);
         }
       }
       if (entry && !entry.ons.length && !entry.up) this.#byVoice.delete(segment.base);
       if (removed.length) this.#synth.release(`loop:${this.#playerId}:${segment.base}`);
+      this.#syncTick();
       return removed.length > 0;
     }
-    const transport = this.#tone.getTransport();
     const removed = [];
     this.#events = this.#events.filter((event) => {
       if (event.voiceId !== voiceId) return true;
@@ -1965,13 +2014,10 @@ export class PerformanceRecorder {
     this.#byVoice.delete(voiceId);
     for (const event of removed) {
       this.#byKey.delete(`${event.voiceId}:${event.step}:${event.type}`);
-      if (event.eventId != null) {
-        transport.clear(event.eventId);
-        const index = this.#scheduled.indexOf(event.eventId);
-        if (index >= 0) this.#scheduled.splice(index, 1);
-      }
+      this.#unindexEvent(event);
     }
     this.#attackStep.delete(voiceId);
+    this.#syncTick();
     this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
     return removed.length > 0;
   }
@@ -1988,11 +2034,10 @@ export class PerformanceRecorder {
   }
 
   clear() {
-    const transport = this.#tone.getTransport();
-    for (const eventId of this.#scheduled) transport.clear(eventId);
-    this.#scheduled = [];
+    this.#disarmLoop();
     this.#events = [];
     this.#byKey.clear();
+    this.#byStep.clear();
     this.#byVoice.clear();
     this.#notesCache = null;
     this.#takes.clear();

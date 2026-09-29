@@ -143,6 +143,19 @@ body[data-view='controller'] {
   flex: 1;
 }
 
+.role-lite {
+  min-height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+.role-lite input[type='checkbox'] {
+  width: 26px;
+  height: 26px;
+}
+
 .role-footnote {
   color: var(--text-dim);
   font-size: 13px;

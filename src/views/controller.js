@@ -6,7 +6,7 @@
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, padNoteMarks, pitchChoice, resolveGesture } from '../audio/synth.js';
-import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, INSTRUMENT_FX, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
+import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, instrumentFxSpecs, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
 import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
@@ -121,6 +121,8 @@ export async function createControllerView({ code, name } = {}) {
     peerId: null,
     drumWrite: 'single',
     drums: { steps: DRUM_STEPS, preset: 'break', repeat: 1, grid: null, pitch: 0 },
+    /** True while the host runs the Lite rig — its FX chips are the trimmed set. */
+    lite: false,
   };
   state.drums.grid = Object.fromEntries(
     TRACKS.map(({ id }) => [id, Array.from({ length: state.drums.steps }, () => ({ on: false, division: 1 }))]),
@@ -203,7 +205,7 @@ export async function createControllerView({ code, name } = {}) {
   }
 
   function renderGuestFx() {
-    const specs = INSTRUMENT_FX[state.instrument] ?? [];
+    const specs = instrumentFxSpecs(state.instrument, state.lite);
     const levels = state.effects[state.instrument] ?? {};
     el.fx.replaceChildren();
     for (const spec of specs) {
@@ -313,7 +315,24 @@ export async function createControllerView({ code, name } = {}) {
     return fit + (Math.max(fit, 44) - fit) * noteZoom;
   }
 
+  /* While any player is recording the host pushes a fresh loopNotes map every
+     ~80 ms; repainting the open sheet on a ~180 ms timer batches those bursts
+     and the latest map still lands within a quarter beat of the capture.
+     paintGuestNotes clears a pending timer, so manual repaints win at once. */
+  let guestNotesTimer = 0;
+  function queueGuestNotes() {
+    if (el.notesSheet.hidden || guestNotesTimer) return;
+    guestNotesTimer = setTimeout(() => {
+      guestNotesTimer = 0;
+      if (!el.notesSheet.hidden) paintGuestNotes();
+    }, 180);
+  }
+
   function paintGuestNotes() {
+    if (guestNotesTimer) {
+      clearTimeout(guestNotesTimer);
+      guestNotesTimer = 0;
+    }
     renderPianoRoll(el.noteTape, {
       notes: state.marks,
       steps: state.noteSteps,
@@ -728,7 +747,7 @@ export async function createControllerView({ code, name } = {}) {
     });
     octaveRow.append(octaveName, octave);
     rows.push(octaveRow);
-    for (const spec of INSTRUMENT_FX[state.instrument] ?? []) {
+    for (const spec of instrumentFxSpecs(state.instrument, state.lite)) {
       const amount = clampFx(state.effects[state.instrument]?.[spec.id] ?? 0);
       const row = document.createElement('label');
       row.className = 'fx-slider';
@@ -1020,6 +1039,12 @@ export async function createControllerView({ code, name } = {}) {
     const previousScale = state.scale;
     if (payload?.root && NOTE_NAMES.includes(payload.root)) state.root = payload.root;
     if (payload?.scale && SCALES[payload.scale]) state.scale = payload.scale;
+    // A lite host advertises its trimmed FX set once — swap the chip specs
+    // before the effects patch below repaints them.
+    if (typeof payload?.lite === 'boolean' && payload.lite !== state.lite) {
+      state.lite = payload.lite;
+      renderGuestFx();
+    }
     if (payload?.masterFx && typeof payload.masterFx === 'object') {
       const next = payload.masterFx;
       const dragKey = guestMasterDrag?.dataset?.master;
@@ -1096,7 +1121,10 @@ export async function createControllerView({ code, name } = {}) {
         }
         state.marks = marks;
         syncPadMarks();
-        if (!el.notesSheet.hidden) paintGuestNotes();
+        if (!el.notesSheet.hidden) {
+          if (Object.values(players).some((entry) => entry?.recording)) queueGuestNotes();
+          else paintGuestNotes();
+        }
       }
     }
     updateKey();

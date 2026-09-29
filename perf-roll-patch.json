@@ -1,0 +1,77 @@
+{
+  "label": "roll-patch",
+  "url": "http://127.0.0.1:43117",
+  "code": "4MV6",
+  "browserPids": {
+    "host": 8816,
+    "controller": 13420
+  },
+  "phases": {
+    "host": [
+      {
+        "phase": "idle",
+        "from": 1790639235972,
+        "to": 1790639245989,
+        "seconds": 10.02,
+        "cpuPercent": 3.1,
+        "scriptPercent": 1.8,
+        "layoutPercent": 0,
+        "stylePercent": 0.1,
+        "rafPerSecond": 8,
+        "wsSendPerSecond": 8,
+        "wsRecvPerSecond": 0,
+        "audioNodesCreated": 165,
+        "domNodes": 3938
+      },
+      {
+        "phase": "drag",
+        "from": 1790639245996,
+        "to": 1790639256032,
+        "seconds": 10.04,
+        "cpuPercent": 8.3,
+        "scriptPercent": 2.6,
+        "layoutPercent": 0.5,
+        "stylePercent": 0.3,
+        "rafPerSecond": 37.9,
+        "wsSendPerSecond": 8,
+        "wsRecvPerSecond": 31.1,
+        "audioNodesCreated": 180,
+        "domNodes": 4263
+      }
+    ],
+    "controller": [
+      {
+        "phase": "idle",
+        "from": 1790639235977,
+        "to": 1790639245992,
+        "seconds": 10.02,
+        "cpuPercent": 0.7,
+        "scriptPercent": 0.1,
+        "layoutPercent": 0,
+        "stylePercent": 0,
+        "rafPerSecond": 0,
+        "wsSendPerSecond": 0,
+        "wsRecvPerSecond": 8,
+        "audioNodesCreated": 0,
+        "domNodes": 3295
+      },
+      {
+        "phase": "drag",
+        "from": 1790639245998,
+        "to": 1790639256034,
+        "seconds": 10.04,
+        "cpuPercent": 9.2,
+        "scriptPercent": 1.6,
+        "layoutPercent": 0.6,
+        "stylePercent": 0.8,
+        "rafPerSecond": 31,
+        "wsSendPerSecond": 31.1,
+        "wsRecvPerSecond": 8,
+        "audioNodesCreated": 0,
+        "domNodes": 3612
+      }
+    ]
+  },
+  "dispatchedMoves": 601,
+  "hostTouchLogEntries": 6
+}

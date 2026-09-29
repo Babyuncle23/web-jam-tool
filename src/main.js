@@ -8,6 +8,7 @@ import { markPageEdges } from './ui/scroll-edges.js';
 import { installQuietTouch } from './ui/quiet-touch.js';
 import { initRoleExtras } from './ui/install-share.js';
 import { loadScript } from './network/load-script.js';
+import { LITE } from './audio/effects.js';
 
 /** Tone.js is ~1.5 MB of UMD and only the host evaluates it — fetch on demand, not for guest phones. */
 const TONE_SRC = 'https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js';
@@ -51,14 +52,19 @@ function showScreen(name) {
 }
 
 const hostButton = document.getElementById('btn-role-host');
+const liteCheck = document.getElementById('role-lite');
+
+function hostButtonLabel() {
+  return liteCheck?.checked ? 'Open host — Lite' : 'Open host';
+}
 
 function setHostLoading(loading) {
   hostButton.disabled = loading;
   hostButton.classList.toggle('is-loading', loading);
-  hostButton.textContent = loading ? 'Loading sound…' : 'Open host';
+  hostButton.textContent = loading ? 'Loading sound…' : hostButtonLabel();
 }
 
-async function enterHost() {
+async function enterHost(lite = false) {
   // Tone installs itself as a global, so it must finish before host.js runs.
   // Warming it at role entry hides the CDN delay behind the "Start sound" tap.
   setHostLoading(true);
@@ -68,7 +74,7 @@ async function enterHost() {
     activeView?.destroy?.();
     resetScreen('host');
     showScreen('host');
-    activeView = await createHostView();
+    activeView = await createHostView({ lite: lite ? LITE : null });
   } finally {
     setHostLoading(false);
   }
@@ -102,7 +108,7 @@ function hostOpenFailed(error) {
 }
 
 document.getElementById('btn-role-host').addEventListener('click', () => {
-  enterHost().catch(hostOpenFailed);
+  enterHost(liteCheck?.checked).catch(hostOpenFailed);
 });
 
 joinForm.addEventListener('submit', async (event) => {
@@ -142,8 +148,25 @@ document.addEventListener(
 );
 
 const params = new URLSearchParams(location.search);
+
+/** Weak-device heuristic for the lite default; ?lite=1|0 overrides it. */
+function detectLiteHost() {
+  const cores = Number(navigator.hardwareConcurrency) || 8;
+  const memory = Number(navigator.deviceMemory) || 8;
+  return cores <= 4 || memory <= 4;
+}
+
+if (liteCheck) {
+  const liteParam = params.get('lite');
+  liteCheck.checked = liteParam == null ? detectLiteHost() : ['1', 'true'].includes(liteParam);
+  liteCheck.addEventListener('change', () => {
+    hostButton.textContent = hostButtonLabel();
+  });
+  hostButton.textContent = hostButtonLabel();
+}
+
 if (params.get('role') === 'host') {
-  enterHost().catch(hostOpenFailed);
+  enterHost(liteCheck?.checked).catch(hostOpenFailed);
 } else if (params.get('role') === 'controller' && params.get('code')) {
   document.getElementById('join-code').value = params.get('code').toUpperCase();
   enterController(params.get('code').toUpperCase()).catch((error) => {

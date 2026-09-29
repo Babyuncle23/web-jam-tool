@@ -22,7 +22,13 @@ const args = Object.fromEntries(
 
 const BASE_URL = args.url ?? 'http://127.0.0.1:43117';
 const LABEL = args.label ?? 'run';
-const CHROME = args.chrome ?? '/opt/google/chrome/chrome';
+/** Host entry URL after the origin — '?role=host&lite=1' probes the lite rig. */
+const HOST_QUERY = args.hostquery ?? '?role=host';
+const CHROME =
+  args.chrome ??
+  (process.platform === 'win32'
+    ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    : '/opt/google/chrome/chrome');
 const PHASE_MS = Number(args.phase ?? 10000);
 const DRAG_HZ = Number(args.dragHz ?? 120);
 const OUT = args.out ?? `/tmp/perf-${LABEL}.json`;
@@ -203,7 +209,7 @@ async function drag(page, ms, hz) {
 const hostBrowser = await launch();
 const controllerBrowser = await launch();
 
-const host = await openPage(hostBrowser, `${BASE_URL}/?role=host`);
+const host = await openPage(hostBrowser, `${BASE_URL}/${HOST_QUERY}`);
 await host.waitForSelector('#splash-start');
 await host.evaluate(() => document.getElementById('splash-start').click());
 await host.waitForFunction(() => document.getElementById('host-audio-status').dataset.state === 'online');
@@ -228,12 +234,34 @@ const idleAfter = { host: await metrics(host), controller: await metrics(control
 report.phases.host.push(diff(idleBefore.host, idleAfter.host, 'idle'));
 report.phases.controller.push(diff(idleBefore.controller, idleAfter.controller, 'idle'));
 
-const dragBefore = { host: await metrics(host), controller: await metrics(controller) };
+// Load scenario mirrors jam-scenario: the host notes sheet stays open while
+// the guest arms Rec, slides across the pad, then switches the pad to FX.
+await host.waitForFunction(() => !document.getElementById('btn-notes').disabled);
+await host.evaluate(() => document.getElementById('btn-notes').click());
+await host.waitForFunction(() => !document.getElementById('host-notes-sheet').hidden);
+await controller.waitForFunction(() => !document.getElementById('controller-loop').disabled);
+await controller.evaluate(() => document.getElementById('controller-loop').click());
+
+const recBefore = { host: await metrics(host), controller: await metrics(controller) };
 const moves = await drag(controller, PHASE_MS, DRAG_HZ);
-const dragAfter = { host: await metrics(host), controller: await metrics(controller) };
+const recAfter = { host: await metrics(host), controller: await metrics(controller) };
 report.dispatchedMoves = moves;
-report.phases.host.push(diff(dragBefore.host, dragAfter.host, 'drag'));
-report.phases.controller.push(diff(dragBefore.controller, dragAfter.controller, 'drag'));
+report.phases.host.push(diff(recBefore.host, recAfter.host, 'rec-drag'));
+report.phases.controller.push(diff(recBefore.controller, recAfter.controller, 'rec-drag'));
+
+await controller.evaluate(() => document.querySelector('#controller-pad-mode [data-padmode="fx"]').click());
+const fxBefore = { host: await metrics(host), controller: await metrics(controller) };
+const fxMoves = await drag(controller, PHASE_MS, DRAG_HZ);
+const fxAfter = { host: await metrics(host), controller: await metrics(controller) };
+report.dispatchedFxMoves = fxMoves;
+report.phases.host.push(diff(fxBefore.host, fxAfter.host, 'fxpad'));
+report.phases.controller.push(diff(fxBefore.controller, fxAfter.controller, 'fxpad'));
+
+await controller.evaluate(() => {
+  document.querySelector('#controller-pad-mode [data-padmode="notes"]').click();
+  document.getElementById('controller-loop').click();
+});
+await host.evaluate(() => document.getElementById('host-notes-close').click());
 
 report.hostTouchLogEntries = await host.$$eval('#host-log li', (nodes) => nodes.length);
 

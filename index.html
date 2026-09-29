@@ -34,6 +34,10 @@
           <h2>Join as Host</h2>
           <p>Laptop or tablet with speakers: drum machine, synth, effects, and guest touches.</p>
           <button id="btn-role-host" class="btn btn--primary btn--xl" type="button">Open host</button>
+          <label class="adv-check role-lite">
+            <input id="role-lite" type="checkbox" />
+            <span>Lite mode — fewer voices &amp; effects for a weak device (auto-checked when the hardware looks small)</span>
+          </label>
         </article>
 
         <article class="role-card">
@@ -93,6 +97,7 @@
                 <span class="pill" id="host-audio-status" data-state="offline">audio: off</span>
                 <span class="pill" id="host-peers">guests: 0</span>
                 <span class="pill" id="drum-source">drums: …</span>
+                <span class="pill" id="host-lite-pill" hidden>lite</span>
               </div>
             </div>
           </div>

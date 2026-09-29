@@ -28,7 +28,6 @@ import {
   resolveGesture,
 } from '../audio/synth.js';
 import {
-  DRUM_FX,
   FX_COLORS,
   INSTRUMENT_FX,
   clampFx,
@@ -37,7 +36,9 @@ import {
   cycleFxAmount,
   defaultFxState,
   defaultLevels,
+  drumFxSpecs,
   fxAmountLabel,
+  instrumentFxSpecs,
   FX_FULL_LABELS,
   FX_PAD_DIVISIONS,
   masterCutoffHz,
@@ -92,7 +93,8 @@ function playerIdFromTouch(id) {
   return split === -1 ? value : value.slice(0, split);
 }
 
-export async function createHostView() {
+/** `lite` is the LITE flags object from effects.js, or null for the full rig. */
+export async function createHostView({ lite } = {}) {
   const el = {
     code: document.getElementById('host-code'),
     joinUrl: document.getElementById('host-join-url'),
@@ -106,6 +108,7 @@ export async function createHostView() {
     socketStatus: document.getElementById('host-socket-status'),
     audioStatus: document.getElementById('host-audio-status'),
     drumSource: document.getElementById('drum-source'),
+    litePill: document.getElementById('host-lite-pill'),
     transport: document.getElementById('btn-transport'),
     drumTransport: document.getElementById('host-drums-transport'),
     sequencer: document.getElementById('sequencer'),
@@ -259,6 +262,7 @@ export async function createHostView() {
 
   function publishHarmony() {
     socket.broadcastState({
+      lite: Boolean(lite),
       root: state.root,
       scale: state.scale,
       audioReady: state.audioReady,
@@ -852,7 +856,7 @@ export async function createHostView() {
   }
 
   function renderInstrumentFx() {
-    const specs = INSTRUMENT_FX[state.instrument] ?? [];
+    const specs = instrumentFxSpecs(state.instrument, lite);
     renderFxRow(el.instrumentFx, specs, state.effects[state.instrument], (id, level) => {
       state.effects[state.instrument][id] = level;
       audio?.bus.setEffect(state.instrument, id, level);
@@ -862,7 +866,7 @@ export async function createHostView() {
   }
 
   function renderDrumFx() {
-    renderFxRow(el.drumFx, DRUM_FX, state.effects.drums, (id, level) => {
+    renderFxRow(el.drumFx, drumFxSpecs(lite), state.effects.drums, (id, level) => {
       state.effects.drums[id] = level;
       audio?.drumsFx.setEffect(id, level);
       renderDrumFx();
@@ -1516,7 +1520,14 @@ export async function createHostView() {
     return fit + (Math.max(fit, 44) - fit) * noteZoom;
   }
 
+  /** Pending debounced repaint of the open sheet during a recording burst. */
+  let rollPaintTimer = 0;
+
   function paintHostRoll() {
+    if (rollPaintTimer) {
+      clearTimeout(rollPaintTimer);
+      rollPaintTimer = 0;
+    }
     renderPianoRoll(el.noteTape, {
       notes: allLoopNotes(),
       steps: state.noteSteps,
@@ -1682,9 +1693,24 @@ export async function createHostView() {
     return rows;
   }
 
+  /* A capture lands on every grid step of a slide: while a take is open the
+     open sheet repaints on a ~180 ms timer instead of per note. Stops, undo
+     and manual edits call refreshLoops() eager and paint at once — the eager
+     paint in paintHostRoll clears any pending lazy timer. */
+  function queueHostRoll() {
+    if (el.notesSheet.hidden || rollPaintTimer) return;
+    rollPaintTimer = setTimeout(() => {
+      rollPaintTimer = 0;
+      if (!el.notesSheet.hidden) paintHostRoll();
+    }, 180);
+  }
+
   /** Any loop changed: repaint the open sheet and push the map to the guests. */
-  function refreshLoops() {
-    if (!el.notesSheet.hidden) paintHostRoll();
+  function refreshLoops(lazy = false) {
+    if (!el.notesSheet.hidden) {
+      if (lazy) queueHostRoll();
+      else paintHostRoll();
+    }
     syncHostHistory();
     queueLoopPush();
   }
@@ -1764,7 +1790,7 @@ export async function createHostView() {
         rows.push(row);
       }
     };
-    addGroup('This instrument', INSTRUMENT_FX[state.instrument] ?? [], state.effects[state.instrument], (id, value) => {
+    addGroup('This instrument', instrumentFxSpecs(state.instrument, lite), state.effects[state.instrument], (id, value) => {
       state.effects[state.instrument][id] = value;
       audio?.bus.setEffect(state.instrument, id, value);
       renderInstrumentFx();
@@ -1909,13 +1935,14 @@ export async function createHostView() {
     /** @type {{ drums?: DrumMachine, synth?: TouchSynth, bus?: ReturnType<typeof createInstrumentBus>, drumsFx?: ReturnType<typeof createDrumBus> }} */
     const partial = { engine };
     try {
-      partial.bus = createInstrumentBus(engine.tone);
-      partial.drumsFx = createDrumBus(engine.tone);
+      partial.bus = createInstrumentBus(engine.tone, lite);
+      partial.drumsFx = createDrumBus(engine.tone, lite);
       partial.drums = new DrumMachine(engine);
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,
         scale: state.scale,
         mode: state.mode,
+        lite,
       });
       partial.drums.output.connect(partial.drumsFx.input);
       partial.drumsFx.output.connect(engine.master);
@@ -1952,6 +1979,7 @@ export async function createHostView() {
       el.drumSource.dataset.state = sampleState.usingSamples ? 'online' : 'error';
       log(sampleState.usingSamples ? 'TR-808 from the CDN' : 'synthesis, sample CDN unavailable', 'drums');
       log(`Tone.js ${globalThis.Tone.version}, context ${engine.contextState}`, 'audio');
+      if (lite) log('lite mode — fewer voices, one reverb, trimmed FX', 'audio');
       return sampleState;
     } catch (error) {
       disposePartial(partial);
@@ -2141,7 +2169,7 @@ export async function createHostView() {
     }
     const playerId = playerIdFromTouch(payload.id);
     const wrote = recorderFor(playerId)?.capture(payload);
-    if (wrote === 'chord' || wrote === 'note') refreshLoops();
+    if (wrote === 'chord' || wrote === 'note') refreshLoops(true);
   }
 
   const hostPad = new TouchPad(el.pad, {
@@ -2577,6 +2605,7 @@ export async function createHostView() {
   publishDrums();
   renderInstrumentFx();
   renderDrumFx();
+  el.litePill.hidden = !lite;
   paintInstruments(el.instruments, state.instrument);
   paintMixFlags();
   syncModeChrome();
