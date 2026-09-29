@@ -199,6 +199,7 @@ body[data-view='controller'] {
 }
 
 .share-block__qr img,
+.share-block__qr canvas,
 .share-block__qr table {
   display: block;
 }
@@ -583,9 +584,11 @@ input[type='range'] {
   flex: 0 0 auto;
 }
 
-/* qrcode.js hides the canvas and shows an <img>. Forcing both to display
-   stacked two copies and blew the header past the viewport. */
+/* qrcode.js paints a <canvas> first and swaps it for an <img>. Size the
+   canvas too: if the swap stalls, a native-size canvas blows the header
+   past the viewport. */
 #host-qr img,
+#host-qr canvas,
 #host-qr table {
   width: 72px !important;
   height: 72px !important;
@@ -1077,6 +1080,7 @@ input[type='range'] {
   }
 
   #host-qr img,
+  #host-qr canvas,
   #host-qr table {
     width: 56px !important;
     height: 56px !important;
@@ -1130,6 +1134,7 @@ input[type='range'] {
   }
 
   #host-qr img,
+  #host-qr canvas,
   #host-qr table {
     width: 104px !important;
     height: 104px !important;
@@ -2335,6 +2340,7 @@ input[type='range'] {
 }
 
 #host-qr-big img,
+#host-qr-big canvas,
 #host-qr-big table {
   width: min(72vw, 60dvh, 320px) !important;
   height: min(72vw, 60dvh, 320px) !important;
@@ -2547,6 +2553,7 @@ input[type='range'] {
   }
 
   #host-qr img,
+  #host-qr canvas,
   #host-qr table {
     width: 44px !important;
     height: 44px !important;
@@ -2710,6 +2717,7 @@ input[type='range'] {
   }
 
   #host-qr-big img,
+  #host-qr-big canvas,
   #host-qr-big table {
     width: min(30vw, 52dvh, 320px) !important;
     height: min(30vw, 52dvh, 320px) !important;

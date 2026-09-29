@@ -2478,7 +2478,7 @@ export async function createHostView({ lite } = {}) {
       for (const [box, size] of [[el.qr, 168], [el.shareQr, 512]]) {
         if (!box) continue;
         box.replaceChildren();
-        const qr = new QRCode(box, {
+        new QRCode(box, {
           text: url,
           width: size,
           height: size,
@@ -2486,7 +2486,16 @@ export async function createHostView({ lite } = {}) {
           colorLight: '#ffffff',
           correctLevel: QRCode.CorrectLevel.M,
         });
-        qr.makeCode(url);
+        /* qrcode.js swaps its canvas for a data-URI <img> only after an async
+           probe that can stall — then the raw 512px canvas stays visible and
+           the card crops the finder patterns off. Do the swap synchronously. */
+        const canvas = box.querySelector('canvas');
+        if (canvas) {
+          const img = document.createElement('img');
+          img.src = canvas.toDataURL('image/png');
+          img.alt = 'Scan me!';
+          box.replaceChildren(img);
+        }
       }
     } catch (error) {
       el.qr.textContent = 'QR unavailable';

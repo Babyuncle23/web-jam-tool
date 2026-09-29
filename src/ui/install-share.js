@@ -39,7 +39,7 @@ async function renderShareQr(box) {
   try {
     const QRCode = await loadQrLibrary();
     box.replaceChildren();
-    const qr = new QRCode(box, {
+    new QRCode(box, {
       text: url.toString(),
       width: 132,
       height: 132,
@@ -47,7 +47,16 @@ async function renderShareQr(box) {
       colorLight: '#ffffff',
       correctLevel: QRCode.CorrectLevel.M,
     });
-    qr.makeCode(url.toString());
+    // qrcode.js swaps its canvas for a data-URI <img> only after an async
+    // probe that can stall; do the swap synchronously so the canvas never
+    // leaks through at its native size.
+    const canvas = box.querySelector('canvas');
+    if (canvas) {
+      const img = document.createElement('img');
+      img.src = canvas.toDataURL('image/png');
+      img.alt = 'Scan me!';
+      box.replaceChildren(img);
+    }
   } catch {
     box.textContent = url.toString();
   }
