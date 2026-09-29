@@ -21,6 +21,18 @@ export const SCALE_LABELS = {
 
 export const PLAY_MODES = ['single', 'chords'];
 
+/**
+ * Velocity multipliers per instrument per play mode. Pad chords duck under
+ * the mix while a lone pad note rides above; a single kalimba pluck reads
+ * thin without the lift, and organ chords stack several voices into a loud
+ * block so they get trimmed.
+ */
+const MODE_VELOCITY = {
+  pad: { chords: 0.57, single: 1.18 },
+  kalimba: { single: 1.3 },
+  organ: { chords: 0.7 },
+};
+
 export const INSTRUMENTS = [
   { id: 'pad', label: 'Pad' },
   { id: 'bass', label: 'Bass' },
@@ -816,12 +828,16 @@ export class TouchSynth {
     });
   }
 
-  /** Pad chords sit a little under the mix. A single pad note sits a little above. */
+  /**
+   * Per-mode loudness shaping on top of the base velocity. Pad chords sit
+   * under the mix while a single pad note rides above; a lone kalimba pluck
+   * reads thin, and organ chords stack several voices into a loud block.
+   */
   #velocity(gesture, y) {
+    const mode = gesture.mode === 'chords' ? 'chords' : 'single';
+    const shape = MODE_VELOCITY[gesture.instrument]?.[mode] ?? 1;
     const base = gesture.mode === 'chords' ? 0.82 : 0.35 + clamp01(y) * 0.55;
-    if (gesture.instrument !== 'pad') return base;
-    const shaped = gesture.mode === 'chords' ? base * 0.57 : base * 1.18;
-    return Math.min(1, shaped);
+    return Math.min(1, base * shape);
   }
 
   /**
