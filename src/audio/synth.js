@@ -704,7 +704,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'fatsine', count: fat || 3, spread: 18 },
           envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: padRelease },
-          volume: -6,
+          volume: -4,
         },
         inputs.pad,
         poly.pad,
@@ -724,7 +724,7 @@ export class TouchSynth {
         {
           oscillator: { type: 'sine4' },
           envelope: { attack: 0.012, decay: 0.08, sustain: 0.9, release: 0.16 },
-          volume: -9,
+          volume: -12,
         },
         inputs.organ,
         poly.organ,
@@ -739,7 +739,7 @@ export class TouchSynth {
           envelope: { attack: 0.001, decay: 0.32, sustain: 0, release: 0.18 },
           modulation: { type: 'triangle' },
           modulationEnvelope: { attack: 0.001, decay: 0.14, sustain: 0, release: 0.1 },
-          volume: 0,
+          volume: 2.5,
         },
         inputs.kalimba,
         poly.kalimba,
@@ -852,7 +852,7 @@ export class TouchSynth {
   #velocity(gesture, y) {
     const base = gesture.mode === 'chords' ? 0.82 : 0.35 + clamp01(y) * 0.55;
     if (gesture.instrument !== 'pad') return base;
-    const shaped = gesture.mode === 'chords' ? base * 0.72 : base * 1.18;
+    const shaped = gesture.mode === 'chords' ? base * 0.57 : base * 1.18;
     return Math.min(1, shaped);
   }
 
