@@ -1,6 +1,6 @@
 {
-  "name": "Web Jam Tool",
-  "short_name": "Web Jam",
+  "name": "DoggoJam",
+  "short_name": "DoggoJam",
   "description": "Phones become XY touch controllers; one host machine renders the audio.",
   "start_url": ".",
   "scope": ".",

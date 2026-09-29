@@ -1,5 +1,5 @@
 {
-  "name": "web-jam-tool",
+  "name": "doggojam",
   "version": "0.1.0",
   "private": true,
   "description": "Real-time web jam tool: phones become XY touch controllers, the host machine renders the audio with Tone.js",

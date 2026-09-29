@@ -1,4 +1,4 @@
-# Контекст проекта: Real-time Web Jam Tool (Clean Room Implementation)
+# Контекст проекта: DoggoJam — Real-time Web Jam Tool (Clean Room Implementation)
 
 > Этот файл — снимок ТЕКУЩЕГО состояния кода. Если текст расходится с кодом — верен код; обнови этот файл в той же правке. Удалённое из кода удаляй и отсюда. Исключение — секция «Убрано — не возвращать» в конце.
 
@@ -9,7 +9,7 @@
 - Audio Engine: Tone.js 15.0.4 (`https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js`). Работает ТОЛЬКО на Хосте; на телефонах гостей аудио-код даже не импортируется (ленивые импорты в `src/main.js`). Сам скрипт не стоит в `<head>` — `enterHost()` грузит его через общий `loadScript` до `import('./views/host.js')` (host.js читает `globalThis.Tone`), кнопка «Open host» крутит спиннер (`is-loading`), ошибка → `join-error` на экране ролей. Прогрев идёт при входе в host-экран, а не по «Start sound» — скачивание не требует жеста, а тап не ждёт сеть. Гость Tone не грузит: `controller.js` и его импорты не трогают `globalThis.Tone` (константы из `audio/*` — без обращения к глобалу; `AudioEngine` читает его только в конструкторе).
 - Real-time/Network: Socket.io 4.7.5 — клиент с CDN (`cdn.socket.io`, единственный синхронный `<script>` в `<head>` — нужен обеим ролям), сервер `socket.io` в `server/server.js`. В `<head>` — `preconnect` к `cdn.jsdelivr.net` и `cdn.socket.io`.
 - Server: Node.js 18+, Express 4 + `compression` (gzip/br); статика — whitelist (`/`, `index.html`, `style.css`, `manifest.json`, `sw.js`, `/src`, `/icons`; всё остальное, включая `node_modules`/`scripts`/`*.md` — 404). Порт 43117 (env `PORT`), лимит подключений `MAX_CONNECTIONS` (по умолчанию 10) с экраном «Server is full» и авторетраем.
-- QR: QRCode.js (davidshimjs) с jsDelivr, подгружается лениво через `loadScript`.
+- QR: QRCode.js (davidshimjs) с jsDelivr, подгружается лениво через `loadScript`. После рендера канвас библиотеки синхронно заменяется на `<img>` из `toDataURL` — штатный async-свап qrcode.js (проба data-URI) может не сработать, тогда сырой canvas остаётся на своём нативном размере (168/512px), вылезает за карточку и QR не сканируется. В CSS `canvas` включён в те же селекторы размера, что и `img`/`table` — страховка, если свап не случится.
 - PWA: `manifest.json` + `sw.js` (service worker-заглушка: fetch-обработчик пуст — нужен только для критерия installable, запросы идут в сеть напрямую), кнопка «Install App to Home Screen».
 - Деплой: локально/LAN — Socket.io на той же машине, что и страница; публичная сборка (GitHub Pages) ходит в бэкенд на Render: `PUBLIC_BACKEND_URL = https://web-jam-tool.onrender.com` (`src/network/socket.js`).
 - Target Devices: мобильные браузеры (Гости-контроллеры), десктоп/планшет/телефон (Хост).

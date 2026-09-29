@@ -155,5 +155,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[web-jam-tool] listening on http://127.0.0.1:${PORT}`);
+  console.log(`[doggojam] listening on http://127.0.0.1:${PORT}`);
 });
