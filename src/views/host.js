@@ -1963,7 +1963,7 @@ export async function createHostView({ lite } = {}) {
     const partial = { engine };
     try {
       partial.bus = createInstrumentBus(engine.tone, lite);
-      partial.drumsFx = createDrumBus(engine.tone, lite, partial.bus?.reverbs?.room ?? null);
+      partial.drumsFx = createDrumBus(engine.tone, lite);
       partial.drums = new DrumMachine(engine, { lite });
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,

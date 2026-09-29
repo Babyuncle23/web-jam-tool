@@ -51,7 +51,7 @@ export const LITE = {
   singleFat: true, // fat oscillators drop to count 1 — no ×3 oscillators per note (pad, bass)
   noOversample: true, // distortions run at oversample 'none' instead of '2x'
   reducedFx: true, // only the effects that are ON by default keep a node — the rest are never built
-  singleReverb: true, // one shared room convolver — no pad hall; the drum room feeds it as a send
+  singleReverb: true, // one shared room convolver for instruments — no pad hall; drums keep their own short room
   lowSampleRate: true, // AudioContext runs at 24 kHz — every audio-node cost roughly halves (engine.js)
   synthDrums: true, // TR-808 WAVs are never fetched or decoded — the synth voices play instead (drums.js)
   wideLookAhead: true, // context lookAhead 0.05 s instead of 0.02 — fewer scheduler wake-ups, more jitter headroom
@@ -652,8 +652,6 @@ export function createInstrumentBus(tone, lite) {
   return {
     mix,
     inputs,
-    /** Shared convolvers — the lite drum bus sends its room amount into `room`. */
-    reverbs: { room: roomReverb, hall: hallReverb },
     ready: Promise.all(readiness),
     setEffect(instrument, id, value) {
       const amount = clampFx(value);
@@ -677,33 +675,26 @@ export function createInstrumentBus(tone, lite) {
 
 /**
  * Drum-only distortion, cutoff and a small room. Not wired to the synth.
- * Lite drops the nodes that are off by default — cutoff — and replaces the
- * private room convolver with a send into the instrument bus's shared
- * `sharedRoom`, so the default-on room still sounds without a second IR.
+ * Lite drops the nodes that are off by default — cutoff — but keeps the
+ * kit's own short room convolver: routing it as a send into the shared
+ * instrument reverb sounded different enough to be audible.
  */
-export function createDrumBus(tone, lite, sharedRoom = null) {
+export function createDrumBus(tone, lite) {
   const input = new tone.Gain(1);
   const output = new tone.Gain(1);
   const audible = new tone.Gain(1);
   const makeup = new tone.Gain(1);
   const drive = new tone.Distortion({ distortion: 0.35, wet: 0, oversample: lite?.noOversample ? 'none' : '2x' });
   const filter = lite?.reducedFx ? null : new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
-  const room = lite?.singleReverb ? null : new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
-  const roomSend = lite?.singleReverb && sharedRoom ? new tone.Gain(0) : null;
+  const room = new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
   const wetNow = { drive: 0, room: 0 };
   const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow), 0.05);
   input.connect(drive);
-  drive.connect(filter || makeup);
-  filter?.connect(room || makeup);
-  room?.connect(makeup);
+  drive.connect(filter || room);
+  filter?.connect(room);
+  room.connect(makeup);
   makeup.connect(audible);
   audible.connect(output);
-  // The send taps post-audible, like the instrument sends: a muted kit
-  // starves its own tail.
-  if (roomSend) {
-    audible.connect(roomSend);
-    roomSend.connect(sharedRoom);
-  }
   const apply = {
     drive: (amount) => {
       drive.distortion = blend([0, 0.35, 0.7], amount);
@@ -718,13 +709,6 @@ export function createDrumBus(tone, lite, sharedRoom = null) {
     },
     room: (amount) => {
       const wet = blend([0, 0.16, 0.34], amount);
-      // Send mode: the convolver lives on the instrument bus — the amount is
-      // a gain into it, not a series wet, and dry is never ducked.
-      if (roomSend) {
-        roomSend.gain.rampTo(sendLevel(wet, 'room'), 0.05);
-        return;
-      }
-      if (!room) return;
       wetNow.room = wet;
       room.wet.rampTo(wet, 0.05);
       punch();
@@ -733,7 +717,7 @@ export function createDrumBus(tone, lite, sharedRoom = null) {
   return {
     input,
     output,
-    ready: room?.ready ?? Promise.resolve(),
+    ready: room.ready ?? Promise.resolve(),
     setEffect(id, value) {
       const amount = clampFx(value);
       apply[id]?.(amount);
@@ -745,8 +729,7 @@ export function createDrumBus(tone, lite, sharedRoom = null) {
     dispose() {
       drive.dispose();
       filter?.dispose();
-      room?.dispose();
-      roomSend?.dispose();
+      room.dispose();
       makeup.dispose();
       audible.dispose();
       input.dispose();
