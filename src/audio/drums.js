@@ -31,13 +31,13 @@ export function tileCells(hits, length, native = PRESET_STEPS) {
 }
 
 export const TRACKS = [
-  { id: 'kick', label: 'Kick', bank: 'main' },
-  { id: 'snare', label: 'Snare', bank: 'main' },
-  { id: 'hat', label: 'Hi-Hat', bank: 'main' },
-  { id: 'clap', label: 'Clap', bank: 'main' },
-  { id: 'openhat', label: 'Open Hat', bank: 'extra' },
-  { id: 'tom', label: 'Tom', bank: 'extra' },
-  { id: 'cowbell', label: 'Cowbell', bank: 'extra' },
+  { id: 'kick', label: 'Kick', shortLabel: 'bd', bank: 'main' },
+  { id: 'snare', label: 'Snare', shortLabel: 'sr', bank: 'main' },
+  { id: 'hat', label: 'Hi-Hat', shortLabel: 'hh', bank: 'main' },
+  { id: 'clap', label: 'Clap', shortLabel: 'cp', bank: 'main' },
+  { id: 'openhat', label: 'Open Hat', shortLabel: 'oh', bank: 'extra' },
+  { id: 'tom', label: 'Tom', shortLabel: 'tm', bank: 'extra' },
+  { id: 'cowbell', label: 'Cowbell', shortLabel: 'cb', bank: 'extra' },
 ];
 
 /**
@@ -269,9 +269,10 @@ export class DrumMachine {
     license: SAMPLE_LIBRARY.license,
   };
 
-  constructor(engine, { pattern = DEFAULT_PATTERN } = {}) {
+  constructor(engine, { pattern = DEFAULT_PATTERN, lite = null } = {}) {
     this.#tone = engine.tone;
-    this.#output = new this.#tone.Gain(1.35);
+    /** Lite trims the kit bus: the synth voices have no SAMPLE_GAIN taming. */
+    this.#output = new this.#tone.Gain(lite?.synthDrums ? 1.2 : 1.35);
 
     this.#voices.kick = new this.#tone.MembraneSynth({
       pitchDecay: 0.03,
@@ -298,7 +299,7 @@ export class DrumMachine {
       harmonicity: 5.1,
       resonance: 4000,
       octaves: 1.2,
-      volume: -13,
+      volume: -17,
     }).connect(this.#output);
 
     // Clap gets its own air shelf on both paths so the hit reads brighter
@@ -311,18 +312,29 @@ export class DrumMachine {
       volume: -3,
     }).connect(this.#clapShape);
 
+    /**
+     * The 808 open hat is the same metallic ping as the closed one with the
+     * decay opened up — ~0.35 s of ring instead of a 60 ms tick. The pitch
+     * drop is shallower so the hit reads 'held open'; modulationIndex is
+     * pulled down because a long sustain turns the full FM clang harsh.
+     */
     this.#voices.openhat = new this.#tone.MetalSynth({
-      envelope: { attack: 0.001, decay: 0.22, release: 0.06 },
+      envelope: { attack: 0.001, decay: 0.35, release: 0.1 },
       harmonicity: 5.1,
-      resonance: 2800,
-      octaves: 1.1,
-      volume: -22,
+      modulationIndex: 20,
+      resonance: 3000,
+      octaves: 0.6,
+      volume: -18,
     }).connect(this.#output);
 
+    /**
+     * Mid-tom, not a floor sub: triggered around B2 (~124 Hz) with a two-
+     * octave drop over 45 ms — the classic 808 'doom' — and a short body.
+     */
     this.#voices.tom = new this.#tone.MembraneSynth({
-      pitchDecay: 0.06,
-      octaves: 3,
-      envelope: { attack: 0.001, decay: 0.28, sustain: 0 },
+      pitchDecay: 0.045,
+      octaves: 2,
+      envelope: { attack: 0.001, decay: 0.32, sustain: 0 },
       volume: -6,
     }).connect(this.#output);
 
@@ -643,14 +655,15 @@ export class DrumMachine {
     else if (track === 'snare') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
     else if (track === 'hat') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G5'), time));
     else if (track === 'openhat') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('A5'), time));
-    else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('A1'), time));
+    else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('B2'), time));
     else if (track === 'cowbell') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G5'), time));
     else if (track === 'clap') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
   }
 
   #tick(time, step) {
     this.#currentStep = step;
-    const slice = this.#tone.Time('16n').toSeconds();
+    // One 16th in seconds without allocating a Tone.Time per tick.
+    const slice = 15 / (this.#tone.getTransport().bpm.value || 120);
     for (const { id } of TRACKS) {
       const slot = this.#grid[id][step];
       if (!slot?.on) continue;

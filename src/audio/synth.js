@@ -382,7 +382,7 @@ const MARK_OCTAVE_STEP = 2;
  * stay grey. `ranges` keeps each note's { s, e, o } span so the renderer can
  * halo exactly the layer that is sounding.
  */
-export function padNoteMarks(notes, instrument, { columns = 12, root = 'C', scale = 'major', octaves } = {}) {
+export function padNoteMarks(notes, instrument, { columns = 12, root = 'C', scale = 'major', octaves, flat = false } = {}) {
   const target = normalizeInstrument(instrument);
   const marks = [];
   const byDegree = new Map();
@@ -417,6 +417,19 @@ export function padNoteMarks(notes, instrument, { columns = 12, root = 'C', scal
   }
   for (const mark of marks) {
     const layers = [...mark.layers.values()].sort((a, b) => a.octave - b.octave);
+    if (flat) {
+      // Lite drops the per-octave stack: one dot per column, its halo fires
+      // on any sounding range (the renderer reads `flat`).
+      mark.flat = true;
+      mark.layers = [{
+        octave: null,
+        radius: MARK_BASE_RADIUS,
+        color: layers.some((layer) => layer.own)
+          ? INSTRUMENT_COLORS[target] || '#e2b43a'
+          : 'rgba(122, 114, 102, 0.55)',
+      }];
+      continue;
+    }
     const highest = layers[layers.length - 1].octave;
     const stacked = layers.length > 1;
     mark.layers = layers.map((layer) => ({
@@ -683,12 +696,14 @@ export class TouchSynth {
       : { pad: 16, organ: 16, kalimba: 8, synth: 12 };
     /** Lite runs one oscillator per note instead of a detuned fat stack. */
     const fat = lite?.singleFat ? 1 : 0;
+    /** Lite cuts the pad tail: a released voice still burns an oscillator. */
+    const padRelease = lite?.shortTails ? 1.4 : 2.2;
     this.#voices = {
       pad: createGlideVoice(
         this.#tone,
         {
           oscillator: { type: 'fatsine', count: fat || 3, spread: 18 },
-          envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: 2.2 },
+          envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: padRelease },
           volume: -6,
         },
         inputs.pad,
@@ -1132,7 +1147,7 @@ export class PerformanceRecorder {
 
   /** Length of one 16th note at the current tempo, in seconds. */
   get stepSeconds() {
-    return this.#tone.Time('16n').toSeconds();
+    return 15 / (this.#tone.getTransport().bpm.value || 120);
   }
 
   get loopSteps() {

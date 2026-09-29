@@ -36,7 +36,7 @@ function tapValue(mode, slot) {
 /**
  * @param {HTMLElement} container `.sequencer` element the tape is rendered into
  * @param {object} options
- * @param {Array<{id: string, label: string}>} options.tracks row order
+ * @param {Array<{id: string, label: string, shortLabel?: string}>} options.tracks row order
  * @param {() => number} options.steps live step count
  * @param {(track: string, step: number) => ({on: boolean, division: number}|null)} options.cell
  * @param {() => number} options.cellPx cell size in px
@@ -161,8 +161,12 @@ export function createDrumGrid(container, options) {
       const icon = iconFor(track);
       if (icon) label.append(icon);
       const name = document.createElement('span');
+      name.className = 'seq-row__name';
       name.textContent = track.label;
-      label.append(name);
+      const short = document.createElement('span');
+      short.className = 'seq-row__short';
+      short.textContent = track.shortLabel || track.label;
+      label.append(name, short);
       row.append(label);
 
       const rowSteps = document.createElement('div');
@@ -190,7 +194,6 @@ export function createDrumGrid(container, options) {
 
     const gridlines = document.createElement('div');
     gridlines.className = 'seq-gridlines';
-    gridlines.style.left = '132px';
     const pitch = width + STEP_GAP;
     for (let step = 0; step <= length; step += 4) {
       if (step === length && length % 16 !== 0) continue;

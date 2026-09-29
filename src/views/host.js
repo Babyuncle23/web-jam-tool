@@ -6,7 +6,7 @@
 
 import { AudioEngine, DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { buildLoopMidi, readRepeats, renderLoopWav, saveBlob } from '../audio/export-loop.js';
-import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
+import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, SAMPLE_URLS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import {
   INSTRUMENT_COLORS,
   INSTRUMENT_IDS,
@@ -223,7 +223,7 @@ export async function createHostView({ lite } = {}) {
   /** @type {{ engine: AudioEngine, drums: DrumMachine, synth: TouchSynth, bus: ReturnType<typeof createInstrumentBus>, drumsFx: ReturnType<typeof createDrumBus>, loops: Map<string, PerformanceRecorder> } | null} */
   let audio = null;
 
-  const renderer = new TouchPadRenderer(el.canvas, { columns: 12 });
+  const renderer = new TouchPadRenderer(el.canvas, { columns: 12, maxRatio: lite?.lowDpi ? 1.5 : 0, lite: lite?.cheapViz });
   const socket = new JamSocket();
 
   function log(message, accent = '') {
@@ -1680,7 +1680,7 @@ export async function createHostView({ lite } = {}) {
     }
     const notes = [];
     for (const recorder of audio.loops.values()) notes.push(...recorder.notes());
-    renderer.setMarks(padNoteMarks(notes, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves }));
+    renderer.setMarks(padNoteMarks(notes, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves, flat: Boolean(lite?.cheapViz) }));
   }
 
   /** Notes from every recorder, tagged with the owning player. */
@@ -1859,6 +1859,11 @@ export async function createHostView({ lite } = {}) {
 
   function describeSamples(sampleState) {
     if (sampleState.usingSamples) return 'drums: TR-808 samples';
+    if (lite?.synthDrums) {
+      return sampleState.tracks?.openhat === 'sample'
+        ? 'drums: 808 open hat + synth (lite)'
+        : 'drums: synthesis (lite)';
+    }
     if (sampleState.mode === 'mixed') {
       const synthTracks = Object.entries(sampleState.tracks)
         .filter(([, kind]) => kind === 'synth')
@@ -1931,13 +1936,13 @@ export async function createHostView({ lite } = {}) {
 
   async function startAudio() {
     if (audio) return null;
-    const engine = await new AudioEngine({ bpm: state.bpm }).start();
+    const engine = await new AudioEngine({ bpm: state.bpm, lite }).start();
     /** @type {{ drums?: DrumMachine, synth?: TouchSynth, bus?: ReturnType<typeof createInstrumentBus>, drumsFx?: ReturnType<typeof createDrumBus> }} */
     const partial = { engine };
     try {
       partial.bus = createInstrumentBus(engine.tone, lite);
       partial.drumsFx = createDrumBus(engine.tone, lite);
-      partial.drums = new DrumMachine(engine);
+      partial.drums = new DrumMachine(engine, { lite });
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,
         scale: state.scale,
@@ -1957,7 +1962,10 @@ export async function createHostView({ lite } = {}) {
         }
       }
 
-      const [sampleState] = await Promise.all([partial.drums.loadSamples(), partial.bus.ready, partial.drumsFx.ready]);
+      /** Lite fetches just the open hat — its synth voice is the weakest of
+       * the kit. The other six WAVs, their decodes and pools are skipped. */
+      const samples = partial.drums.loadSamples(lite?.synthDrums ? { openhat: SAMPLE_URLS.openhat } : undefined);
+      const [sampleState] = await Promise.all([samples, partial.bus.ready, partial.drumsFx.ready]);
       for (const [id, octave] of Object.entries(state.octaves)) partial.synth.setInstrumentOctave(id, octave);
       partial.synth.warmUp();
 
@@ -1976,10 +1984,17 @@ export async function createHostView({ lite } = {}) {
       paintBar(parkedLoopStep());
 
       el.drumSource.textContent = describeSamples(sampleState);
-      el.drumSource.dataset.state = sampleState.usingSamples ? 'online' : 'error';
-      log(sampleState.usingSamples ? 'TR-808 from the CDN' : 'synthesis, sample CDN unavailable', 'drums');
-      log(`Tone.js ${globalThis.Tone.version}, context ${engine.contextState}`, 'audio');
-      if (lite) log('lite mode — fewer voices, one reverb, trimmed FX', 'audio');
+      el.drumSource.dataset.state = sampleState.usingSamples || lite?.synthDrums ? 'online' : 'error';
+      log(
+        sampleState.usingSamples
+          ? 'TR-808 from the CDN'
+          : lite?.synthDrums
+            ? sampleState.tracks?.openhat === 'sample' ? 'synth kit + 808 open hat' : 'synthesis — samples skipped'
+            : 'synthesis, sample CDN unavailable',
+        'drums',
+      );
+      log(`Tone.js ${globalThis.Tone.version}, context ${engine.contextState} @ ${Math.round(engine.sampleRate / 100) / 10} kHz`, 'audio');
+      if (lite) log('lite mode — 24 kHz context, fewer voices, one reverb, trimmed FX, synth drums', 'audio');
       return sampleState;
     } catch (error) {
       disposePartial(partial);
@@ -1996,7 +2011,8 @@ export async function createHostView({ lite } = {}) {
     try {
       const sampleState = await startAudio();
       state.audioError = null;
-      if (sampleState?.fallback) {
+      // In lite the synth drums are the plan, not a failure — no warn splash.
+      if (sampleState?.fallback && !lite?.synthDrums) {
         setSplashPhase('warn', describeSamples(sampleState));
         setControlEnabled(el.splashStart, true);
         return;
@@ -2174,6 +2190,8 @@ export async function createHostView({ lite } = {}) {
 
   const hostPad = new TouchPad(el.pad, {
     locked: true,
+    // Lite moves at ~21 Hz: fewer retriggers, captures and repaints per slide.
+    throttleMs: lite?.coarseTouch ? 48 : undefined,
     onStart: (point) => {
       if (state.padMode === 'fx') {
         fxPadDown(point);
@@ -2587,7 +2605,7 @@ export async function createHostView({ lite } = {}) {
     el.loopRedo.replaceChildren(chipIcon('redo'));
     el.loopClear.replaceChildren(chipIcon('erase'));
     el.loopClear.setAttribute('aria-label', 'Clear all loops');
-    paintIconButton(el.notes, 'notes', 'Notes');
+    paintIconButton(el.notes, 'notes', 'Edit notes');
     paintIconButton(el.bars, 'bars', barCountLabel(state.noteSteps));
     paintIconButton(el.drumsOpen, 'edit', 'Edit drums');
     paintIconButton(el.noteUndo, 'undo', 'Undo');

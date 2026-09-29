@@ -87,6 +87,21 @@ try {
   console.log('lite kalimba chips:', JSON.stringify(kalimbaFx));
   if (kalimbaFx.includes('reverse')) errors.push('lite host: kalimba still shows reverse');
 
+  // The deeper cuts: 24 kHz context, wide lookAhead, only the open-hat WAV loads.
+  const liteAudio = await lite.evaluate(`({
+    rate: globalThis.__jam?.audio?.engine?.sampleRate,
+    lookAhead: globalThis.__jam?.audio?.engine?.tone?.getContext?.().lookAhead,
+    usingSamples: globalThis.__jam?.audio?.drums?.sampleState?.usingSamples,
+    openhat: globalThis.__jam?.audio?.drums?.sampleState?.tracks?.openhat,
+    kick: globalThis.__jam?.audio?.drums?.sampleState?.tracks?.kick,
+  })`);
+  console.log('lite audio:', JSON.stringify(liteAudio));
+  if (!(liteAudio.rate > 0 && liteAudio.rate <= 24000)) errors.push(`lite host: sampleRate ${liteAudio.rate}, expected ≤24000`);
+  if (!(liteAudio.lookAhead >= 0.04)) errors.push(`lite host: lookAhead ${liteAudio.lookAhead}, expected ≥0.04`);
+  if (liteAudio.usingSamples !== false) errors.push('lite host: all drum samples were still loaded');
+  if (liteAudio.openhat !== 'sample') errors.push('lite host: the 808 open-hat sample did not load');
+  if (liteAudio.kick !== 'synth') errors.push('lite host: kick should stay on the synth voice');
+
   // Guest on the lite host sees the trimmed chips too.
   const code = await lite.evaluate(`document.getElementById('host-code').textContent`);
   const guest = await browser.newPage();

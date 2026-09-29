@@ -52,6 +52,13 @@ export const LITE = {
   noOversample: true, // distortions run at oversample 'none' instead of '2x'
   reducedFx: true, // one or two effects per instrument; the kalimba ScriptProcessor reverse is gone
   singleReverb: true, // one shared room convolver — no pad hall, no private drum room
+  lowSampleRate: true, // AudioContext runs at 24 kHz — every audio-node cost roughly halves (engine.js)
+  synthDrums: true, // TR-808 WAVs are never fetched or decoded — the synth voices play instead (drums.js)
+  wideLookAhead: true, // context lookAhead 0.05 s instead of 0.02 — fewer scheduler wake-ups, more jitter headroom
+  lowDpi: true, // the pad canvas is capped at 1.5× device pixels — a 3× phone paints ~4× fewer pixels (touch-pad.js)
+  shortTails: true, // pad release 1.4 s instead of 2.2 s — released voices go quiet sooner (synth.js)
+  coarseTouch: true, // host pad moves throttle to ~21 Hz — fewer retriggers and repaints per slide (touch-pad.js)
+  cheapViz: true, // pad renderer: desync canvas, baked note layer, flat finger dot, ~30 fps paint cap (touch-pad.js)
 };
 
 /** The chips a lite host still shows — everything else is not built. */
@@ -499,7 +506,8 @@ export function createInstrumentBus(tone, lite) {
    * convolvers instead of four. Lite builds only the room — the pad send
    * then aims at it, and a convolver costs CPU even at wet 0.
    */
-  const roomReverb = keep(new tone.Reverb({ decay: 1.8, wet: 1, preDelay: 0.01 }));
+  /** Lite shortens the only convolver too: cost scales with IR length. */
+  const roomReverb = keep(new tone.Reverb({ decay: lite?.singleReverb ? 1.4 : 1.8, wet: 1, preDelay: 0.01 }));
   const hallReverb = lite?.singleReverb ? null : keep(new tone.Reverb({ decay: 5.5, wet: 1, preDelay: 0.02 }));
   roomReverb.connect(mix);
   hallReverb?.connect(mix);
@@ -803,6 +811,8 @@ export function createMasterFx(tone, bpm = 96) {
   const wahWet = new tone.Gain(0);
   const wahLift = new tone.Gain(1);
   const wah = new tone.Filter({ type: 'bandpass', frequency: 800, Q: 5, rolloff: -12 });
+  /** Crusher curve cache — applyMasterFx re-enters setCrush on every patch. */
+  let crushGrit = -1;
 
   input.connect(live);
   input.connect(grab);
@@ -960,15 +970,18 @@ export function createMasterFx(tone, bpm = 96) {
     },
     setCrush(amount) {
       const grit = clampFx(amount);
-      const bits = grit < 0.001 ? 16 : Math.round(12 - grit * 9);
-      const steps = 2 ** bits;
-      const length = 2048;
-      const curve = new Float32Array(length);
-      for (let i = 0; i < length; i += 1) {
-        const x = (i / (length - 1)) * 2 - 1;
-        curve[i] = Math.round(x * steps) / steps;
+      if (grit !== crushGrit) {
+        crushGrit = grit;
+        const bits = grit < 0.001 ? 16 : Math.round(12 - grit * 9);
+        const steps = 2 ** bits;
+        const length = 2048;
+        const curve = new Float32Array(length);
+        for (let i = 0; i < length; i += 1) {
+          const x = (i / (length - 1)) * 2 - 1;
+          curve[i] = Math.round(x * steps) / steps;
+        }
+        crusher.curve = curve;
       }
-      crusher.curve = curve;
       crushWet.gain.value = grit < 0.001 ? 0 : 1;
       crushDry.gain.value = grit < 0.001 ? 1 : 0;
       return grit;

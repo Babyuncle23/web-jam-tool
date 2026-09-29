@@ -9,9 +9,17 @@ import { createMasterFx } from './effects.js';
 const DEFAULT_BPM = 120;
 /** Pre-compressor master bus level. The Master sheet volume slider writes this. */
 export const DEFAULT_MASTER_GAIN = 0.78;
+/**
+ * Lite runs the whole graph at 24 kHz: every node — oscillators, filters,
+ * the convolver, delay lines — bills per sample, so the audio thread roughly
+ * halves. The context is kept for re-entries: Chrome caps live AudioContexts.
+ */
+const LITE_SAMPLE_RATE = 24000;
+let liteContext = null;
 
 export class AudioEngine {
   #tone;
+  #lite;
   #master = null;
   #compressor = null;
   #limiter = null;
@@ -22,10 +30,11 @@ export class AudioEngine {
   #phase = 'idle';
   #error = null;
 
-  constructor({ tone = globalThis.Tone, bpm = DEFAULT_BPM } = {}) {
+  constructor({ tone = globalThis.Tone, bpm = DEFAULT_BPM, lite = null } = {}) {
     if (!tone) throw new Error('Tone.js is not loaded');
     this.#tone = tone;
     this.#bpm = bpm;
+    this.#lite = lite;
   }
 
   get tone() {
@@ -62,12 +71,37 @@ export class AudioEngine {
     return this.#tone.getContext().rawContext.state;
   }
 
+  /** Actual output rate — the log line and the lite probe read it. */
+  get sampleRate() {
+    return this.#tone.getContext().rawContext.sampleRate;
+  }
+
+  /**
+   * Swap Tone onto a 24 kHz AudioContext before anything touches the default
+   * one. Must run before tone.start()/getContext() — once a context exists,
+   * replacing it strands the nodes built on it. A native AudioContext is
+   * wrapped by setContext; old Safari/Firefox refuse the option — lite then
+   * just keeps the device rate.
+   */
+  #pickLiteContext() {
+    if (!this.#lite?.lowSampleRate || typeof this.#tone.setContext !== 'function') return;
+    const Ctor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
+    if (!Ctor) return;
+    try {
+      if (!liteContext) liteContext = new Ctor({ sampleRate: LITE_SAMPLE_RATE });
+      this.#tone.setContext(liteContext);
+    } catch {
+      liteContext = null;
+    }
+  }
+
   /** Must be called from a user gesture ("Start Audio"); browsers block audio otherwise. */
   async start() {
     if (this.#started) return this;
     this.#phase = 'starting';
     this.#error = null;
     try {
+      this.#pickLiteContext();
       await this.#tone.start();
       this.#limiter = new this.#tone.Limiter(-2).toDestination();
       this.#compressor = new this.#tone.Compressor({
@@ -78,7 +112,10 @@ export class AudioEngine {
         knee: 8,
       });
       const context = this.#tone.getContext();
-      if (Number(context.lookAhead) > 0.02) context.lookAhead = 0.02;
+      /** Lite widens the window to 50 ms: the transport clock wakes half as
+       * often and a weak CPU gets jitter headroom, at ~30 ms more latency. */
+      const ahead = this.#lite?.wideLookAhead ? 0.05 : 0.02;
+      if (Number(context.lookAhead) !== ahead) context.lookAhead = ahead;
       this.#masterFx = createMasterFx(this.#tone, this.#bpm);
       this.#compressor.connect(this.#masterFx.input);
       this.#masterFx.output.connect(this.#limiter);

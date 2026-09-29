@@ -201,7 +201,7 @@ export async function createControllerView({ code, name } = {}) {
       renderer.setMarks([]);
       return;
     }
-    renderer.setMarks(padNoteMarks(state.marks, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves }));
+    renderer.setMarks(padNoteMarks(state.marks, state.instrument, { root: state.root, scale: state.scale, octaves: state.octaves, flat: state.lite }));
   }
 
   function renderGuestFx() {
@@ -1043,6 +1043,8 @@ export async function createControllerView({ code, name } = {}) {
     // before the effects patch below repaints them.
     if (typeof payload?.lite === 'boolean' && payload.lite !== state.lite) {
       state.lite = payload.lite;
+      renderer.setLite(payload.lite);
+      syncPadMarks();
       renderGuestFx();
     }
     if (payload?.masterFx && typeof payload.masterFx === 'object') {
@@ -1382,7 +1384,7 @@ export async function createControllerView({ code, name } = {}) {
   paintGuestClear();
   paintGuestDrumLength();
   syncGuestDrumPitch();
-  paintIconButton(el.notes, 'notes', 'Notes');
+  paintIconButton(el.notes, 'notes', 'Edit notes');
   paintIconButton(el.drumsOpen, 'edit', 'Edit drums');
   paintIconButton(el.noteUndo, 'undo', 'Undo');
   paintIconButton(el.noteUndoAll, 'undo', 'Undo all');

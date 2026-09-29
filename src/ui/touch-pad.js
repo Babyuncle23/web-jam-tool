@@ -232,12 +232,23 @@ export class TouchPadRenderer {
   #size = { width: 0, height: 0 };
   #resizeTimer = null;
   #onResize;
+  /** Cap on devicePixelRatio — lite paints fewer pixels per frame. 0/∞ = native. */
+  #maxRatio;
+  /** Lite: flat finger dot, baked note layer, ~30 fps paint cap. */
+  #lite;
+  #marksLayer = null;
+  #paintTimer = null;
+  #lastPaint = 0;
 
-  constructor(canvas, { columns = 12 } = {}) {
+  constructor(canvas, { columns = 12, maxRatio = 0, lite = false } = {}) {
     this.#canvas = canvas;
+    // NB: no desynchronized hint — on mobile GPUs the low-latency path can
+    // render the overlay opaque black instead of compositing it.
     this.#ctx = canvas.getContext('2d');
     this.#columns = columns;
-    this.#buildGlow();
+    this.#lite = Boolean(lite);
+    this.#maxRatio = Number(maxRatio) > 0 ? Number(maxRatio) : Infinity;
+    if (!this.#lite) this.#buildGlow();
     this.resize();
     this.#onResize = () => {
       clearTimeout(this.#resizeTimer);
@@ -265,14 +276,19 @@ export class TouchPadRenderer {
     this.#schedule();
   }
 
+  #ratio() {
+    return Math.min(window.devicePixelRatio || 1, this.#maxRatio);
+  }
+
   resize() {
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = this.#ratio();
     const rect = this.#canvas.getBoundingClientRect();
     this.#size = { width: rect.width, height: rect.height };
     this.#canvas.width = Math.max(1, Math.floor(rect.width * ratio));
     this.#canvas.height = Math.max(1, Math.floor(rect.height * ratio));
     this.#ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     this.#buildGrid();
+    this.#buildMarksLayer();
     this.#schedule();
   }
 
@@ -282,9 +298,20 @@ export class TouchPadRenderer {
     this.#schedule();
   }
 
+  /** The guest learns the host's lite flag from host:state, post-construction. */
+  setLite(lite) {
+    const next = Boolean(lite);
+    if (next === this.#lite) return;
+    this.#lite = next;
+    if (!next && !this.#glow) this.#buildGlow();
+    this.#buildMarksLayer();
+    this.#schedule();
+  }
+
   /** Recorded-note dots. One frame, no polling loop. */
   setMarks(marks) {
     this.#marks = Array.isArray(marks) ? marks : [];
+    this.#buildMarksLayer();
     this.#schedule();
   }
 
@@ -312,6 +339,7 @@ export class TouchPadRenderer {
     window.removeEventListener('resize', this.#onResize);
     window.removeEventListener('orientationchange', this.#onResize);
     clearTimeout(this.#resizeTimer);
+    clearTimeout(this.#paintTimer);
     if (this.#frame) cancelAnimationFrame(this.#frame);
     this.#frame = null;
     this.#points.clear();
@@ -342,7 +370,7 @@ export class TouchPadRenderer {
   #buildGrid() {
     const { width, height } = this.#size;
     if (width < 1 || height < 1) return;
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = this.#ratio();
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
@@ -445,10 +473,52 @@ export class TouchPadRenderer {
     ctx.fillText('high cut', width - 10, height - 14);
   }
 
+  /**
+   * Lite bakes the note dots into an offscreen canvas: a busy loop used to
+   * cost a stroke+fill per layer on every repaint, now it is one blit.
+   * Rebuilt only when the marks or the size change; halos stay dynamic.
+   */
+  #buildMarksLayer() {
+    this.#marksLayer = null;
+    const { width, height } = this.#size;
+    if (!this.#lite || width < 1 || height < 1 || !this.#marks.length) return;
+    const ratio = this.#ratio();
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    for (const mark of this.#marks) {
+      const x = mark.x * width;
+      const y = (1 - mark.y) * height;
+      for (const layer of mark.layers || []) {
+        ctx.beginPath();
+        ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
+        ctx.fillStyle = layer.color || '#e2b43a';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
+        ctx.stroke();
+      }
+    }
+    this.#marksLayer = canvas;
+  }
+
   #schedule() {
-    if (this.#frame) return;
+    if (this.#frame || this.#paintTimer) return;
+    /** Lite caps repaints near 30 fps: during a slide + playing loop the
+     * update, lit-step and marks events can otherwise burst past 60. */
+    const wait = this.#lite ? 30 - (performance.now() - this.#lastPaint) : 0;
+    if (wait > 2) {
+      this.#paintTimer = setTimeout(() => {
+        this.#paintTimer = null;
+        this.#schedule();
+      }, wait);
+      return;
+    }
     this.#frame = requestAnimationFrame(() => {
       this.#frame = null;
+      this.#lastPaint = performance.now();
       this.#draw();
     });
   }
@@ -494,37 +564,36 @@ export class TouchPadRenderer {
       ctx.fillRect(column * columnWidth, 0, columnWidth, height);
     }
 
+    if (this.#marksLayer) ctx.drawImage(this.#marksLayer, 0, 0, width, height);
     for (const mark of this.#marks) {
       const x = mark.x * width;
       const y = (1 - mark.y) * height;
-      // Which octave layers of this column have a note sounding right now.
-      const hitOctaves = new Set();
-      if (this.#litStep >= 0) {
-        for (const { s, e, o } of mark.ranges || []) {
-          const playing = e > s
-            ? this.#litStep >= s && this.#litStep < e
-            : this.#litStep >= s || this.#litStep < e;
-          if (playing) hitOctaves.add(o);
-        }
-      }
+      const lit = this.#litStep;
+      // Which layers of this column have a note sounding right now — flat
+      // marks (lite) match any range, stacked marks match their octave.
+      const litLayer = (layer) => lit >= 0 && (mark.ranges || []).some(({ s, e, o }) =>
+        (mark.flat || o === layer.octave) && (e > s ? lit >= s && lit < e : lit >= s || lit < e));
       // Lowest octave first so each higher layer sits on top of the bigger
       // one beneath. Size and outline never change during playback — a
       // sounding layer only gains its yellow halo.
       const maxRadius = (mark.layers || []).reduce((max, layer) => Math.max(max, layer.radius), 0);
       for (const layer of mark.layers || []) {
-        if (hitOctaves.has(layer.octave)) {
+        if (litLayer(layer)) {
           ctx.beginPath();
           ctx.arc(x, y, layer.radius + 9, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(242, 193, 75, 0.3)';
           ctx.fill();
         }
-        ctx.beginPath();
-        ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
-        ctx.fillStyle = layer.color || '#e2b43a';
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
-        ctx.stroke();
+        // In lite the base dots are baked into #marksLayer above.
+        if (!this.#marksLayer) {
+          ctx.beginPath();
+          ctx.arc(x, y, layer.radius, 0, Math.PI * 2);
+          ctx.fillStyle = layer.color || '#e2b43a';
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(28, 20, 12, 0.85)';
+          ctx.stroke();
+        }
       }
       if (this.#previewDegrees?.has(mark.degree) && maxRadius) {
         ctx.beginPath();
@@ -540,7 +609,22 @@ export class TouchPadRenderer {
     for (const point of this.#points.values()) {
       const x = point.x * width;
       const y = (1 - point.y) * height;
-      ctx.drawImage(this.#glow, x - GLOW_RADIUS, y - GLOW_RADIUS);
+      if (this.#lite) {
+        // Flat dot + small halo: far less fill-rate than the gradient sprite.
+        ctx.beginPath();
+        ctx.arc(x, y, 15, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(242, 193, 75, 0.4)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff6e4';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#1c140c';
+        ctx.stroke();
+      } else {
+        ctx.drawImage(this.#glow, x - GLOW_RADIUS, y - GLOW_RADIUS);
+      }
     }
   }
 }
