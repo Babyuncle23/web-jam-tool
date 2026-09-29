@@ -8,10 +8,21 @@ import { markPageEdges } from './ui/scroll-edges.js';
 import { installQuietTouch } from './ui/quiet-touch.js';
 import { initRoleExtras } from './ui/install-share.js';
 import { loadScript } from './network/load-script.js';
+import { socketServerUrl } from './network/socket.js';
 import { LITE } from './audio/effects.js';
 
 /** Tone.js is ~1.5 MB of UMD and only the host evaluates it — fetch on demand, not for guest phones. */
 const TONE_SRC = 'https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.js';
+
+/**
+ * index.html loads the Socket.io client in <head>, but on the public page
+ * that tag can 404 before the view code ever runs — the hosted backend
+ * serves the same bundle, so fetch it from there as a fallback.
+ */
+function ensureSocketIo() {
+  if (globalThis.io) return Promise.resolve();
+  return loadScript(new URL('/socket.io/socket.io.js', socketServerUrl()).href, 30000);
+}
 
 installQuietTouch(document.getElementById('host-screen'), document.getElementById('controller-screen'));
 initRoleExtras();
@@ -44,6 +55,8 @@ function resetScreen(name) {
 }
 
 let activeView = null;
+/** Bumped by every entry attempt — a stale async result may not touch the screen. */
+let entryToken = 0;
 
 function showScreen(name) {
   for (const [key, element] of Object.entries(screens)) element.hidden = key !== name;
@@ -67,25 +80,50 @@ function setHostLoading(loading) {
 async function enterHost(lite = false) {
   // Tone installs itself as a global, so it must finish before host.js runs.
   // Warming it at role entry hides the CDN delay behind the "Start sound" tap.
+  const token = ++entryToken;
   setHostLoading(true);
   try {
-    await loadScript(TONE_SRC);
+    await Promise.all([loadScript(TONE_SRC, 30000), ensureSocketIo()]);
     const { createHostView } = await import('./views/host.js');
     activeView?.destroy?.();
     resetScreen('host');
     showScreen('host');
-    activeView = await createHostView({ lite: lite ? LITE : null });
+    const view = await createHostView({ lite: lite ? LITE : null });
+    // While the session was opening the user may have backed out or a newer
+    // attempt may have started — a late result must not adopt a screen it no
+    // longer owns, or it would leave a live room behind a hidden screen.
+    if (token !== entryToken || document.body.dataset.view !== 'host') {
+      view.destroy?.();
+      return;
+    }
+    activeView = view;
+  } catch (error) {
+    // A stale failure must not reset a screen owned by a newer attempt —
+    // otherwise one slow host open can kick the user back after a retry won.
+    if (token !== entryToken) return;
+    hostOpenFailed(error);
   } finally {
-    setHostLoading(false);
+    if (token === entryToken) setHostLoading(false);
   }
 }
 
 async function enterController(code) {
-  const { createControllerView } = await import('./views/controller.js');
-  activeView?.destroy?.();
-  resetScreen('controller');
-  showScreen('controller');
-  activeView = await createControllerView({ code });
+  const token = ++entryToken;
+  try {
+    await ensureSocketIo();
+    const { createControllerView } = await import('./views/controller.js');
+    activeView?.destroy?.();
+    resetScreen('controller');
+    showScreen('controller');
+    const view = await createControllerView({ code });
+    if (token !== entryToken || document.body.dataset.view !== 'controller') {
+      view.destroy?.();
+      return;
+    }
+    activeView = view;
+  } catch (error) {
+    if (token === entryToken) throw error;
+  }
 }
 
 function backToRolePicker() {
@@ -108,7 +146,7 @@ function hostOpenFailed(error) {
 }
 
 document.getElementById('btn-role-host').addEventListener('click', () => {
-  enterHost(liteCheck?.checked).catch(hostOpenFailed);
+  enterHost(liteCheck?.checked);
 });
 
 joinForm.addEventListener('submit', async (event) => {
@@ -166,7 +204,7 @@ if (liteCheck) {
 }
 
 if (params.get('role') === 'host') {
-  enterHost(liteCheck?.checked).catch(hostOpenFailed);
+  enterHost(liteCheck?.checked);
 } else if (params.get('role') === 'controller' && params.get('code')) {
   document.getElementById('join-code').value = params.get('code').toUpperCase();
   enterController(params.get('code').toUpperCase()).catch((error) => {

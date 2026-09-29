@@ -198,6 +198,8 @@ export async function createControllerView({ code, name } = {}) {
 
   function renderGuestFx() {
     const specs = instrumentFxSpecs(state.instrument, state.lite);
+    // Lite hosts run only the default-on effects and show no chips for them.
+    el.fx.hidden = !specs.length;
     const levels = state.effects[state.instrument] ?? {};
     el.fx.replaceChildren();
     for (const spec of specs) {
@@ -1044,7 +1046,13 @@ export async function createControllerView({ code, name } = {}) {
       const next = payload.masterFx;
       const dragKey = guestMasterDrag?.dataset?.master;
       if (GUEST_DIVISIONS.has(next.division) && !fxFingers.size) state.masterFx.division = next.division;
-      if (typeof next.hold === 'boolean' && !fxFingers.size) state.masterFx.hold = next.hold;
+      // Mid-gesture the finger's own hold flag is authoritative — except a
+      // released flag: if the host dropped our hold (another finger took it,
+      // a reconnect cleared it) the next move must re-send masterHold, or
+      // the stutter silently never re-engages while the finger keeps moving.
+      if (typeof next.hold === 'boolean' && (!fxFingers.size || next.hold === false)) {
+        state.masterFx.hold = next.hold;
+      }
       for (const key of ['cutoff', 'hipass', 'grit', 'wah', 'volume']) {
         if (!Number.isFinite(Number(next[key])) || dragKey === key) continue;
         if ((key === 'cutoff' || key === 'hipass') && fxFingers.size) continue;
@@ -1126,7 +1134,15 @@ export async function createControllerView({ code, name } = {}) {
     if (payload?.audioReady) unlock();
   });
 
-  const joined = await socket.joinSession(code, name);
+  let joined;
+  try {
+    joined = await socket.joinSession(code, name);
+  } catch (error) {
+    // A failed join must not leave the socket reconnecting in the
+    // background — the screen it belonged to is already gone.
+    socket.disconnect();
+    throw error;
+  }
   state.peerId = joined.peerId;
   setStatus(`${joined.name} · session ${joined.code}`, 'online');
 

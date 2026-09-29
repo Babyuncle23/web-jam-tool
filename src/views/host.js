@@ -69,7 +69,7 @@ async function guestJoinUrl(code) {
   const loopback = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   if (loopback) {
     try {
-      const response = await fetch('/api/lan');
+      const response = await fetch('/api/lan', { signal: AbortSignal.timeout(2500) });
       const data = response.ok ? await response.json() : null;
       if (data?.host && isLocalHostname(data.host) && !['localhost', '127.0.0.1'].includes(data.host)) {
         url.hostname = data.host;
@@ -857,6 +857,9 @@ export async function createHostView({ lite } = {}) {
 
   function renderInstrumentFx() {
     const specs = instrumentFxSpecs(state.instrument, lite);
+    // Lite runs the default-on effects silently — an empty row stays hidden
+    // instead of telling the user which chips are stuck on.
+    el.instrumentFx.hidden = !specs.length;
     renderFxRow(el.instrumentFx, specs, state.effects[state.instrument], (id, level) => {
       state.effects[state.instrument][id] = level;
       audio?.bus.setEffect(state.instrument, id, level);
@@ -866,7 +869,9 @@ export async function createHostView({ lite } = {}) {
   }
 
   function renderDrumFx() {
-    renderFxRow(el.drumFx, drumFxSpecs(lite), state.effects.drums, (id, level) => {
+    const specs = drumFxSpecs(lite);
+    el.drumFx.hidden = !specs.length;
+    renderFxRow(el.drumFx, specs, state.effects.drums, (id, level) => {
       state.effects.drums[id] = level;
       audio?.drumsFx.setEffect(id, level);
       renderDrumFx();
@@ -1098,6 +1103,12 @@ export async function createHostView({ lite } = {}) {
   function driveFxPad() {
     const point = [...fxFingers.values()].pop();
     if (!point) {
+      // The engine may have released on its own (a thrown capture call) —
+      // mirror that here so the state can't claim a hold that isn't real.
+      if (!audio?.engine.masterFx?.holding?.() && state.masterFx.hold) {
+        state.masterFx.hold = false;
+        if (masterHolder) masterHolder = null;
+      }
       // A guest mid-hold keeps both: don't open the filter under their finger.
       const owned = masterHolder === 'host';
       if (owned) {
@@ -1126,7 +1137,11 @@ export async function createHostView({ lite } = {}) {
     // The left lane is filter-only: sliding into it releases the stutter
     // without lifting the finger, sliding back out re-grabs the slice.
     const wantsHold = Boolean(division);
-    const wasHeld = state.masterFx.hold && masterHolder === 'host';
+    // Trust the engine's own held flag, not the mirrored state: if a capture
+    // threw mid-schedule the engine released while state.masterFx.hold stayed
+    // true, and a stale `wasHeld` would skip re-grabbing — the pad then moved
+    // the filter but the beat never stuttered.
+    const wasHeld = Boolean(audio?.engine.masterFx?.holding?.()) && masterHolder === 'host';
     state.masterFx.cutoff = cutoff;
     state.masterFx.hipass = hipass;
     if (wantsHold) {
@@ -1148,7 +1163,8 @@ export async function createHostView({ lite } = {}) {
         queueHarmony();
         return;
       }
-    } else if (wasHeld) {
+    } else if (wasHeld || (masterHolder === 'host' && state.masterFx.hold)) {
+      // Also covers a stale hold flag whose engine hold already died.
       masterHolder = null;
       state.masterFx.hold = false;
       audio?.engine.masterFx?.setHold(false);
@@ -1793,12 +1809,15 @@ export async function createHostView({ lite } = {}) {
         rows.push(row);
       }
     };
-    addGroup('This instrument', instrumentFxSpecs(state.instrument, lite), state.effects[state.instrument], (id, value) => {
-      state.effects[state.instrument][id] = value;
-      audio?.bus.setEffect(state.instrument, id, value);
-      renderInstrumentFx();
-      publishHarmony();
-    });
+    const specs = instrumentFxSpecs(state.instrument, lite);
+    if (specs.length) {
+      addGroup('This instrument', specs, state.effects[state.instrument], (id, value) => {
+        state.effects[state.instrument][id] = value;
+        audio?.bus.setEffect(state.instrument, id, value);
+        renderInstrumentFx();
+        publishHarmony();
+      });
+    }
     el.fxSliders.replaceChildren(...rows);
   }
 
@@ -1944,7 +1963,7 @@ export async function createHostView({ lite } = {}) {
     const partial = { engine };
     try {
       partial.bus = createInstrumentBus(engine.tone, lite);
-      partial.drumsFx = createDrumBus(engine.tone, lite);
+      partial.drumsFx = createDrumBus(engine.tone, lite, partial.bus?.reverbs?.room ?? null);
       partial.drums = new DrumMachine(engine, { lite });
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,
@@ -2494,13 +2513,18 @@ export async function createHostView({ lite } = {}) {
     el.socketStatus.textContent = 'socket: offline';
     el.socketStatus.dataset.state = 'error';
   });
+  socket.on('connect_error', () => {
+    // Still dialing — a cold backend can take a while to wake.
+    el.socketStatus.textContent = 'socket: connecting…';
+    el.socketStatus.dataset.state = 'pending';
+  });
 
   /* The header stamp is 168px for crispness at thumbnail size; the invite
      sheet re-renders the same link at 512px so a camera can scan it across
      the room. */
   async function paintJoinQr(url) {
     try {
-      await loadScript(QR_SRC);
+      await loadScript(QR_SRC, 15000);
       const QRCode = globalThis.QRCode;
       if (!QRCode) throw new Error('QR library failed to load');
       for (const [box, size] of [[el.qr, 168], [el.shareQr, 512]]) {
@@ -2667,7 +2691,31 @@ export async function createHostView({ lite } = {}) {
   setPeers();
   requestAnimationFrame(() => renderer.resize());
 
-  session = await socket.createSession();
+  /**
+   * A session that never opened leaves listeners, the pad, the drum grid and
+   * a half-open socket behind — tear them down so a retry starts clean and
+   * the orphan socket does not linger on the server.
+   */
+  function abortBoot() {
+    clearTimeout(drumPushTimer);
+    clearTimeout(loopPushTimer);
+    clearTimeout(harmonyPushTimer);
+    clearTimeout(rollPaintTimer);
+    clearTimeout(clearHold);
+    drumGrid.destroy();
+    hostPad.destroy();
+    renderer.destroy();
+    socket.disconnect();
+  }
+
+  el.socketStatus.textContent = 'socket: connecting…';
+  el.socketStatus.dataset.state = 'pending';
+  try {
+    session = await socket.createSession();
+  } catch (error) {
+    abortBoot();
+    throw error;
+  }
   joinUrl = await guestJoinUrl(session.code);
   paintInvite();
   publishHarmony();

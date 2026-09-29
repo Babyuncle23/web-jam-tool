@@ -74,6 +74,15 @@ io.on('connection', (socket) => {
   socket.data.code = null;
 
   socket.on('host:create', (_payload, ack) => {
+    // A retried or late-landing create must not orphan this socket's earlier
+    // room — close it first so guests there are told the session ended.
+    const previous = socket.data.code;
+    const stale = previous && sessions.get(previous);
+    if (stale?.hostId === socket.id) {
+      socket.to(room(previous)).emit('session:closed', { code: previous });
+      socket.leave(room(previous));
+      sessions.delete(previous);
+    }
     const code = createCode();
     sessions.set(code, { hostId: socket.id, controllers: new Set(), createdAt: Date.now() });
     socket.data.role = 'host';

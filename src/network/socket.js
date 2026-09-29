@@ -33,6 +33,10 @@ const SERVER_FULL_RETRY_MS = 2500;
 
 /** Continuous controls go out at most this often; the trailing value always lands. */
 const CONTROL_THROTTLE_MS = 50;
+/** One session request (create/join) may wait this long for a waking backend. */
+const REQUEST_BUDGET_MS = 75000;
+/** One emit+ack round-trip. Retried until the request budget runs out. */
+const ACK_TIMEOUT_MS = 8000;
 
 /**
  * Coalesce key for a control patch: the field names plus the nested target
@@ -159,16 +163,77 @@ export class JamSocket {
     this.#socket?.off(event, callback);
   }
 
-  #request(event, payload) {
+  /**
+   * Resolves once the socket is connected. Waits while the manager is still
+   * trying — a "server is full" refusal resets the clock because the gate's
+   * own retry is already running. Rejects when the budget is spent or the
+   * socket was closed deliberately, so a hung handshake cannot park a host
+   * or join request forever.
+   */
+  #whenConnected(ms) {
+    const socket = this.connect();
+    if (socket.connected) return Promise.resolve(socket);
     return new Promise((resolve, reject) => {
-      const socket = this.connect();
-      const timer = setTimeout(() => reject(new Error(`${event}: timed out`)), 8000);
-      socket.emit(event, payload, (response) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.off('connect', onConnect);
+        socket.off('connect_error', onError);
+        socket.off('disconnect', onLeave);
+        fn(value);
+      };
+      const fail = () => finish(reject, new Error('connect: timed out'));
+      let timer = setTimeout(fail, ms);
+      const onConnect = () => finish(resolve, socket);
+      const onError = (error) => {
+        if (isServerFullError(error)) {
+          clearTimeout(timer);
+          timer = setTimeout(fail, ms);
+        }
+      };
+      const onLeave = () => {
+        if (this.#socket !== socket || !socket.active) finish(reject, new Error('socket closed'));
+      };
+      socket.on('connect', onConnect);
+      socket.on('connect_error', onError);
+      socket.on('disconnect', onLeave);
+    });
+  }
+
+  /**
+   * Emit and wait for the ack. If the ack never lands, emit again — the
+   * server treats a repeat host:create as idempotent for the socket — and
+   * keep at it until the request budget runs out.
+   */
+  #emitAck(event, payload, ms) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${event}: timed out`)), ms);
+      this.#socket.emit(event, payload, (response) => {
         clearTimeout(timer);
         if (response?.ok) resolve(response);
         else reject(new Error(response?.error || `${event}: failed`));
       });
     });
+  }
+
+  #request(event, payload) {
+    return (async () => {
+      const budgetEnd = Date.now() + REQUEST_BUDGET_MS;
+      let lastError = new Error(`${event}: failed`);
+      while (Date.now() < budgetEnd) {
+        try {
+          const socket = await this.#whenConnected(Math.max(0, budgetEnd - Date.now()));
+          return await this.#emitAck(event, payload, Math.min(ACK_TIMEOUT_MS, Math.max(1000, budgetEnd - Date.now())));
+        } catch (error) {
+          lastError = error;
+          if (!this.#socket) break;
+          await new Promise((resolve) => setTimeout(resolve, 600));
+        }
+      }
+      throw lastError;
+    })();
   }
 
   /** Host side: opens a session and returns its join code. */

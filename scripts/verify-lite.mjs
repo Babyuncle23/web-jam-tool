@@ -64,24 +64,35 @@ try {
     pillHidden: document.getElementById('host-lite-pill')?.hidden,
     instFx: [...document.querySelectorAll('#instrument-fx .fx-chip')].map((b) => b.dataset.fx),
     drumFx: [...document.querySelectorAll('#drum-fx .fx-chip')].map((b) => b.dataset.fx),
+    qr: Boolean(document.querySelector('#host-qr img')),
+    code: document.getElementById('host-code')?.textContent,
   })`);
   console.log('full host:', JSON.stringify(fullUi));
   if (fullUi.pillHidden !== true) errors.push('full host: lite pill visible');
   if (fullUi.instFx.length !== 3) errors.push(`full host: expected 3 instrument chips, got ${fullUi.instFx.length}`);
   if (fullUi.drumFx.length !== 3) errors.push(`full host: expected 3 drum chips, got ${fullUi.drumFx.length}`);
+  if (!fullUi.qr) errors.push('full host: QR image was never painted');
+  if (!/^[A-Z2-9]{4}$/.test(fullUi.code || '')) errors.push(`full host: bad session code "${fullUi.code}"`);
   await full.close();
 
-  // Lite host: trimmed chips + visible pill.
+  // Lite host: the default-on effects keep running but the UI shows none of
+  // them — both chip rows render empty and stay hidden.
   const lite = await openHost(browser, `${BASE}/?role=host&lite=1`);
   const liteUi = await lite.evaluate(`({
     pillHidden: document.getElementById('host-lite-pill')?.hidden,
     instFx: [...document.querySelectorAll('#instrument-fx .fx-chip')].map((b) => b.dataset.fx),
     drumFx: [...document.querySelectorAll('#drum-fx .fx-chip')].map((b) => b.dataset.fx),
+    instFxHidden: document.getElementById('instrument-fx')?.hidden,
+    drumFxHidden: document.getElementById('drum-fx')?.hidden,
   })`);
   console.log('lite host:', JSON.stringify(liteUi));
   if (liteUi.pillHidden !== false) errors.push('lite host: lite pill hidden');
-  if (liteUi.instFx.length >= 3) errors.push(`lite host: expected <3 instrument chips, got ${liteUi.instFx.length}`);
-  if (liteUi.drumFx.length >= 3) errors.push(`lite host: expected <3 drum chips, got ${liteUi.drumFx.length}`);
+  if (liteUi.instFx.length !== 0 || liteUi.instFxHidden !== true) {
+    errors.push(`lite host: expected no instrument chips, got ${JSON.stringify(liteUi.instFx)}`);
+  }
+  if (liteUi.drumFx.length !== 0 || liteUi.drumFxHidden !== true) {
+    errors.push(`lite host: expected no drum chips, got ${JSON.stringify(liteUi.drumFx)}`);
+  }
   // Kalimba must lose the ScriptProcessor reverse entirely.
   const kalimbaFx = await hostFx(lite, 'kalimba');
   console.log('lite kalimba chips:', JSON.stringify(kalimbaFx));
@@ -102,7 +113,8 @@ try {
   if (liteAudio.openhat !== 'sample') errors.push('lite host: the 808 open-hat sample did not load');
   if (liteAudio.kick !== 'synth') errors.push('lite host: kick should stay on the synth voice');
 
-  // Guest on the lite host sees the trimmed chips too.
+  // Guest on the lite host sees no chips either — the default-on effects
+  // still run on the host, they are just not adjustable.
   const code = await lite.evaluate(`document.getElementById('host-code').textContent`);
   const guest = await browser.newPage();
   guest.on('pageerror', (e) => errors.push(`guest pageerror: ${e.message}`));
@@ -116,8 +128,8 @@ try {
     `[...document.querySelectorAll('#controller-fx .fx-chip')].map((b) => b.dataset.fx)`,
   );
   console.log('guest on lite host:', JSON.stringify(guestFx));
-  if (!guestFx.length || guestFx.length >= 3) {
-    errors.push(`guest on lite host: expected 1-2 chips, got ${JSON.stringify(guestFx)}`);
+  if (guestFx.length !== 0) {
+    errors.push(`guest on lite host: expected no chips, got ${JSON.stringify(guestFx)}`);
   }
   await guest.close();
   await lite.close();

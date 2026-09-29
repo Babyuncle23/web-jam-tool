@@ -50,8 +50,8 @@ export const LITE = {
   lowPolyphony: true, // smaller voice pools: pad 8, organ 8, kalimba 4, synth 6 (synth.js)
   singleFat: true, // fat oscillators drop to count 1 — no ×3 oscillators per note (pad, bass)
   noOversample: true, // distortions run at oversample 'none' instead of '2x'
-  reducedFx: true, // one or two effects per instrument; the kalimba ScriptProcessor reverse is gone
-  singleReverb: true, // one shared room convolver — no pad hall, no private drum room
+  reducedFx: true, // only the effects that are ON by default keep a node — the rest are never built
+  singleReverb: true, // one shared room convolver — no pad hall; the drum room feeds it as a send
   lowSampleRate: true, // AudioContext runs at 24 kHz — every audio-node cost roughly halves (engine.js)
   synthDrums: true, // TR-808 WAVs are never fetched or decoded — the synth voices play instead (drums.js)
   wideLookAhead: true, // context lookAhead 0.05 s instead of 0.02 — fewer scheduler wake-ups, more jitter headroom
@@ -61,42 +61,17 @@ export const LITE = {
   cheapViz: true, // pad renderer: desync canvas, baked note layer, flat finger dot, ~30 fps paint cap (touch-pad.js)
 };
 
-/** The chips a lite host still shows — everything else is not built. */
-export const INSTRUMENT_FX_LITE = {
-  pad: [
-    { id: 'reverb', label: 'Rev' },
-    { id: 'chorus', label: 'Chor' },
-  ],
-  bass: [
-    { id: 'drive', label: 'Dist' },
-    { id: 'cutoff', label: 'Cut' },
-  ],
-  organ: [
-    { id: 'chorus', label: 'Chor' },
-    { id: 'room', label: 'Room' },
-  ],
-  kalimba: [
-    { id: 'delay', label: 'Delay' },
-    { id: 'reverb', label: 'Rev' },
-  ],
-  synth: [
-    { id: 'delay', label: 'Delay' },
-    { id: 'room', label: 'Room' },
-  ],
-};
-
-export const DRUM_FX_LITE = [
-  { id: 'drive', label: 'Dist' },
-  { id: 'cutoff', label: 'Cut' },
-];
-
-/** Chip set for an instrument on this host — lite swaps in the trimmed table. */
+/**
+ * Chip set for an instrument on this host. Lite keeps every effect that is
+ * on by default — the sounds are identical — but it never builds the rest
+ * and shows no FX controls for them, so both lists are empty there.
+ */
 export function instrumentFxSpecs(instrument, lite) {
-  return (lite ? INSTRUMENT_FX_LITE : INSTRUMENT_FX)[instrument] ?? [];
+  return lite ? [] : INSTRUMENT_FX[instrument] ?? [];
 }
 
 export function drumFxSpecs(lite) {
-  return lite ? DRUM_FX_LITE : DRUM_FX;
+  return lite ? [] : DRUM_FX;
 }
 
 /** Chip labels stay short; the detail sheet has room to spell the name out. */
@@ -445,9 +420,9 @@ export const FX_COLORS = {
 /**
  * One effect rig per instrument plus two shared send reverbs, built once.
  * Nothing here is shared with the drum machine or constructed per touch.
- * `lite` is the LITE flags object (or null): reducedFx skips the dropped
- * per-instrument nodes, singleReverb builds only the shared room, and
- * noOversample strips the 2x stage from the bass drive.
+ * `lite` is the LITE flags object (or null): reducedFx builds only the
+ * effects that are on by default, singleReverb builds only the shared room,
+ * and noOversample strips the 2x stage from the bass drive.
  */
 export function createInstrumentBus(tone, lite) {
   const liteFx = Boolean(lite?.reducedFx);
@@ -513,33 +488,36 @@ export function createInstrumentBus(tone, lite) {
   hallReverb?.connect(mix);
 
   const padIn = keep(new tone.Gain(1));
-  const padDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.28, wet: 0 }));
+  const padDelay = keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.28, wet: 0 }));
   const padChorus = keep(new tone.Chorus({ frequency: 0.35, delayTime: 3.2, depth: 0.45, wet: 0 }));
   if (typeof padChorus.start === 'function') padChorus.start();
-  chain('pad', padIn, ...[padDelay, padChorus].filter(Boolean), makeUp('pad'));
+  chain('pad', padIn, padDelay, padChorus, makeUp('pad'));
 
   const bassIn = keep(new tone.Gain(1));
-  const bassDrive = keep(new tone.Distortion({ distortion: 0.4, wet: 0, oversample }));
+  /** Null in lite: distortion is off by default, so the node is never built. */
+  const bassDrive = liteFx ? null : keep(new tone.Distortion({ distortion: 0.4, wet: 0, oversample }));
   const bassFilter = keep(new tone.Filter({ type: 'lowpass', frequency: 750, Q: 0.5, rolloff: -24 }));
   const bassSlap = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '16n', feedback: 0.18, wet: 0 }));
-  chain('bass', bassIn, bassDrive, bassFilter, ...[bassSlap].filter(Boolean), makeUp('bass'));
+  chain('bass', bassIn, ...[bassDrive, bassFilter, bassSlap].filter(Boolean), makeUp('bass'));
 
   const organIn = keep(new tone.Gain(1));
-  const organChorus = keep(new tone.Chorus({ frequency: 1.6, delayTime: 3.4, depth: 0.65, wet: 0 }));
-  if (typeof organChorus.start === 'function') organChorus.start();
+  /** Null in lite: chorus is off by default — the organ keeps only its room send. */
+  const organChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 1.6, delayTime: 3.4, depth: 0.65, wet: 0 }));
+  if (typeof organChorus?.start === 'function') organChorus.start();
   const organVibrato = liteFx ? null : keep(new tone.Vibrato({ frequency: 5.2, depth: 0.18, wet: 0 }));
-  chain('organ', organIn, organChorus, ...[organVibrato].filter(Boolean), makeUp('organ'));
+  chain('organ', organIn, ...[organChorus, organVibrato].filter(Boolean), makeUp('organ'));
 
   const kalimbaIn = keep(new tone.Gain(1));
-  const kalimbaDelay = keep(new tone.FeedbackDelay({ delayTime: 0.16, feedback: 0.22, wet: 0 }));
-  /** Null in lite: the ScriptProcessor reverse burns an audio callback on
-   * every buffer even at wet 0, so the node is skipped entirely. */
+  /** Null in lite: the delay is off by default, and the ScriptProcessor
+   * reverse burns an audio callback on every buffer even at wet 0 — both
+   * nodes are skipped entirely. */
+  const kalimbaDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: 0.16, feedback: 0.22, wet: 0 }));
   let kalimbaReverse = null;
   const kalimbaMakeup = makeUp('kalimba');
-  kalimbaIn.connect(kalimbaDelay);
   if (liteFx) {
-    kalimbaDelay.connect(kalimbaMakeup);
+    kalimbaIn.connect(kalimbaMakeup);
   } else {
+    kalimbaIn.connect(kalimbaDelay);
     kalimbaReverse = createTailReverse(tone);
     nodes.push(kalimbaReverse);
     kalimbaDelay.connect(kalimbaReverse.input);
@@ -588,6 +566,7 @@ export function createInstrumentBus(tone, lite) {
     },
     bass: {
       drive: (amount) => {
+        if (!bassDrive) return;
         bassDrive.distortion = blend([0, 0.4, 0.72], amount);
         const wet = blend([0, 0.5, 0.82], amount);
         wetNow.bass.drive = wet;
@@ -605,6 +584,7 @@ export function createInstrumentBus(tone, lite) {
     },
     organ: {
       chorus: (amount) => {
+        if (!organChorus) return;
         const wet = blend([0, 0.4, 0.7], amount);
         wetNow.organ.chorus = wet;
         organChorus.wet.rampTo(wet, 0.06);
@@ -624,6 +604,7 @@ export function createInstrumentBus(tone, lite) {
     },
     kalimba: {
       delay: (amount) => {
+        if (!kalimbaDelay) return;
         const wet = blend([0, 0.28, 0.5], amount);
         wetNow.kalimba.delay = wet;
         kalimbaDelay.wet.rampTo(wet, 0.05);
@@ -671,6 +652,8 @@ export function createInstrumentBus(tone, lite) {
   return {
     mix,
     inputs,
+    /** Shared convolvers — the lite drum bus sends its room amount into `room`. */
+    reverbs: { room: roomReverb, hall: hallReverb },
     ready: Promise.all(readiness),
     setEffect(instrument, id, value) {
       const amount = clampFx(value);
@@ -692,24 +675,35 @@ export function createInstrumentBus(tone, lite) {
   };
 }
 
-/** Drum-only distortion, cutoff and a small room. Not wired to the synth. */
-export function createDrumBus(tone, lite) {
+/**
+ * Drum-only distortion, cutoff and a small room. Not wired to the synth.
+ * Lite drops the nodes that are off by default — cutoff — and replaces the
+ * private room convolver with a send into the instrument bus's shared
+ * `sharedRoom`, so the default-on room still sounds without a second IR.
+ */
+export function createDrumBus(tone, lite, sharedRoom = null) {
   const input = new tone.Gain(1);
   const output = new tone.Gain(1);
   const audible = new tone.Gain(1);
   const makeup = new tone.Gain(1);
   const drive = new tone.Distortion({ distortion: 0.35, wet: 0, oversample: lite?.noOversample ? 'none' : '2x' });
-  const filter = new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
-  /** Null in lite — one shared room convolver lives on the instrument bus. */
+  const filter = lite?.reducedFx ? null : new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
   const room = lite?.singleReverb ? null : new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
+  const roomSend = lite?.singleReverb && sharedRoom ? new tone.Gain(0) : null;
   const wetNow = { drive: 0, room: 0 };
   const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow), 0.05);
   input.connect(drive);
-  drive.connect(filter);
-  filter.connect(room || makeup);
+  drive.connect(filter || makeup);
+  filter?.connect(room || makeup);
   room?.connect(makeup);
   makeup.connect(audible);
   audible.connect(output);
+  // The send taps post-audible, like the instrument sends: a muted kit
+  // starves its own tail.
+  if (roomSend) {
+    audible.connect(roomSend);
+    roomSend.connect(sharedRoom);
+  }
   const apply = {
     drive: (amount) => {
       drive.distortion = blend([0, 0.35, 0.7], amount);
@@ -718,10 +712,19 @@ export function createDrumBus(tone, lite) {
       drive.wet.rampTo(wet, 0.05);
       punch();
     },
-    cutoff: (amount) => filter.frequency.rampTo(blend([14000, 4200, 900], amount), 0.05),
+    cutoff: (amount) => {
+      if (!filter) return;
+      filter.frequency.rampTo(blend([14000, 4200, 900], amount), 0.05);
+    },
     room: (amount) => {
-      if (!room) return;
       const wet = blend([0, 0.16, 0.34], amount);
+      // Send mode: the convolver lives on the instrument bus — the amount is
+      // a gain into it, not a series wet, and dry is never ducked.
+      if (roomSend) {
+        roomSend.gain.rampTo(sendLevel(wet, 'room'), 0.05);
+        return;
+      }
+      if (!room) return;
       wetNow.room = wet;
       room.wet.rampTo(wet, 0.05);
       punch();
@@ -741,8 +744,9 @@ export function createDrumBus(tone, lite) {
     },
     dispose() {
       drive.dispose();
-      filter.dispose();
+      filter?.dispose();
       room?.dispose();
+      roomSend?.dispose();
       makeup.dispose();
       audible.dispose();
       input.dispose();

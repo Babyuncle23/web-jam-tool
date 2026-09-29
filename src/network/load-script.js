@@ -6,8 +6,12 @@
 
 const requests = new Map();
 
-/** Resolves once the script at `src` has loaded and executed. */
-export function loadScript(src) {
+/**
+ * Resolves once the script at `src` has loaded and executed. With
+ * `timeoutMs`, a stalled download is evicted and rejected so the caller can
+ * show a retryable error instead of spinning forever.
+ */
+export function loadScript(src, timeoutMs = 0) {
   if (!requests.has(src)) {
     requests.set(
       src,
@@ -15,11 +19,15 @@ export function loadScript(src) {
         const script = document.createElement('script');
         script.src = src;
         script.async = true;
-        script.onload = () => resolve();
-        script.onerror = () => {
+        let timer = 0;
+        const fail = (reason) => {
           requests.delete(src);
-          reject(new Error(`Script failed to load: ${src}`));
+          script.remove();
+          reject(new Error(`${reason}: ${src}`));
         };
+        if (timeoutMs > 0) timer = setTimeout(() => fail('Script timed out'), timeoutMs);
+        script.onload = () => { clearTimeout(timer); resolve(); };
+        script.onerror = () => { clearTimeout(timer); fail('Script failed to load'); };
         document.head.append(script);
       }),
     );
