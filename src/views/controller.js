@@ -96,7 +96,7 @@ export async function createControllerView({ code, name } = {}) {
   };
 
   const state = {
-    mode: 'single',
+    mode: 'chords',
     root: 'C',
     scale: 'major',
     instrument: 'pad',
@@ -1074,6 +1074,8 @@ export async function createControllerView({ code, name } = {}) {
     fxFingers.clear();
     // releaseAll() ends a held SOLO — the up edge still reaches the host.
     samplerUi.releaseAll();
+    // The sampler owns the pad — a take still open on the notes pad ends here.
+    if (mode === 'sampler' && state.recording) setRecording(false);
     if (state.padMode === 'sampler') state.samplerEdit = '';
     state.padMode = mode;
     syncChrome();
@@ -1367,6 +1369,9 @@ export async function createControllerView({ code, name } = {}) {
 
   /** Same instrument switch as the main chips, plus the open roll follows. */
   function pickGuestInstrument(instrument) {
+    // An open take belonged to the instrument it was played on — switching
+    // ends it rather than writing the new instrument into the same pass.
+    if (state.recording) setRecording(false);
     // Picking an instrument is a play intent: back to the notes pad, single
     // notes — even if chords or the sampler/FX pad were up before.
     if (state.padMode !== 'notes') setPadMode('notes');

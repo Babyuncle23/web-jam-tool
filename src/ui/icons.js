@@ -60,7 +60,7 @@ const PATHS = {
     'M1.4 11.2C3.2 6.4 5.2 6.2 7.2 11.2 9.2 16.2 11.2 16.2 13.2 11.2 15.2 6.2 17.2 6.2 19.2 11.2 20.4 14.2 21.4 15.2 22.8 14.2L22.6 17.4C20.4 19.2 18.6 17.6 17.2 14.4 15.2 9.4 13.2 9.4 11.2 14.4 9.2 19.4 7.2 19.4 5.2 14.4 4 11.6 3 12.6 1.4 14.2Z',
   room: 'M3 4.2h18v15.6H3zM8 8.4h8v7.2H8z',
   reverse: 'M16.6 3.8 4.8 12l11.8 8.2zM17.4 9.4h4.8v5.2h-4.8z',
-  loop: 'M12 2.2a9.8 9.8 0 1 1 0 19.6 9.8 9.8 0 1 1 0-19.6zM12 6.6a5.4 5.4 0 1 1 0 10.8 5.4 5.4 0 1 1 0-10.8zM12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 1 1 0-5z',
+  loop: 'M12 2.2a9.8 9.8 0 1 1 0 19.6 9.8 9.8 0 1 1 0-19.6zM12 6.6a5.4 5.4 0 1 1 0 10.8 5.4 5.4 0 1 1 0-10.8z',
   erase:
     'M8.2 1.5h7.6v2.2H8.2zM3.6 4.2h16.8v2.4H3.6zM6.4 7.4h11.2l-.9 13.2H7.3zM9.2 10.2h1.8v7H9.2zM13 10.2h1.8v7H13z',
   xmark: 'M5.2 3.6 12 10.4l6.8-6.8 1.8 1.8L13.8 12l6.8 6.8-1.8 1.8L12 13.8l-6.8 6.8-1.8-1.8L10.2 12 3.4 5.4z',
@@ -89,6 +89,9 @@ const PATHS = {
     'M8.9 8.8l13.1 11.3c.7.6.3 1.6-.6 1.5l-11.3-9.6z' +
     'M8.9 15.2L22 3.9c.7-.6.3-1.6-.6-1.5l-11.3 9.6z',
 };
+
+/** The loop icon's center pip — its own node so .is-on can paint it red. */
+const LOOP_DOT = 'M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 1 1 0-5z';
 
 const EVENODD = new Set(['kick', 'cowbell', 'bass', 'room', 'loop', 'erase', 'scissors']);
 const FILLED = new Set(Object.keys(PATHS));
@@ -141,6 +144,13 @@ export function chipIcon(id) {
     path.setAttribute('stroke-linejoin', 'round');
   }
   svg.append(path);
+  if (id === 'loop') {
+    const dot = svgEl('path');
+    dot.setAttribute('d', LOOP_DOT);
+    dot.setAttribute('fill', 'currentColor');
+    dot.classList.add('rec-dot');
+    svg.append(dot);
+  }
   return svg;
 }
 

@@ -331,6 +331,11 @@ input[type='range'] {
   color: var(--ink);
 }
 
+/* The Rec button's pip glows red only while a take is open. */
+.btn.is-on .rec-dot {
+  fill: var(--danger);
+}
+
 .btn--ghost {
   background: transparent;
   border-color: var(--line);

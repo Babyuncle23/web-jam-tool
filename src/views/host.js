@@ -202,7 +202,7 @@ export async function createHostView({ lite } = {}) {
     grid: Object.fromEntries(
       TRACKS.map(({ id }) => [id, Array.from({ length: STEPS }, () => ({ on: false, division: 1 }))]),
     ),
-    mode: 'single',
+    mode: 'chords',
     root: 'C',
     scale: 'major',
     instrument: 'pad',
@@ -1253,6 +1253,8 @@ export async function createHostView({ lite } = {}) {
     hostPad.releaseHeld();
     fxFingers.clear();
     samplerUi.releaseAll();
+    // The sampler owns the pad — a take still open on the notes pad ends here.
+    if (mode === 'sampler' && audio?.loops.get('host')?.isRecording) setHostRecording(false);
     // A sounding one-shot rings on past the mode flip — only the held
     // gestures (SOLO, a pressed pad) release.
     if (leaving === 'sampler') state.samplerEdit = '';
@@ -1520,6 +1522,9 @@ export async function createHostView({ lite } = {}) {
   }
 
   function pickInstrument(instrument) {
+    // An open take belonged to the instrument it was played on — switching
+    // ends it rather than writing the new instrument into the same pass.
+    if (audio?.loops.get('host')?.isRecording) setHostRecording(false);
     // Picking an instrument is a play intent: back to the notes pad, single
     // notes — even if chords or the sampler/FX pad were up before.
     if (state.padMode !== 'notes') setPadMode('notes');
