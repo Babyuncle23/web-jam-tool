@@ -347,6 +347,11 @@
             <input id="export-repeats" type="number" min="1" step="1" value="1" inputmode="numeric" />
           </label>
           <p class="export-hint">The loop, played this many times. MIDI is the layout. WAV is an offline mix.</p>
+          <label class="adv-check" for="export-samples">
+            <input id="export-samples" type="checkbox" checked />
+            <span>Keep meme samples out of WAV</span>
+          </label>
+          <p class="export-hint export-hint--warn">Uncheck to bake sampler pads into the WAV — that audio is not cleared for commercial use.</p>
           <p id="export-error" class="splash__error" role="alert" hidden></p>
           <button id="export-midi" class="btn btn--ghost btn--xl" type="button">MIDI</button>
           <button id="export-wav" class="btn btn--ghost btn--xl" type="button">WAV</button>

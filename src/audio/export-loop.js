@@ -1,7 +1,9 @@
 /**
  * Loop export. MIDI is the layout. WAV is an offline mix of the same
  * instrument, drum, and master chain, including the limiter. Not a recording
- * of the live speakers.
+ * of the live speakers. Sampler pads render only when `spec.includeSamples`
+ * is set — the meme sounds are not cleared for commercial use, so the
+ * default WAV is built without them (no PadSampler is even created).
  */
 
 import { DrumMachine, TRACKS } from './drums.js';
@@ -226,8 +228,8 @@ export async function renderLoopWav(tone, spec) {
     const engine = { tone };
     const bus = createInstrumentBus(tone);
     const drumsFx = createDrumBus(tone);
-    const sampler = new PadSampler(engine, { params: spec.sampleParams });
-    await Promise.all([bus.ready, drumsFx.ready, sampler.ready]);
+    const sampler = spec.includeSamples ? new PadSampler(engine, { params: spec.sampleParams }) : null;
+    await Promise.all([bus.ready, drumsFx.ready, sampler?.ready]);
     const synth = new TouchSynth(engine, bus, { root: spec.root, scale: spec.scale });
     for (const [id, octave] of Object.entries(spec.octaves || {})) synth.setInstrumentOctave(id, octave);
     const drums = new DrumMachine(engine);
@@ -236,7 +238,7 @@ export async function renderLoopWav(tone, spec) {
     drums.output.connect(drumsFx.input);
     drumsFx.output.connect(master);
     bus.mix.connect(master);
-    sampler.output.connect(master);
+    sampler?.output.connect(master);
     for (const [instrument, levels] of Object.entries(spec.effects || {})) {
       if (instrument === 'drums') {
         for (const [id, level] of Object.entries(levels)) drumsFx.setEffect(id, level);

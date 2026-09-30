@@ -74,7 +74,7 @@ const hostMode = await host.evaluate(() => ({
   loaded: globalThis.__jam.audio.sampler.loaded,
 }));
 check('host: sampler mode shows grid', hostMode.chip === 'sampler' && hostMode.gridVisible, JSON.stringify(hostMode));
-check('host: 12 cells, 3 sample pads, Tune visible', hostMode.pads === 12 && hostMode.samples === 3 && hostMode.tuneBtn);
+check('host: 12 cells, 9 sample pads, Tune visible', hostMode.pads === 12 && hostMode.samples === 9 && hostMode.tuneBtn);
 check('host: buffers loaded', hostMode.loaded);
 
 const padBox = async (page, sel) => (await page.$(sel)).boundingBox();
@@ -238,7 +238,7 @@ const rollState = await host.evaluate(() => ({
   sharpRows: document.querySelectorAll('#host-note-tape .roll__row.is-blocked').length,
 }));
 check('host: roll shows Samples view', /samples/i.test(rollState.name || ''), rollState.name);
-check('host: lane rows for each bank pad', rollState.laneKeys === 3, `lanes=${rollState.laneKeys}`);
+check('host: lane rows for each bank pad', rollState.laneKeys === 9, `lanes=${rollState.laneKeys}`);
 check('host: recorded hits on lanes', rollState.strips.filter((s) => s === 'sampler').length === 2, JSON.stringify(rollState.strips));
 check('host: no pitch grid rows', rollState.sharpRows === 0);
 await host.click('#host-notes-close');
@@ -259,7 +259,7 @@ const eraseUi = await host.evaluate(() => ({
   scratchCross: getComputedStyle(document.querySelector('#host-sampler .sampler-pad[data-sample="scratch105"] .sampler-pad__x')).display,
   recOff: document.getElementById('btn-loop')?.classList.contains('is-off'),
 }));
-check('host: Edit click arms tune+erase layer', eraseUi.editing === true && eraseUi.btnOn === true && eraseUi.crosses === 3 && eraseUi.withHits === 2 && eraseUi.crossVisible && eraseUi.scratchCross === 'none' && eraseUi.recOff === true, JSON.stringify(eraseUi));
+check('host: Edit click arms tune+erase layer', eraseUi.editing === true && eraseUi.btnOn === true && eraseUi.crosses === 9 && eraseUi.withHits === 2 && eraseUi.crossVisible && eraseUi.scratchCross === 'none' && eraseUi.recOff === true, JSON.stringify(eraseUi));
 await host.click('#host-sampler .sampler-pad[data-sample="brah"] .sampler-pad__x');
 await new Promise((r) => setTimeout(r, 250));
 const afterErase = await host.evaluate(() => ({
@@ -394,7 +394,7 @@ const guestMode = await guest.evaluate(() => ({
   gridVisible: !document.getElementById('controller-sampler')?.hidden,
   pads: document.querySelectorAll('#controller-sampler .sampler-pad--sample').length,
 }));
-check('guest: sampler mode shows grid', guestMode.chip === 'sampler' && guestMode.gridVisible && guestMode.pads === 3, JSON.stringify(guestMode));
+check('guest: sampler mode shows grid', guestMode.chip === 'sampler' && guestMode.gridVisible && guestMode.pads === 9, JSON.stringify(guestMode));
 
 await guest.click('#controller-sampler .sampler-pad[data-sample="fah"]');
 await new Promise((r) => setTimeout(r, 250));

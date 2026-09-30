@@ -1983,6 +1983,24 @@ input[type='range'] {
   display: none;
 }
 
+/* License strip — the pad's own hint owns the top; this sits in the
+   12px bottom padding of the grid, under the last pad row. */
+.sampler-note {
+  position: absolute;
+  bottom: 1px;
+  left: 12px;
+  right: 12px;
+  margin: 0;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--danger);
+  pointer-events: none;
+}
+
 .sampler-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

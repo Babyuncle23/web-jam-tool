@@ -52,7 +52,12 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
     '<div class="sampler-hud__dot" hidden></div>' +
     '<p class="sampler-hud__label">—</p>' +
     '<p class="sampler-hud__value">—</p>';
-  container.append(grid, hud);
+  // Legal strip over the grid's reserved headroom — the meme sources are
+  // not cleared for commercial use (see README § «Семплер: откуда сэмплы»).
+  const notice = document.createElement('p');
+  notice.className = 'sampler-note';
+  notice.textContent = 'meme sounds · non-commercial use only';
+  container.append(grid, hud, notice);
 
   const pads = [];
   const flashTimers = new Map();

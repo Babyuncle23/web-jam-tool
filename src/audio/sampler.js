@@ -4,7 +4,8 @@
  * Every sound pad has a hard-coded mode:
  *   'oneshot' — plays the buffer to its end; a re-trigger chokes that pad's
  *               own previous voice. Pads never cut each other.
- *   'gate'    — plays while held; release() fades it out.
+ *   'gate'    — plays while held; release() fades it out. `spec.release`
+ *               (seconds) overrides the default 60 ms fade-out tail.
  *
  * A pad may carry `bpm` — the source tempo stamped on the file. For those
  * pads `stretch` is LOCKED to the session tempo (`stretch = spec.bpm /
@@ -19,15 +20,27 @@
  * Guests only send {sampleHit}/{sampleSolo}/{sampleTune} controls — all the
  * nodes below live on the host.
  *
- * Scratch source is a Pixabay download (Pixabay Content License):
- *   scratch-105.mp3 — "Scratch 105 bpm" by freesound_community.
+ * Sources (meme sounds are user-provided downloads, documented in README):
+ *   scratch-105.mp3 — "Scratch 105 bpm" by freesound_community, Pixabay Content License.
+ *   okay-lets-go.mp3 — "Okay, let's go" ride-operator kid, Man bijt hond (TROS, NL), viral 2020+.
+ *   vine-boom.mp3 — Vine app's stock dramatic bass hit, ~2014.
+ *   anime-wow.mp3 — "Wow!" voice from Konami's Parodius! (1990), stock anime SFX.
+ *   why-are-you-running.mp3 — "Why are you running?" from Nollywood's Pretty Liars 1 (2014).
+ *   omg-hell-nah.mp3 — "Oh my god bro, oh hell nah man" TikTok reaction (osofaneto, ~2019).
+ *   im-stronger.mp3 — "I'm stronger, I'm smarter" viral gym/motivation meme audio.
  */
 
 export const SAMPLE_BANK = [
-  // gain — extra trim on top of the peak normalization: brah sits lower.
-  { id: 'brah', label: 'BRAH', src: './samples/brah.mp3', mode: 'oneshot', gain: 0.6 },
+  // gain — extra trim on top of the peak normalization: bruh sits lower.
+  { id: 'brah', label: 'BRUH', src: './samples/bruh.mp3', mode: 'oneshot', gain: 0.6 },
   { id: 'fah', label: 'FAH', src: './samples/fah.mp3', mode: 'oneshot', gain: 0.8 },
   { id: 'scratch105', label: 'SCR 105', src: './samples/scratch-105.mp3', mode: 'gate', bpm: 105 },
+  { id: 'okayletsgo', label: 'LETS GO', src: './samples/okay-lets-go.mp3', mode: 'oneshot' },
+  { id: 'vineboom', label: 'BOOM', src: './samples/vine-boom.mp3', mode: 'oneshot' },
+  { id: 'animewow', label: 'WOW', src: './samples/anime-wow.mp3', mode: 'gate', release: 0.3 },
+  { id: 'whyrun', label: 'WHY RUN', src: './samples/why-are-you-running.mp3', mode: 'gate' },
+  { id: 'omg', label: 'OMG', src: './samples/omg-hell-nah.mp3', mode: 'gate' },
+  { id: 'stronger', label: 'STRONG', src: './samples/im-stronger.mp3', mode: 'gate' },
 ];
 
 export const SOLO_ACTION = 'solo';
@@ -38,13 +51,13 @@ export const SOLO_ACTION = 'solo';
  * every other voice muted while a finger is on it.
  */
 export const SAMPLER_PAD_CELLS = [
-  {},
-  {},
-  {},
-  {},
+  { sample: 'okayletsgo' },
+  { sample: 'vineboom' },
+  { sample: 'animewow' },
+  { sample: 'whyrun' },
   { sample: 'scratch105' },
-  {},
-  {},
+  { sample: 'omg' },
+  { sample: 'stronger' },
   {},
   { sample: 'brah' },
   { sample: 'fah' },
@@ -412,11 +425,12 @@ export class PadSampler {
 
   #stopSlot(slot, time) {
     const when = Math.max(0, time);
+    const release = slot.pad.spec.release ?? GATE_RELEASE_SECONDS;
     if (slot.sounding) {
       const gain = slot.gain.gain;
       gain.cancelScheduledValues(when);
       gain.setValueAtTime(gain.value, when);
-      gain.linearRampToValueAtTime(0, when + GATE_RELEASE_SECONDS);
+      gain.linearRampToValueAtTime(0, when + release);
     }
     slot.sounding = false;
     if (slot.voiceId) {
@@ -424,7 +438,7 @@ export class PadSampler {
       slot.voiceId = null;
     }
     try {
-      slot.player.stop(when + GATE_RELEASE_SECONDS);
+      slot.player.stop(when + release);
     } catch {
       // Already idle.
     }

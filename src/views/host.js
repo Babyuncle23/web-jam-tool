@@ -173,6 +173,7 @@ export async function createHostView({ lite } = {}) {
     exportRepeats: document.getElementById('export-repeats'),
     exportMidi: document.getElementById('export-midi'),
     exportWav: document.getElementById('export-wav'),
+    exportSamples: document.getElementById('export-samples'),
     exportClose: document.getElementById('export-close'),
     exportError: document.getElementById('export-error'),
     drumsOpen: document.getElementById('btn-drums'),
@@ -2432,7 +2433,11 @@ export async function createHostView({ lite } = {}) {
     const previous = el.exportWav.textContent;
     el.exportWav.textContent = 'Rendering…';
     try {
-      const wav = await renderLoopWav(globalThis.Tone, { ...exportSnapshot(), repeats });
+      const wav = await renderLoopWav(globalThis.Tone, {
+        ...exportSnapshot(),
+        repeats,
+        includeSamples: el.exportSamples ? !el.exportSamples.checked : false,
+      });
       saveBlob(wav, 'jam-loop.wav', 'audio/wav');
     } catch (error) {
       showExportError(error?.message || 'Could not render the WAV.');
