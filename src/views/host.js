@@ -26,7 +26,17 @@ import {
   padNoteMarks,
   pitchChoice,
   resolveGesture,
+  storedInstrument,
+  SAMPLER_INSTRUMENT,
 } from '../audio/synth.js';
+import {
+  SAMPLE_BANK,
+  PadSampler,
+  clampSamplePitch,
+  clampSampleStretch,
+  defaultSampleParams,
+  sampleLabel,
+} from '../audio/sampler.js';
 import {
   FX_COLORS,
   INSTRUMENT_FX,
@@ -48,6 +58,7 @@ import {
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
 import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/piano-roll.js';
+import { createSampleGrid } from '../ui/sample-grid.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -182,6 +193,8 @@ export async function createHostView({ lite } = {}) {
     padMode: document.getElementById('host-pad-mode'),
     playBar: document.getElementById('play-bar'),
     modeRow: document.getElementById('mode-row'),
+    sampler: document.getElementById('host-sampler'),
+    sampleEdit: document.getElementById('host-sample-edit'),
   };
 
   const state = {
@@ -201,6 +214,12 @@ export async function createHostView({ lite } = {}) {
     solo: { pad: false, bass: false, organ: false, kalimba: false, synth: false, drums: false },
     masterFx: { division: '16n', cutoff: 0, hipass: 0, grit: 0, wah: 0, hold: false, volume: DEFAULT_MASTER_GAIN },
     padMode: 'notes',
+    // 'sampler' parks the roll on the lane view; anything else follows the
+    // pad instrument.
+    rollView: null,
+    /** '' | 'edit' — the pad grid's tune/erase layer while in SMP mode. */
+    samplerEdit: '',
+    sampleParams: defaultSampleParams(),
     activeTouches: new Set(),
     audioReady: false,
     audioError: null,
@@ -282,6 +301,10 @@ export async function createHostView({ lite } = {}) {
         hold: Boolean(state.masterFx.hold),
         volume: state.masterFx.volume,
       },
+      sampler: {
+        params: state.sampleParams,
+        solo: soloHolders.size > 0,
+      },
     });
   }
 
@@ -314,21 +337,39 @@ export async function createHostView({ lite } = {}) {
   function syncModeChrome() {
     const bass = state.instrument === 'bass';
     const fxMode = state.padMode === 'fx';
-    const chords = !fxMode && state.mode === 'chords' && !bass;
+    const samplerMode = state.padMode === 'sampler';
+    const chords = !fxMode && !samplerMode && state.mode === 'chords' && !bass;
     el.zones.hidden = !chords;
     renderer.setMode(fxMode ? 'fx' : chords ? 'chords' : 'single');
     if (!chords) paintZone(null);
     syncPadMarks();
-    // FX owns the pad: the note-mode row and the loop buttons it rides with
-    // step aside. Bass never plays chords, so its mode chips hide too.
+    // FX and the sampler own the pad: the note-mode row and the loop buttons
+    // they ride with step aside. Bass never plays chords, so its mode chips
+    // hide too.
     el.playBar.hidden = fxMode;
-    if (el.modeRow) el.modeRow.hidden = bass;
+    if (el.sampler) el.sampler.hidden = !samplerMode;
+    samplerUi.setEditMode(state.samplerEdit);
+    if (el.sampleEdit) {
+      el.sampleEdit.hidden = !samplerMode;
+      el.sampleEdit.classList.toggle('is-on', Boolean(state.samplerEdit));
+      el.sampleEdit.setAttribute('aria-pressed', state.samplerEdit ? 'true' : 'false');
+      paintSampleEditButton(el.sampleEdit);
+    }
+    // In tune/erase mode the pads never reach the recorder — dim Rec so a
+    // dead-looking tap doesn't read as a broken record button.
+    el.loop?.classList.toggle('is-off', Boolean(state.samplerEdit));
+    el.pad.classList.toggle('is-sampler', samplerMode);
+    if (el.modeRow) el.modeRow.hidden = bass || samplerMode;
     selectInRow(el.modeRow, 'mode', bass ? 'single' : state.mode, 'is-on');
     el.padMode?.querySelectorAll('[data-padmode]').forEach((chip) => {
       chip.classList.toggle('is-on', chip.dataset.padmode === state.padMode);
     });
     if (!el.hint) return;
-    if (fxMode) {
+    if (samplerMode) {
+      el.hint.textContent = state.samplerEdit
+        ? 'Drag pads — ↕ pitch, → stretch / ← squeeze. Tap ✕ to wipe a sample’s hits. Double-tap resets. Rec is off.'
+        : 'Tap pads to play. SOLO mutes everything else while held.';
+    } else if (fxMode) {
       el.hint.textContent = '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.';
     } else if (bass) {
       el.hint.textContent = 'One scale step. Hold and slide.';
@@ -895,9 +936,12 @@ export async function createHostView({ lite } = {}) {
 
   function applyMix() {
     if (!audio) return;
-    const anySolo = MIX_VOICES.some((id) => state.solo[id]);
+    // A held sampler SOLO overrides the whole mix until the last holder lets
+    // go — the stored mute/solo flags themselves stay untouched.
+    const sampleSolo = soloHolders.size > 0;
+    const anySolo = !sampleSolo && MIX_VOICES.some((id) => state.solo[id]);
     for (const id of MIX_VOICES) {
-      const heard = !state.mute[id] && (!anySolo || state.solo[id]);
+      const heard = !sampleSolo && !state.mute[id] && (!anySolo || state.solo[id]);
       if (id === 'drums') audio.drumsFx.setAudible(heard);
       else audio.bus.setAudible(id, heard);
     }
@@ -1200,10 +1244,15 @@ export async function createHostView({ lite } = {}) {
    * an FX hold releases the stutter — nothing rings across the flip.
    */
   function setPadMode(next) {
-    const mode = next === 'fx' ? 'fx' : 'notes';
+    const mode = ['fx', 'sampler'].includes(next) ? next : 'notes';
     if (mode === state.padMode) return;
+    const leaving = state.padMode;
     hostPad.releaseHeld();
     fxFingers.clear();
+    samplerUi.releaseAll();
+    // A sounding one-shot rings on past the mode flip — only the held
+    // gestures (SOLO, a pressed pad) release.
+    if (leaving === 'sampler') state.samplerEdit = '';
     state.padMode = mode;
     syncModeChrome();
   }
@@ -1211,6 +1260,184 @@ export async function createHostView({ lite } = {}) {
   el.padMode?.addEventListener('click', (event) => {
     const chip = event.target.closest('[data-padmode]');
     if (chip) setPadMode(chip.dataset.padmode);
+  });
+  /** One button, both tools: ✕ wipes a pad's hits, ✎ drags pitch/stretch. */
+  function paintSampleEditButton(button) {
+    button.classList.add('has-icon', 'sample-edit-btn');
+    const slash = document.createElement('span');
+    slash.className = 'icon-sep';
+    slash.textContent = '/';
+    const text = document.createElement('span');
+    text.className = 'chip-label';
+    text.textContent = 'Edit';
+    button.replaceChildren(chipIcon('xmark'), slash, chipIcon('edit'), text);
+  }
+
+  el.sampleEdit?.addEventListener('click', () => {
+    // The edit button toggles the merged tune/erase layer on the pads.
+    state.samplerEdit = state.samplerEdit ? '' : 'edit';
+    samplerUi.releaseAll();
+    syncModeChrome();
+  });
+
+  /* ---------- Sampler ---------- */
+
+  /** Peers currently holding SOLO — 'host' or guest peerIds. */
+  const soloHolders = new Set();
+  let liveHitSeq = 0;
+
+  /**
+   * A live pad hit or a grabbed SOLO kicks the FX pad's held gesture off —
+   * the momentary stutter/filter belongs to whoever touched last. Loop
+   * playback of recorded hits never reaches this.
+   */
+  function knockFxHold() {
+    let changed = false;
+    if (fxFingers.size) {
+      for (const id of fxFingers.keys()) paintTouch(`host:${id}`, null);
+      fxFingers.clear();
+      changed = true;
+    }
+    if (audio?.engine.masterFx?.holding?.()) audio.engine.masterFx.setHold(false);
+    if (state.masterFx.hold) {
+      state.masterFx.hold = false;
+      changed = true;
+    }
+    if (masterHolder || filterHolder) {
+      masterHolder = null;
+      filterHolder = null;
+      changed = true;
+    }
+    if (state.masterFx.cutoff || state.masterFx.hipass) {
+      state.masterFx.cutoff = 0;
+      state.masterFx.hipass = 0;
+      audio?.engine.masterFx?.setCutoff(0);
+      audio?.engine.masterFx?.setHipass(0);
+      changed = true;
+    }
+    if (changed) queueHarmony();
+  }
+
+  /**
+   * One pad tap: trigger the engine hit and capture it when the player is
+   * recording. Auditions (edit-mode release, roll taps) pass record=false so
+   * they never land in history.
+   */
+  function fireSample(peerId, sampleId, { record = true } = {}) {
+    if (!audio || !SAMPLE_BANK.some((sample) => sample.id === sampleId)) return false;
+    knockFxHold();
+    audio.sampler.trigger(sampleId, { id: `smp:${peerId}:${liveHitSeq++}` });
+    const wrote = record && recorderFor(peerId)?.captureHit(sampleId);
+    if (wrote) refreshLoops(true);
+    return true;
+  }
+
+  /**
+   * Gate-style solo: any holder mutes every bus but the sampler until the
+   * last finger lifts. Transient state only — never written to a loop.
+   */
+  function setSampleSolo(peerId, held) {
+    const was = soloHolders.size > 0;
+    if (held) {
+      soloHolders.add(peerId);
+      knockFxHold();
+    } else {
+      soloHolders.delete(peerId);
+    }
+    // A guest's held SOLO glows on the host grid; the host's own hold is lit
+    // by the grid's pointer tracking already.
+    samplerUi.setSoloRemote(soloHolders.has('host') ? false : soloHolders.size > 0);
+    if ((soloHolders.size > 0) !== was) {
+      applyMix();
+      queueHarmony();
+    }
+  }
+
+  /**
+   * The session tempo moved: tempo-locked pads re-fit, badges and guests
+   * follow.
+   */
+  function syncSamplerBpm() {
+    if (!audio) return;
+    for (const id of audio.sampler.setBpm(state.bpm)) {
+      const cur = audio.sampler.paramsOf(id);
+      if (cur && state.sampleParams[id]) state.sampleParams[id].stretch = cur.stretch;
+      samplerUi.updateParam(id);
+      queueHarmony();
+    }
+  }
+
+  /** Edit-mode drag: store the new params, repaint the pad, push to guests. */
+  function applySampleTune(peerId, sampleId, next, phase = 'move') {
+    const params = state.sampleParams[sampleId];
+    if (!params || !next) return;
+    const spec = SAMPLE_BANK.find((item) => item.id === sampleId);
+    if (spec?.bpm) {
+      // Tempo-locked: the sampler owns `stretch` (bpm-fitted); edit gestures
+      // move pitch only. Keep the synced value in state so badges and
+      // guests show the truth.
+      params.pitch = clampSamplePitch(next.pitch);
+      const cur = audio?.sampler.paramsOf(sampleId);
+      if (cur) params.stretch = cur.stretch;
+      audio?.sampler.setParams(sampleId, { pitch: params.pitch });
+    } else {
+      params.pitch = clampSamplePitch(next.pitch);
+      params.stretch = clampSampleStretch(next.stretch);
+      audio?.sampler.setParams(sampleId, params);
+    }
+    samplerUi.updateParam(sampleId);
+    // A released finger auditions the retuned pad; silent commits ('set',
+    // e.g. wheel steps or the double-tap reset) don't.
+    if (phase === 'end') fireSample(peerId, sampleId, { record: false });
+    queueHarmony();
+  }
+
+  /** Any player's loop carries hits of this sample — gates the pad's ✕. */
+  function sampleHasHits(sampleId) {
+    if (!audio) return false;
+    for (const recorder of audio.loops.values()) {
+      const has = recorder
+        .notes()
+        .some((note) => storedInstrument(note.instrument) === SAMPLER_INSTRUMENT && note.sample === sampleId);
+      if (has) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Edit mode: the pad's corner ✕ drops that sample's recorded hits — across
+   * every player's loop, like the shared note editor does.
+   */
+  function eraseSampleHits(peerId, sampleId) {
+    if (!audio || !SAMPLE_BANK.some((sample) => sample.id === sampleId)) return;
+    const owners = [];
+    for (const [playerId, recorder] of audio.loops) {
+      const has = recorder.notes().some(
+        (note) => storedInstrument(note.instrument) === SAMPLER_INSTRUMENT && note.sample === sampleId,
+      );
+      if (has) owners.push(playerId);
+    }
+    if (!owners.length) return;
+    rememberEdit(peerId, owners);
+    for (const ownerId of owners) audio.loops.get(ownerId)?.clearSample(sampleId);
+    refreshLoops();
+    flushLoopPush();
+    log(`${sampleLabel(sampleId)} hits cleared`, 'loop');
+  }
+
+  const samplerUi = createSampleGrid(el.sampler, {
+    editMode: () => state.samplerEdit,
+    params: (id) => state.sampleParams[id],
+    onHit: (id) => fireSample('host', id),
+    onRelease: (id) => {
+      audio?.sampler.releasePad(id);
+      // The gate's 'up' lands at the real release spot — not the grid.
+      if (recorderFor('host')?.captureRelease(id)) refreshLoops(true);
+    },
+    onSolo: (held) => setSampleSolo('host', held),
+    onTune: (id, next, phase) => applySampleTune('host', id, next, phase),
+    onErase: (id) => eraseSampleHits('host', id),
+    hasHits: (id) => sampleHasHits(id),
   });
 
   /* ---------- Harmony, tempo, instruments, loop ---------- */
@@ -1266,10 +1493,23 @@ export async function createHostView({ lite } = {}) {
   });
 
   /** Paint the carousel label; re-paint and re-center the open roll. */
+  /** The roll shows every instrument plus one sampler lane view. */
+  const ROLL_VIEWS = [...INSTRUMENT_IDS, SAMPLER_INSTRUMENT];
+
+  function rollInstrument() {
+    return state.rollView === SAMPLER_INSTRUMENT ? SAMPLER_INSTRUMENT : state.instrument;
+  }
+
   function paintRollInstrument() {
-    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
-    el.instName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
-    paintIconButton(el.instName, state.instrument, spec?.label || state.instrument);
+    const view = rollInstrument();
+    if (view === SAMPLER_INSTRUMENT) {
+      el.instName.style.setProperty('--chip', INSTRUMENT_COLORS.sampler || '#e2b43a');
+      paintIconButton(el.instName, 'sampler', 'Samples');
+    } else {
+      const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+      el.instName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+      paintIconButton(el.instName, state.instrument, spec?.label || state.instrument);
+    }
     if (!el.notesSheet.hidden) {
       paintHostRoll();
       revealRoll();
@@ -1277,6 +1517,13 @@ export async function createHostView({ lite } = {}) {
   }
 
   function pickInstrument(instrument) {
+    // Picking an instrument is a play intent: back to the notes pad, single
+    // notes — even if chords or the sampler/FX pad were up before.
+    if (state.padMode !== 'notes') setPadMode('notes');
+    if (state.mode !== 'single') {
+      state.mode = 'single';
+      audio?.synth.setMode('single');
+    }
     state.instrument = normalizeInstrument(instrument);
     paintInstruments(el.instruments, state.instrument);
     renderInstrumentFx();
@@ -1286,8 +1533,15 @@ export async function createHostView({ lite } = {}) {
   }
 
   function cycleRollInstrument(direction) {
-    const index = INSTRUMENT_IDS.indexOf(state.instrument);
-    pickInstrument(INSTRUMENT_IDS[(index + direction + INSTRUMENT_IDS.length) % INSTRUMENT_IDS.length]);
+    const index = ROLL_VIEWS.indexOf(rollInstrument());
+    const next = ROLL_VIEWS[(index + direction + ROLL_VIEWS.length) % ROLL_VIEWS.length];
+    if (next === SAMPLER_INSTRUMENT) {
+      state.rollView = SAMPLER_INSTRUMENT;
+      paintRollInstrument();
+      return;
+    }
+    state.rollView = null;
+    pickInstrument(next);
   }
 
   el.instruments.addEventListener('click', (event) => {
@@ -1299,6 +1553,7 @@ export async function createHostView({ lite } = {}) {
   function setSharedBpm(bpm) {
     state.bpm = Number(bpm);
     audio?.engine.setBpm(state.bpm);
+    syncSamplerBpm();
     el.hostScreen.querySelectorAll('[data-group="bpm"]').forEach((row) => selectInRow(row, 'bpm', String(state.bpm)));
     syncPadPulse(Boolean(audio?.engine.transportRunning), transportAbsoluteStep(), { retune: true });
     publishHarmony();
@@ -1323,6 +1578,7 @@ export async function createHostView({ lite } = {}) {
     if (!recorder) {
       recorder = new PerformanceRecorder(audio.engine, audio.synth, {
         playerId,
+        sampler: audio.sampler,
         loopSteps: state.noteSteps,
         // Every completed take is its own undo step: the callback hands the
         // loop as it was just before that take's first note-on.
@@ -1437,6 +1693,8 @@ export async function createHostView({ lite } = {}) {
   }
 
   function pitchesFor(note) {
+    // Sample hits have no pitch — the lane view positions them by `sample`.
+    if (note.instrument === SAMPLER_INSTRUMENT) return [];
     const instrument = normalizeInstrument(note.instrument);
     return resolveGesture({
       x: note.x,
@@ -1464,7 +1722,7 @@ export async function createHostView({ lite } = {}) {
     });
   }
 
-  function writePlacedNotes(recorder, { step, instrument, x, y, degree, midi }) {
+  function writePlacedNotes(recorder, { step, instrument, x, y, degree, midi, sample }) {
     if (!recorder) return;
     recorder.addNote({
       step,
@@ -1474,6 +1732,7 @@ export async function createHostView({ lite } = {}) {
       mode: 'single',
       degree,
       midi,
+      sample,
     });
   }
 
@@ -1511,6 +1770,11 @@ export async function createHostView({ lite } = {}) {
     if (!jobs.length) return;
     rememberEdit(editorId, [...targets]);
     for (const { recorder, note, change } of jobs) {
+      // Sample strips only move along the beat — a lane drag never retunes.
+      if (note.instrument === SAMPLER_INSTRUMENT) {
+        recorder.moveNote(change.voiceId, { step: change.step });
+        continue;
+      }
       const sounding = pitchesFor(note)[0];
       const prefer = change.midi > sounding ? 'up' : change.midi < sounding ? 'down' : undefined;
       const choice = choiceFor(change.midi, note, prefer);
@@ -1548,12 +1812,16 @@ export async function createHostView({ lite } = {}) {
       clearTimeout(rollPaintTimer);
       rollPaintTimer = 0;
     }
+    const view = rollInstrument();
+    const lanes =
+      view === SAMPLER_INSTRUMENT ? SAMPLE_BANK.map(({ id, label }) => ({ id, label })) : undefined;
     renderPianoRoll(el.noteTape, {
       notes: allLoopNotes(),
       steps: state.noteSteps,
       stepPx: hostNoteStepPx(),
       pitchesFor,
-      colorFor: (note) => INSTRUMENT_COLORS[normalizeInstrument(note.instrument)] || '#e0a12e',
+      lanes,
+      colorFor: (note) => INSTRUMENT_COLORS[storedInstrument(note.instrument)] || '#e0a12e',
       onDelete: (voiceId) => {
         const ownerId = ownerOfVoice(voiceId);
         if (ownerId == null) return;
@@ -1562,7 +1830,7 @@ export async function createHostView({ lite } = {}) {
         refreshLoops();
         log('note removed from the loop', 'loop');
       },
-      instrument: state.instrument,
+      instrument: view,
       owner: 'host',
       selectMode,
       onMoveGroup: (changes) => moveSharedGroup('host', changes),
@@ -1583,8 +1851,21 @@ export async function createHostView({ lite } = {}) {
       },
       focusMidi: rollFocusMidi(),
       inScale: (midi) => midiInScale(midi, state.root, state.scale),
-      onAudition: ({ down, midi, pointerId }) => previewRoll(down, midi, pointerId),
-      onPlace: ({ step, midi }) => {
+      onAudition: ({ down, midi, pointerId, lane }) => {
+        if (lane) {
+          if (down) fireSample('host', lane, { record: false });
+          return;
+        }
+        previewRoll(down, midi, pointerId);
+      },
+      onPlace: ({ step, midi, lane }) => {
+        if (lane) {
+          rememberEdit('host', ['host']);
+          writePlacedNotes(recorderFor('host'), { step, instrument: SAMPLER_INSTRUMENT, x: 0.5, y: 0.55, sample: lane });
+          ensureTransport();
+          refreshLoops();
+          return;
+        }
         const instrument = state.instrument;
         const draft = { x: 0.5, y: 0.55, mode: 'single', instrument };
         const choice = choiceFor(midi, draft);
@@ -1694,7 +1975,7 @@ export async function createHostView({ lite } = {}) {
 
   /** Recorded loop notes of the selected instrument show as dots on the pad. */
   function syncPadMarks() {
-    if (state.padMode === 'fx' || !audio) {
+    if (state.padMode !== 'notes' || !audio) {
       renderer.setMarks([]);
       return;
     }
@@ -1731,6 +2012,8 @@ export async function createHostView({ lite } = {}) {
       if (lazy) queueHostRoll();
       else paintHostRoll();
     }
+    // Hits may have appeared/vanished under the open edit layer.
+    if (state.samplerEdit) samplerUi.refreshErase();
     syncHostHistory();
     queueLoopPush();
   }
@@ -1868,8 +2151,8 @@ export async function createHostView({ lite } = {}) {
     // 'clear inst' touches only your own loop — in a jam the whole-party
     // wipe stays on the held clear-all.
     const recorder = recorderFor('host');
-    const instrument = normalizeInstrument(state.instrument);
-    if (!recorder?.notes().some((note) => normalizeInstrument(note.instrument) === instrument)) return;
+    const instrument = rollInstrument() === SAMPLER_INSTRUMENT ? SAMPLER_INSTRUMENT : normalizeInstrument(state.instrument);
+    if (!recorder?.notes().some((note) => storedInstrument(note.instrument) === instrument)) return;
     rememberEdit('host', ['host']);
     recorder.clearInstrument(instrument);
     refreshLoops();
@@ -1939,8 +2222,9 @@ export async function createHostView({ lite } = {}) {
     publishHarmony();
   }
 
-  function disposePartial({ engine, drums, synth, bus, drumsFx }) {
+  function disposePartial({ engine, drums, synth, bus, drumsFx, sampler }) {
     try {
+      sampler?.dispose();
       synth?.dispose();
       bus?.dispose();
       drumsFx?.dispose();
@@ -1966,6 +2250,21 @@ export async function createHostView({ lite } = {}) {
         mode: state.mode,
         lite,
       });
+      partial.sampler = new PadSampler(engine, { params: state.sampleParams });
+      // The sampler sits outside the instrument bus so SOLO can mute
+      // everything else without muting itself.
+      partial.sampler.output.connect(engine.master);
+      partial.sampler.onFire = (id) => samplerUi.flash(id);
+      // Gate pads stay lit for their real sounding length — live hold,
+      // audition and loop playback alike.
+      partial.sampler.onVoice = (id, on) => samplerUi.setPlaying(id, on);
+      // Tempo-synced pads start stretched to the session bpm; the params the
+      // grid badges show must carry that fit from the start.
+      for (const id of partial.sampler.setBpm(state.bpm)) {
+        const cur = partial.sampler.paramsOf(id);
+        if (cur && state.sampleParams[id]) state.sampleParams[id].stretch = cur.stretch;
+        samplerUi.updateParam(id);
+      }
       partial.drums.output.connect(partial.drumsFx.input);
       partial.drumsFx.output.connect(engine.master);
       partial.bus.mix.connect(engine.master);
@@ -1981,7 +2280,7 @@ export async function createHostView({ lite } = {}) {
 
       /** Lite keeps the full kit — the FX cuts landed on the instruments. */
       const samples = partial.drums.loadSamples();
-      const [sampleState] = await Promise.all([samples, partial.bus.ready, partial.drumsFx.ready]);
+      const [sampleState] = await Promise.all([samples, partial.bus.ready, partial.drumsFx.ready, partial.sampler.ready]);
       for (const [id, octave] of Object.entries(state.octaves)) partial.synth.setInstrumentOctave(id, octave);
       partial.synth.warmUp();
 
@@ -1991,6 +2290,7 @@ export async function createHostView({ lite } = {}) {
         synth: partial.synth,
         bus: partial.bus,
         drumsFx: partial.drumsFx,
+        sampler: partial.sampler,
         loops: new Map(),
       };
       applyStoredEffects();
@@ -2088,6 +2388,7 @@ export async function createHostView({ lite } = {}) {
       solo: state.solo,
       masterFx: { ...state.masterFx },
       drumPitch: state.drumPitch,
+      sampleParams: state.sampleParams,
     };
   }
 
@@ -2204,6 +2505,7 @@ export async function createHostView({ lite } = {}) {
     // Lite moves at ~21 Hz: fewer retriggers, captures and repaints per slide.
     throttleMs: lite?.coarseTouch ? 48 : undefined,
     onStart: (point) => {
+      if (state.padMode === 'sampler') return;
       if (state.padMode === 'fx') {
         fxPadDown(point);
         return;
@@ -2211,6 +2513,7 @@ export async function createHostView({ lite } = {}) {
       soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
     },
     onMove: (point) => {
+      if (state.padMode === 'sampler') return;
       if (state.padMode === 'fx') {
         fxPadMove(point);
         return;
@@ -2218,6 +2521,7 @@ export async function createHostView({ lite } = {}) {
       soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
     },
     onEnd: (point) => {
+      if (state.padMode === 'sampler') return;
       if (state.padMode === 'fx') {
         fxPadUp(point);
         return;
@@ -2352,6 +2656,25 @@ export async function createHostView({ lite } = {}) {
     if (Number.isFinite(Number(data.drumLength))) setSharedLength(Number(data.drumLength));
     if (Number.isFinite(Number(data.drumPitch))) setDrumPitch(Number(data.drumPitch));
     if (Number.isFinite(Number(data.bpm))) setSharedBpm(Number(data.bpm));
+    // Sampler pads — hits record into the peer's loop, previews never do.
+    if (data.sampleHit) fireSample(data.peerId, String(data.sampleHit));
+    if (data.samplePreview) fireSample(data.peerId, String(data.samplePreview), { record: false });
+    if (data.sampleRelease) {
+      const releaseId = String(data.sampleRelease);
+      audio?.sampler.releasePad(releaseId);
+      if (recorderFor(data.peerId)?.captureRelease(releaseId)) refreshLoops(true);
+    }
+    if (data.sampleSolo !== undefined) setSampleSolo(data.peerId, Boolean(data.sampleSolo));
+    if (data.sampleClear) eraseSampleHits(data.peerId, String(data.sampleClear));
+    if (data.sampleTune) {
+      const tune = data.sampleTune;
+      applySampleTune(data.peerId, String(tune.sample), { pitch: tune.pitch, stretch: tune.stretch }, 'move');
+    }
+    if (data.sampleTuneDone) {
+      const tune = data.sampleTuneDone;
+      // 'quiet' commits (wheel steps, double-tap reset) skip the audition.
+      applySampleTune(data.peerId, String(tune.sample), { pitch: tune.pitch, stretch: tune.stretch }, tune.quiet ? 'set' : 'end');
+    }
     if (data.preview) {
       previewRoll(Boolean(data.preview.down), data.preview.midi, data.preview.pointerId, data.peerId || 'guest', data.preview.instrument);
       return;
@@ -2389,7 +2712,7 @@ export async function createHostView({ lite } = {}) {
     }
     if (data.addNote && audio) {
       const add = data.addNote;
-      const instrument = namedInstrument(add?.instrument);
+      const instrument = add?.instrument === SAMPLER_INSTRUMENT ? SAMPLER_INSTRUMENT : namedInstrument(add?.instrument);
       if (instrument && Number.isFinite(Number(add.step)) && Number.isFinite(Number(add.x))) {
         rememberEdit(data.peerId, [data.peerId]);
         writePlacedNotes(recorderFor(data.peerId), {
@@ -2399,6 +2722,7 @@ export async function createHostView({ lite } = {}) {
           y: Number.isFinite(Number(add.y)) ? Number(add.y) : 0.55,
           degree: add.degree,
           midi: add.midi,
+          sample: add.sample,
         });
         ensureTransport();
         refreshLoops();
@@ -2432,10 +2756,14 @@ export async function createHostView({ lite } = {}) {
       if (data.fromEditor || data.scope === 'mine') {
         // Editor 'clear inst' and the panel tap both stay in your own loop;
         // clearing everyone's takes the held clear-all.
-        const instrument = data.fromEditor ? namedInstrument(data.instrument) : null;
+        const instrument = data.fromEditor
+          ? data.instrument === SAMPLER_INSTRUMENT
+            ? SAMPLER_INSTRUMENT
+            : namedInstrument(data.instrument)
+          : null;
         const target = recorderFor(data.peerId);
         const has = instrument
-          ? target?.notes().some((note) => normalizeInstrument(note.instrument) === instrument)
+          ? target?.notes().some((note) => storedInstrument(note.instrument) === instrument)
           : target?.length;
         if (has) {
           rememberEdit(data.peerId, [data.peerId]);
@@ -2467,6 +2795,9 @@ export async function createHostView({ lite } = {}) {
       if (id.startsWith(prefix)) paintTouch(id, null);
     }
     audio?.synth.releaseMatching(prefix);
+    // A leaving peer can't hold SOLO or keep a live pad voice ringing.
+    setSampleSolo(peerId, false);
+    audio?.sampler.releaseMatching(`smp:${peerId}:`);
     // A finger still down when the peer vanished leaves an open take — close
     // it with a synthetic note-off at the last known position.
     const recorder = audio?.loops.get(peerId);
@@ -2655,8 +2986,11 @@ export async function createHostView({ lite } = {}) {
     paintIconButton(el.noteClear, 'erase', 'clear inst');
     const padNotesChip = el.padMode?.querySelector('[data-padmode="notes"]');
     const padFxChip = el.padMode?.querySelector('[data-padmode="fx"]');
+    const padSamplerChip = el.padMode?.querySelector('[data-padmode="sampler"]');
     if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Notes');
     if (padFxChip) paintIconButton(padFxChip, 'scissors', 'FX');
+    if (padSamplerChip) paintIconButton(padSamplerChip, 'sampler', 'SMP');
+    if (el.sampleEdit) paintIconButton(el.sampleEdit, 'edit', 'Tune');
     paintIconButton(el.notesClose, 'done', 'Done');
     paintIconButton(el.fxDetail, 'detail', 'More');
     paintIconButton(el.fxSheetClose, 'done', 'Done');
@@ -2693,6 +3027,7 @@ export async function createHostView({ lite } = {}) {
     clearTimeout(clearHold);
     drumGrid.destroy();
     hostPad.destroy();
+    samplerUi.destroy();
     renderer.destroy();
     socket.disconnect();
   }
@@ -2721,6 +3056,8 @@ export async function createHostView({ lite } = {}) {
   function forgetFingers() {
     hostPad.releaseHeld();
     fxFingers.clear();
+    samplerUi.releaseAll();
+    audio?.sampler.stopAll();
     for (const id of [...state.activeTouches]) paintTouch(id, null);
     setLabel('—');
   }
@@ -2845,10 +3182,12 @@ export async function createHostView({ lite } = {}) {
       clearTimeout(clearHold);
       drumGrid.destroy();
       hostPad.destroy();
+      samplerUi.destroy();
       if (audio) {
         for (const recorder of audio.loops.values()) recorder.clear();
         audio.drums.dispose();
         audio.synth.dispose();
+        audio.sampler.dispose();
         audio.bus.dispose();
         audio.drumsFx.dispose();
         audio.engine.dispose();

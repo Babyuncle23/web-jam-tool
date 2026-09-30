@@ -113,6 +113,7 @@
             <button class="chip" type="button" data-mode="chords">Chords</button>
           </div>
           <button id="btn-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
+          <button id="host-sample-edit" class="btn btn--ghost" type="button" aria-pressed="false" hidden>Edit</button>
           <button id="btn-loop-undo" class="btn btn--ghost btn--icon" type="button" aria-label="Undo your last change" disabled></button>
           <button id="btn-loop-redo" class="btn btn--ghost btn--icon" type="button" aria-label="Redo" disabled></button>
           <button id="btn-loop-clear" class="btn btn--ghost btn--icon" type="button" aria-label="Clear your loop — hold to clear all loops" title="Tap clears your loop. Hold clears all loops." disabled></button>
@@ -132,6 +133,7 @@
               </div>
             </div>
             <p id="harmony-label" class="harmony-label" aria-live="polite">—</p>
+            <div id="host-sampler" hidden></div>
             <div id="host-y-zones" class="y-zones" hidden>
               <span>9</span>
               <span>7</span>
@@ -143,6 +145,7 @@
           <div class="pad-mode" id="host-pad-mode">
             <div class="pad-mode__chips" role="group" aria-label="Pad mode">
               <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+              <button class="chip" type="button" data-padmode="sampler">SMP</button>
               <button class="chip" type="button" data-padmode="fx">FX</button>
             </div>
           </div>
@@ -397,6 +400,7 @@
           <button class="chip" type="button" data-mode="chords">Chords</button>
         </div>
         <button id="controller-loop" class="btn btn--ghost" type="button" aria-pressed="false" disabled>Rec</button>
+        <button id="controller-sample-edit" class="btn btn--ghost" type="button" aria-pressed="false" hidden>Edit</button>
         <button id="controller-loop-undo" class="btn btn--ghost btn--icon" type="button" aria-label="Undo your last change" disabled></button>
         <button id="controller-loop-redo" class="btn btn--ghost btn--icon" type="button" aria-label="Redo" disabled></button>
         <button id="controller-loop-clear" class="btn btn--ghost btn--icon" type="button" aria-label="Clear your loop — hold to clear all loops" title="Tap clears your loop. Hold clears all loops." disabled></button>
@@ -416,6 +420,7 @@
             </div>
           </div>
           <p id="controller-harmony-label" class="harmony-label" aria-live="polite">—</p>
+          <div id="controller-sampler" hidden></div>
           <div id="controller-y-zones" class="y-zones" hidden>
             <span>9</span>
             <span>7</span>
@@ -427,6 +432,7 @@
         <div class="pad-mode" id="controller-pad-mode">
           <div class="pad-mode__chips" role="group" aria-label="Pad mode">
             <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+            <button class="chip" type="button" data-padmode="sampler">SMP</button>
             <button class="chip" type="button" data-padmode="fx">FX</button>
           </div>
         </div>

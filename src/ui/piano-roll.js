@@ -25,7 +25,8 @@ const OCTAVE = 12;
  * A mouse drag on empty space draws a selection marquee only in that mode.
  * The playhead is a div, not a frame loop.
  */
-export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onPlace, onAudition, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner }) {
+export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onPlace, onAudition, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
+  const laneMode = Array.isArray(lanes) && lanes.length > 0;
   const stepPx = Math.max(6, Number(requestedStep) || Number(scrollEl.__stepPx) || ROLL_STEP_PX);
   scrollEl.__stepPx = stepPx;
   const previousLeft = scrollEl.scrollLeft;
@@ -40,7 +41,10 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
     anchorDelta = previousTop - (RULER_PX + index * ROW_PX);
   }
   const safeSteps = Math.max(16, steps);
-  const rows = buildRows(notes, pitchesFor, focusMidi);
+  // Lane mode (sampler hits): rows are the pad lanes top→bottom, no pitch
+  // grid. Row index doubles as the stored "midi" so the move math below is
+  // unchanged; vertical drags are clamped to zero there anyway.
+  const rows = laneMode ? lanes.map((_, index) => index) : buildRows(notes, pitchesFor, focusMidi);
   const rowOf = new Map(rows.map((midi, index) => [midi, index]));
 
   const selectionKey = instrument || '';
@@ -53,10 +57,11 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   scrollEl.__onDelete = onDelete || null;
   scrollEl.__onMove = onMove || null;
   scrollEl.__onMoveGroup = onMoveGroup || onMove || null;
-  scrollEl.__inScale = inScale || null;
+  scrollEl.__inScale = laneMode ? null : inScale || null;
   scrollEl.__instrument = selectionKey;
   scrollEl.__selectMode = Boolean(selectMode);
   scrollEl.__midis = rows;
+  scrollEl.__lanes = laneMode ? lanes : null;
   scrollEl.__steps = safeSteps;
   bindPan(scrollEl);
 
@@ -108,13 +113,23 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
     const midi = rows[index];
     const key = document.createElement('div');
     key.className = 'roll__key';
-    if (midi % 12 === 0) key.classList.add('is-c');
-    else if ([1, 3, 6, 8, 10].includes(midi % 12)) key.classList.add('is-sharp');
+    if (laneMode) {
+      key.classList.add('roll__key--lane');
+      key.textContent = lanes[midi]?.label || '';
+    } else {
+      if (midi % 12 === 0) key.classList.add('is-c');
+      else if ([1, 3, 6, 8, 10].includes(midi % 12)) key.classList.add('is-sharp');
+      key.textContent = midiToName(midi);
+      if (inScale && !inScale(midi)) key.classList.add('is-blocked');
+    }
     key.dataset.midi = String(midi);
     key.style.top = `${index * ROW_PX}px`;
-    key.textContent = midiToName(midi);
-    if (inScale && !inScale(midi)) key.classList.add('is-blocked');
-    bindAudition(key, midi, onAudition);
+    if (laneMode) {
+      const lane = lanes[midi];
+      bindAudition(key, midi, lane ? (info) => onAudition?.({ ...info, lane: lane.id }) : null);
+    } else {
+      bindAudition(key, midi, onAudition);
+    }
     keys.append(key);
   }
 
@@ -124,7 +139,7 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
 
   for (let index = 0; index < rows.length; index += 1) {
     const shade = document.createElement('div');
-    const blocked = Boolean(inScale && !inScale(rows[index]));
+    const blocked = !laneMode && Boolean(inScale && !inScale(rows[index]));
     shade.className = blocked ? 'roll__row is-blocked' : 'roll__row';
     shade.style.top = `${index * ROW_PX}px`;
     shade.dataset.midi = String(rows[index]);
@@ -143,20 +158,19 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
     grid.append(mark);
   }
 
+  const emptyText = laneMode ? 'Tap a cell to place a hit' : 'Tap a cell to place a note';
   if (!notes.length) {
     const empty = document.createElement('p');
     empty.className = 'roll__empty';
-    empty.textContent = 'Tap a cell to place a note';
+    empty.textContent = emptyText;
     grid.append(empty);
   }
 
   for (const note of notes) {
     const duration = noteDuration(note, safeSteps);
-    for (const midi of pitchesFor(note) || []) {
-      const row = rowOf.get(Math.round(midi));
-      if (row == null) continue;
+    for (const place of stripPlacements(scrollEl, note, pitchesFor, rowOf)) {
       grid.append(
-        makeStrip(scrollEl, note, Math.round(midi), row, duration, { steps: safeSteps, stepPx, colorFor, onResize, owner }),
+        makeStrip(scrollEl, note, place.midi, place.row, duration, { steps: safeSteps, stepPx, colorFor, onResize, owner }),
       );
     }
   }
@@ -188,8 +202,30 @@ function stripSignature(note, midi, row, duration, colorFor, owner) {
   return [note.step, midi, row, duration, note.instrument || '', remote ? 1 : 0, colorFor(note)].join('|');
 }
 
+/**
+ * Where one note lands as strips. Pitch mode resolves notes to midi rows;
+ * lane mode parks every sampler hit on its pad's row — hits of other
+ * instruments are invisible in the sampler view and vice versa.
+ */
+function stripPlacements(scrollEl, note, pitchesFor, rowOf) {
+  const lanes = scrollEl.__lanes;
+  if (lanes) {
+    if (note.instrument !== 'sampler') return [];
+    const row = lanes.findIndex((lane) => lane.id === note.sample);
+    return row >= 0 ? [{ row, midi: row }] : [];
+  }
+  const placements = [];
+  for (const midi of pitchesFor(note) || []) {
+    const row = rowOf.get(Math.round(midi));
+    if (row != null) placements.push({ row, midi: Math.round(midi) });
+  }
+  return placements;
+}
+
 /** One note strip: geometry, colors and the drag/resize bindings for a row. */
 function makeStrip(scrollEl, note, midi, row, duration, { steps, stepPx, colorFor, onResize, owner }) {
+  const lanes = scrollEl.__lanes;
+  const lane = lanes ? lanes[midi] : null;
   const strip = pressable('roll__note');
   strip.dataset.voice = note.voiceId;
   strip.dataset.step = String(note.step);
@@ -204,15 +240,20 @@ function makeStrip(scrollEl, note, midi, row, duration, { steps, stepPx, colorFo
   strip.style.width = `${width}px`;
   strip.style.top = `${row * ROW_PX + 3}px`;
   strip.style.background = colorFor(note);
-  strip.textContent = midiToName(midi);
-  strip.setAttribute('aria-label', `${midiToName(midi)}, delete, move, or drag the right edge`);
-  const grip = document.createElement('span');
-  grip.className = 'roll__resize';
-  grip.setAttribute('aria-hidden', 'true');
-  grip.style.width = `${Math.min(22, Math.max(8, Math.round(width * 0.3)))}px`;
-  strip.append(grip);
+  strip.textContent = lane ? lane.label : midiToName(midi);
+  strip.setAttribute(
+    'aria-label',
+    lane ? `${lane.label} hit, delete or drag` : `${midiToName(midi)}, delete, move, or drag the right edge`,
+  );
+  if (!lane) {
+    const grip = document.createElement('span');
+    grip.className = 'roll__resize';
+    grip.setAttribute('aria-hidden', 'true');
+    grip.style.width = `${Math.min(22, Math.max(8, Math.round(width * 0.3)))}px`;
+    strip.append(grip);
+    bindResize(grip, strip, note, duration, steps, onResize);
+  }
   bindStrip(strip, scrollEl, steps);
-  bindResize(grip, strip, note, duration, steps, onResize);
   strip.__sig = stripSignature(note, midi, row, duration, colorFor, owner);
   return strip;
 }
@@ -229,10 +270,8 @@ function patchRollNotes(grid, scrollEl, notes, { steps, pitchesFor, colorFor, on
   const wanted = new Map();
   for (const note of notes) {
     const duration = noteDuration(note, steps);
-    for (const midi of pitchesFor(note) || []) {
-      const row = rowOf.get(Math.round(midi));
-      if (row == null) continue;
-      wanted.set(`${note.voiceId}@${Math.round(midi)}`, { note, midi: Math.round(midi), row, duration });
+    for (const place of stripPlacements(scrollEl, note, pitchesFor, rowOf)) {
+      wanted.set(`${note.voiceId}@${place.midi}`, { note, midi: place.midi, row: place.row, duration });
     }
   }
   const kept = new Map();
@@ -263,7 +302,7 @@ function patchRollNotes(grid, scrollEl, notes, { steps, pitchesFor, colorFor, on
   else if (!wanted.size && !empty) {
     const hint = document.createElement('p');
     hint.className = 'roll__empty';
-    hint.textContent = 'Tap a cell to place a note';
+    hint.textContent = scrollEl.__lanes ? 'Tap a cell to place a hit' : 'Tap a cell to place a note';
     grid.append(hint);
   }
 }
@@ -451,7 +490,7 @@ function bindPan(scrollEl) {
     const midi = midis[row];
     if (!Number.isFinite(midi)) return;
     if (scrollEl.__inScale && !scrollEl.__inScale(midi)) return;
-    place({ step, midi });
+    place({ step, midi, lane: scrollEl.__lanes?.[row]?.id });
   };
   scrollEl.addEventListener('pointerup', end);
   scrollEl.addEventListener('pointercancel', end);
@@ -567,7 +606,8 @@ function bindStrip(strip, scrollEl, steps) {
       ev.preventDefault();
       const stepPx = stepSize(scrollEl);
       const deltaStep = Math.round(dx / stepPx);
-      const deltaMidi = Math.round(-dy / ROW_PX);
+      // Lane mode is rhythm-only: a hit stays on its pad's row.
+      const deltaMidi = scrollEl.__lanes ? 0 : Math.round(-dy / ROW_PX);
       const shift = `translate(${deltaStep * stepPx}px, ${-deltaMidi * ROW_PX}px)`;
       if (!selectMode) {
         strip.style.transform = shift;
@@ -601,7 +641,7 @@ function bindStrip(strip, scrollEl, steps) {
       }
       const stepPx = stepSize(scrollEl);
       const deltaStep = Math.round(dx / stepPx);
-      const deltaMidi = Math.round(-dy / ROW_PX);
+      const deltaMidi = scrollEl.__lanes ? 0 : Math.round(-dy / ROW_PX);
       const grid = scrollEl.querySelector('.roll__grid');
       const members = selectMode
         ? [...grid.querySelectorAll('.roll__note')].filter((item) => scrollEl.__selected.has(item.dataset.voice))

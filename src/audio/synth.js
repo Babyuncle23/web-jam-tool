@@ -4,6 +4,8 @@
  * label is computed by the same function that chooses the sounding notes.
  * Audio nodes are built once in the constructor and reused for every touch.
  */
+import { sampleMode } from './sampler.js';
+
 
 export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -47,9 +49,13 @@ export const INSTRUMENT_COLORS = {
   organ: '#3d6f9a',
   kalimba: '#e0a12e',
   synth: '#6b4423',
+  sampler: '#7c53b8',
 };
 
 export const INSTRUMENT_IDS = INSTRUMENTS.map((item) => item.id);
+
+/** The Notes sheet can browse sampler hits as a lane instrument of its own. */
+export const SAMPLER_INSTRUMENT = 'sampler';
 
 export const DEFAULT_OCTAVE = 3;
 
@@ -217,6 +223,15 @@ export function extensionFromY(y) {
 export function normalizeInstrument(instrument) {
   if (instrument === 'piano') return 'synth';
   return INSTRUMENT_IDS.includes(instrument) ? instrument : 'pad';
+}
+
+/**
+ * Loop events keep 'sampler' verbatim — hits are not playable pad voices, but
+ * they are stored and cleared as their own instrument. normalizeInstrument()
+ * would alias them to 'pad' and clear/history calls would confuse the two.
+ */
+export function storedInstrument(instrument) {
+  return instrument === SAMPLER_INSTRUMENT ? SAMPLER_INSTRUMENT : normalizeInstrument(instrument);
 }
 
 /**
@@ -1074,6 +1089,7 @@ export function quantizeToStep(seconds, stepSeconds) {
  */
 export class PerformanceRecorder {
   #synth;
+  #sampler;
   #tone;
   #playerId;
   #events = [];
@@ -1098,6 +1114,10 @@ export class PerformanceRecorder {
 
   #loopSteps = LOOP_STEPS;
   #placed = 0;
+  /** Unique voice ids for recorded sample hits (`hit:player:n`). */
+  #hitSeq = 0;
+  /** Gate pads still held: sampleId → [{ voiceId, onAbs, on }] — the 'up' is written on release. */
+  #openHits = new Map();
   /** Take base → loop snapshot at its first note-on, for per-take undo. */
   #takePre = new Map();
   /** Takes that closed while others were still open: { base, events }. */
@@ -1105,9 +1125,10 @@ export class PerformanceRecorder {
   /** Called with the pre-take event list each time a take completes. */
   #onTake;
 
-  constructor(engine, synth, { playerId = 'host', loopSteps = LOOP_STEPS, onTake } = {}) {
+  constructor(engine, synth, { playerId = 'host', loopSteps = LOOP_STEPS, onTake, sampler } = {}) {
     this.#tone = engine.tone;
     this.#synth = synth;
+    this.#sampler = sampler || null;
     this.#playerId = playerId;
     this.#loopSteps = normalizeLoopSteps(loopSteps);
     this.#onTake = typeof onTake === 'function' ? onTake : null;
@@ -1187,6 +1208,7 @@ export class PerformanceRecorder {
     // sounding, so cut every loop voice — kept notes re-attack on their next
     // step anyway.
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
+    this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     return this.#loopSteps;
   }
 
@@ -1233,6 +1255,74 @@ export class PerformanceRecorder {
       }
     }
     this.#chordTakes.clear();
+    for (const sample of [...this.#openHits.keys()]) this.captureRelease(sample);
+  }
+
+  /**
+   * A sampler pad tap. One hit = one one-step strip (on + up) so it reads in
+   * the roll and loops forever. Each hit is its own undo step; while a finger
+   * take is still open the hit joins the closed-log so that take's undo keeps
+   * it. Never writes pitch data — `sample` says which pad sounded.
+   */
+  captureHit(sample) {
+    if (!this.#recording || !sample) return false;
+    const transport = this.#tone.getTransport();
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    const pos = transport.ticks / ticksPerStep;
+    let step = Math.round(pos) % this.#loopSteps;
+    if (step < 0) step += this.#loopSteps;
+    const voiceId = `hit:${this.#playerId}:${this.#hitSeq}`;
+    this.#hitSeq += 1;
+    const pre = this.exportEvents();
+    const event = {
+      voiceId,
+      step,
+      type: 'on',
+      x: 0.5,
+      y: 0.5,
+      mode: 'single',
+      instrument: SAMPLER_INSTRUMENT,
+      direction: 'down',
+      sample: String(sample),
+    };
+    this.#put(event);
+    if (sampleMode(sample) === 'gate') {
+      // Gate pads quantize only the START: the 'up' is written by
+      // captureRelease at the real release position, kept as step + frac.
+      let opens = this.#openHits.get(String(sample));
+      if (!opens) this.#openHits.set(String(sample), (opens = []));
+      opens.push({ voiceId, onAbs: Math.round(pos), on: event });
+    } else {
+      this.#put({ ...event, step: (step + 1) % this.#loopSteps, type: 'up' });
+    }
+    if (this.#takePre.size) this.#closedLog.push({ base: voiceId, events: this.#takeEvents(voiceId) });
+    this.#onTake?.(pre);
+    return 'note';
+  }
+
+  /**
+   * Finger lifted off a gate pad while recording: close every open hit of
+   * that sample at the unquantized position — the step the release fell in
+   * carries `frac` (0..1 of a step), so playback cuts exactly where the
+   * finger let go. One-shots never reach this.
+   */
+  captureRelease(sample) {
+    const opens = this.#openHits.get(String(sample));
+    if (!opens?.length) return false;
+    this.#openHits.delete(String(sample));
+    const transport = this.#tone.getTransport();
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    const pos = transport.ticks / ticksPerStep;
+    for (const hit of opens) {
+      // A tap shorter than the rounding gap still needs a real 'up'.
+      let span = Math.max(0.02, pos - hit.onAbs);
+      span = Math.min(span, this.#loopSteps - 0.02);
+      const absUp = hit.onAbs + span;
+      const upStep = ((Math.floor(absUp) % this.#loopSteps) + this.#loopSteps) % this.#loopSteps;
+      const frac = absUp - Math.floor(absUp);
+      this.#put({ ...hit.on, step: upStep, type: 'up', frac });
+    }
+    return 'note';
   }
 
   /**
@@ -1315,7 +1405,7 @@ export class PerformanceRecorder {
       x: event.x,
       y: event.y,
       mode: 'single',
-      instrument: normalizeInstrument(event.instrument),
+      instrument: storedInstrument(event.instrument),
       direction: event.direction === 'up' ? 'up' : 'down',
       degree: storedDegree(event.degree),
     };
@@ -1578,6 +1668,7 @@ export class PerformanceRecorder {
       direction: template.direction,
       degree: template.degree,
       group: template.group,
+      sample: template.sample,
     });
   }
 
@@ -1652,6 +1743,8 @@ export class PerformanceRecorder {
       existing.degree = event.degree;
       existing.group = event.group;
       if (event.midi !== undefined) existing.midi = storedMidi(event.midi);
+      if (event.sample !== undefined) existing.sample = event.sample;
+      if (event.frac !== undefined) existing.frac = event.frac;
       return;
     }
     this.#byKey.set(key, event);
@@ -1733,9 +1826,17 @@ export class PerformanceRecorder {
 
   #perform(event, time) {
     const id = `loop:${this.#playerId}:${event.voiceId}`;
+    if (event.instrument === SAMPLER_INSTRUMENT) {
+      // 'up' with a frac cuts inside the step — gate hits keep their real
+      // recorded length; only the start was quantized.
+      if (event.type === 'up') this.#sampler?.release(id, time + (event.frac || 0) * this.stepSeconds);
+      else this.#sampler?.trigger(event.sample, { time, id });
+      return;
+    }
     if (event.type === 'up') {
-      if (this.#cutByNewChord(event)) this.#synth.choke(id, time);
-      else this.#synth.release(id, time);
+      const at = time + (event.frac || 0) * this.stepSeconds;
+      if (this.#cutByNewChord(event)) this.#synth.choke(id, at);
+      else this.#synth.release(id, at);
       return;
     }
     // A note with no 'up' yet — the finger is still down or the off was lost —
@@ -1773,7 +1874,8 @@ export class PerformanceRecorder {
         segments.push({ on, key, end: null });
       }
       if (!segments.length) continue;
-      segments[segments.length - 1].end = group.up?.step ?? null;
+      // The 'up' may carry a sub-step frac — gate hits end off-grid.
+      segments[segments.length - 1].end = group.up ? group.up.step + (group.up.frac || 0) : null;
       const split = segments.length > 1;
       for (const segment of segments) {
         const step = segment.on.step;
@@ -1787,6 +1889,7 @@ export class PerformanceRecorder {
           mode: segment.on.mode,
           degree: segment.on.degree,
           midi: segment.on.midi,
+          sample: segment.on.sample,
           step,
           endStep,
           seq: group.seq,
@@ -1813,6 +1916,8 @@ export class PerformanceRecorder {
       degree: event.degree,
       midi: event.midi,
       group: event.group,
+      sample: event.sample,
+      frac: event.frac,
     }));
   }
 
@@ -1827,7 +1932,9 @@ export class PerformanceRecorder {
     this.#chordTakes.clear();
     this.#chordGen.clear();
     this.#line.clear();
+    this.#openHits.clear();
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
+    this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     for (const event of events || []) {
       const step = Math.max(0, Math.min(this.#loopSteps - 1, Math.round(Number(event.step) || 0)));
       this.#put({
@@ -1842,6 +1949,8 @@ export class PerformanceRecorder {
         degree: storedDegree(event.degree),
         midi: storedMidi(event.midi),
         group: event.group || undefined,
+        sample: event.sample,
+        frac: Number.isFinite(Number(event.frac)) ? Number(event.frac) : undefined,
       });
     }
     this.#rebaseTakeStashes();
@@ -1851,7 +1960,7 @@ export class PerformanceRecorder {
    * A note that was not recorded. One step long, written into the step index
    * like every other loop event.
    */
-  addNote({ step, x, y, instrument, mode = 'single', direction = 'down', degree, midi } = {}) {
+  addNote({ step, x, y, instrument, mode = 'single', direction = 'down', degree, midi, sample } = {}) {
     const voiceId = `placed:${this.#playerId}:${this.#placed}`;
     this.#placed += 1;
     const start = Math.max(0, Math.min(this.#loopSteps - 1, Math.round(Number(step) || 0)));
@@ -1860,10 +1969,11 @@ export class PerformanceRecorder {
       x,
       y: Number.isFinite(Number(y)) ? Number(y) : 0.55,
       mode: mode === 'chords' ? 'chords' : 'single',
-      instrument: normalizeInstrument(instrument),
+      instrument: storedInstrument(instrument),
       direction: direction === 'up' ? 'up' : 'down',
       degree: storedDegree(degree),
       midi: storedMidi(midi),
+      sample,
     };
     this.#put({ voiceId, step: start, type: 'on', ...next });
     this.#put({ voiceId, step: end, type: 'up', ...next });
@@ -1905,6 +2015,7 @@ export class PerformanceRecorder {
       degree: nextDegree,
       midi: nextMidi,
       group: template.group,
+      sample: template.sample,
     });
     this.#put({
       voiceId,
@@ -1918,6 +2029,7 @@ export class PerformanceRecorder {
       degree: nextDegree,
       midi: nextMidi,
       group: template.group,
+      sample: template.sample,
     });
     return true;
   }
@@ -2018,14 +2130,31 @@ export class PerformanceRecorder {
     this.#attackStep.delete(voiceId);
     this.#syncTick();
     this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
+    this.#sampler?.release(`loop:${this.#playerId}:${voiceId}`);
     return removed.length > 0;
   }
 
   /** Drop every note of one instrument. Other instruments and the drum grid stay. */
   clearInstrument(instrument) {
-    const id = normalizeInstrument(instrument);
+    const id = storedInstrument(instrument);
     const voiceIds = new Set(
-      this.#events.filter((event) => normalizeInstrument(event.instrument) === id).map((event) => event.voiceId),
+      this.#events.filter((event) => storedInstrument(event.instrument) === id).map((event) => event.voiceId),
+    );
+    if (!voiceIds.size) return 0;
+    for (const voiceId of voiceIds) this.removeNote(voiceId);
+    return voiceIds.size;
+  }
+
+  /** Drop every recorded hit of one sampler pad — the erase mode of the grid. */
+  clearSample(sample) {
+    const id = String(sample ?? '');
+    // Erasing mid-hold: forget the open gate too, or the release would
+    // write an 'up' for events that no longer exist.
+    this.#openHits.delete(id);
+    const voiceIds = new Set(
+      this.#events
+        .filter((event) => storedInstrument(event.instrument) === SAMPLER_INSTRUMENT && event.sample === id)
+        .map((event) => event.voiceId),
     );
     if (!voiceIds.size) return 0;
     for (const voiceId of voiceIds) this.removeNote(voiceId);
@@ -2044,7 +2173,9 @@ export class PerformanceRecorder {
     this.#chordTakes.clear();
     this.#chordGen.clear();
     this.#line.clear();
+    this.#openHits.clear();
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
+    this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     this.#rebaseTakeStashes();
   }
 }

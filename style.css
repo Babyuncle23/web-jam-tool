@@ -1970,6 +1970,320 @@ input[type='range'] {
   text-shadow: 0 0 10px rgba(242, 193, 75, 0.9);
 }
 
+/* ---------- Sampler pads ---------- */
+
+/* The grid replaces the touchpad surface; it must win over [hidden]. */
+.sampler {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
+.sampler[hidden] {
+  display: none;
+}
+
+.sampler-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  padding-top: 44px;
+  box-sizing: border-box;
+}
+
+.sampler-pad {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 3px solid var(--ink);
+  border-radius: 12px;
+  background: #fffdf4;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+  font-size: clamp(13px, 3.4vw, 18px);
+  letter-spacing: 0.04em;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: pointer;
+  transition:
+    transform 0.06s ease,
+    background 0.06s ease,
+    color 0.06s ease,
+    box-shadow 0.06s ease;
+}
+
+.sampler-pad__badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(28, 20, 12, 0.6);
+  min-height: 13px;
+}
+
+.sampler-pad--empty {
+  background: rgba(28, 20, 12, 0.05);
+  border-style: dashed;
+  border-color: rgba(28, 20, 12, 0.35);
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Held finger: the pad sinks and lights — the classic sampler look. */
+.sampler-pad.is-lit {
+  background: #7c53b8;
+  color: #fff6e4;
+  transform: scale(0.95);
+  box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.22);
+}
+
+.sampler-pad.is-lit .sampler-pad__badge {
+  color: rgba(255, 246, 228, 0.85);
+}
+
+/* Trigger flash from loop playback or remote hits — lighter than the hold. */
+.sampler-pad.is-hit:not(.is-lit) {
+  background: #cbb4ef;
+}
+
+.sampler-pad--solo {
+  background: var(--ink);
+  color: #fff6e4;
+}
+
+.sampler-pad--solo.is-lit {
+  background: #e0a12e;
+  color: var(--ink);
+}
+
+.sampler-pad.is-bump {
+  animation: pad-bump 0.16s ease;
+}
+
+@keyframes pad-bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(0.94); }
+  100% { transform: scale(1); }
+}
+
+/* Tune mode: tunable pads get a violet ring; the dragged pad stays raised. */
+.sampler.is-editing .sampler-pad--sample {
+  box-shadow: inset 0 0 0 2px rgba(124, 83, 184, 0.55);
+}
+
+.sampler.is-editing .sampler-pad.is-editing {
+  border-color: #7c53b8;
+  box-shadow:
+    inset 0 0 0 2px #7c53b8,
+    0 4px 0 rgba(28, 20, 12, 0.3);
+}
+
+.sampler.is-tuning .sampler-pad:not(.is-editing):not(.sampler-pad--solo) {
+  opacity: 0.5;
+}
+
+/* Tune mode: the whole surface is a drag handle for the armed pad. */
+.sampler.is-editing {
+  cursor: grab;
+}
+
+.sampler.is-editing .sampler-pad--sample {
+  cursor: grab;
+}
+
+/* Edit mode's erase handle: a corner ✕ on every sample pad. It is a real
+   element (not ::after) so taps are hit-tested separately from the pad's
+   tuning drag — and the grid ignores it mid-gesture. */
+.sampler-pad__x {
+  display: none;
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 3px solid #c4512c;
+  background: #fff6e4;
+  color: #c4512c;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+  touch-action: none;
+  box-shadow: 0 2px 0 rgba(28, 20, 12, 0.28);
+  z-index: 2;
+}
+
+/* The ✕ only shows on pads that actually hold recorded hits — an empty
+   pad has nothing to wipe, so it stays clean for tuning. */
+.sampler.is-editing .sampler-pad--sample.has-hits .sampler-pad__x {
+  display: block;
+}
+
+.sampler-pad__x:active {
+  background: #c4512c;
+  color: #fff6e4;
+}
+
+.sampler-pad.is-erase {
+  animation: pad-erase 0.22s ease;
+}
+
+/* The merged ✕/✎ edit button: both icons split by a slash, label drops on
+   narrow screens so the pair still fits the play bar. */
+.sample-edit-btn .ico {
+  width: 20px;
+  height: 20px;
+}
+
+.sample-edit-btn .icon-sep {
+  font-weight: 800;
+  opacity: 0.55;
+  margin: 0 -3px;
+}
+
+@media (max-width: 480px) {
+  .sample-edit-btn .chip-label {
+    display: none;
+  }
+}
+
+@keyframes pad-erase {
+  0% { background: #fffdf4; }
+  40% { background: #c4512c; color: #fff6e4; transform: scale(0.94); }
+  100% { background: #fffdf4; }
+}
+
+/* The pad can never record while an edit layer is up — Rec reads as off. */
+.btn.is-off {
+  opacity: 0.38;
+}
+
+/* Crosshair + readout while a tune drag is in flight. */
+.sampler-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.sampler-hud[hidden] {
+  display: none;
+}
+
+.sampler-hud__axis-x,
+.sampler-hud__axis-y {
+  position: absolute;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sampler-hud__axis-x {
+  left: 0;
+  right: 0;
+  top: var(--hy, 50%);
+  border-top: 2px dashed rgba(28, 20, 12, 0.5);
+}
+
+.sampler-hud__axis-y {
+  top: 0;
+  bottom: 0;
+  left: var(--hx, 50%);
+  border-left: 2px dashed rgba(28, 20, 12, 0.5);
+}
+
+/* Tempo-locked pads have no stretch axis — drop the misleading hint line. */
+.sampler-hud.is-locked .sampler-hud__axis-x {
+  display: none;
+}
+
+.sampler-hud__axis-x span {
+  position: absolute;
+  right: 10px;
+  top: 4px;
+  background: #fff6e4;
+  padding: 0 6px;
+}
+
+.sampler-hud__axis-y span {
+  position: absolute;
+  top: 10px;
+  left: 6px;
+  background: #fff6e4;
+  padding: 0 6px;
+}
+
+.sampler-hud__dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: #7c53b8;
+  border: 3px solid #fff6e4;
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.sampler-hud__label,
+.sampler-hud__value {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  color: var(--ink);
+  text-align: center;
+  text-shadow: 2px 2px 0 #fff6e4;
+  white-space: nowrap;
+}
+
+.sampler-hud__label {
+  bottom: 52px;
+  font-size: clamp(20px, 5vw, 30px);
+  font-weight: 800;
+}
+
+.sampler-hud__value {
+  bottom: 26px;
+  font-size: clamp(13px, 3.2vw, 17px);
+  font-weight: 700;
+}
+
+/* In sampler mode the pad's note chrome would sit on top of the pads. */
+.pad.is-sampler .bar-readout,
+.pad.is-sampler .harmony-label,
+.pad.is-sampler .y-zones {
+  display: none;
+}
+
+/* The hint moves up top, over the empty first pad row. */
+.pad.is-sampler .pad__hint {
+  inset: 8px 10px auto;
+}
+
+/* Lane rows in the note roll: pad names instead of piano keys. */
+.roll__key--lane {
+  justify-content: center;
+  padding-left: 0;
+  color: #7c53b8;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .fx-stack {
   display: flex;
   flex-direction: column;

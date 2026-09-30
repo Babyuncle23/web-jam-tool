@@ -6,7 +6,8 @@
 
 import { DrumMachine, TRACKS } from './drums.js';
 import { createDrumBus, createInstrumentBus, createMasterFx, clampFx } from './effects.js';
-import { PerformanceRecorder, TouchSynth, normalizeInstrument, resolveGesture } from './synth.js';
+import { PerformanceRecorder, SAMPLER_INSTRUMENT, TouchSynth, normalizeInstrument, resolveGesture } from './synth.js';
+import { PadSampler } from './sampler.js';
 
 export const REPEAT_GUARD = 128;
 const PPQ = 480;
@@ -110,6 +111,8 @@ export function buildLoopMidi({
   for (let copy = 0; copy < times; copy += 1) {
     const origin = copy * loopTicks;
     for (const note of notes) {
+      // Sample hits carry no pitch — they stay out of the MIDI layout.
+      if (note.instrument === SAMPLER_INSTRUMENT) continue;
       const start = Math.max(0, Math.min(length - 1, Math.round(Number(note.step) || 0)));
       const end = Number.isFinite(Number(note.endStep)) ? Math.round(Number(note.endStep)) : start + 1;
       const span = stepSpan(start, end, length);
@@ -223,7 +226,8 @@ export async function renderLoopWav(tone, spec) {
     const engine = { tone };
     const bus = createInstrumentBus(tone);
     const drumsFx = createDrumBus(tone);
-    await Promise.all([bus.ready, drumsFx.ready]);
+    const sampler = new PadSampler(engine, { params: spec.sampleParams });
+    await Promise.all([bus.ready, drumsFx.ready, sampler.ready]);
     const synth = new TouchSynth(engine, bus, { root: spec.root, scale: spec.scale });
     for (const [id, octave] of Object.entries(spec.octaves || {})) synth.setInstrumentOctave(id, octave);
     const drums = new DrumMachine(engine);
@@ -232,6 +236,7 @@ export async function renderLoopWav(tone, spec) {
     drums.output.connect(drumsFx.input);
     drumsFx.output.connect(master);
     bus.mix.connect(master);
+    sampler.output.connect(master);
     for (const [instrument, levels] of Object.entries(spec.effects || {})) {
       if (instrument === 'drums') {
         for (const [id, level] of Object.entries(levels)) drumsFx.setEffect(id, level);
@@ -259,6 +264,7 @@ export async function renderLoopWav(tone, spec) {
       const recorder = new PerformanceRecorder(engine, synth, {
         playerId: bundle.playerId,
         loopSteps: spec.steps,
+        sampler,
       });
       recorder.restoreEvents(bundle.events || []);
       players.set(bundle.playerId, recorder);
