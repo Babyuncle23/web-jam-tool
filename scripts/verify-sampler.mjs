@@ -55,6 +55,11 @@ await host.evaluate(() => {
     globalThis.__spy.drumsAudible = on;
     return origDrums(on);
   };
+  const origAud = audio.sampler.setAudible.bind(audio.sampler);
+  audio.sampler.setAudible = (on) => {
+    globalThis.__spy.samplerAudible = on;
+    return origAud(on);
+  };
 });
 
 // --- Host: switch to sampler, pads appear, tap fires a one-shot. ---
@@ -127,6 +132,19 @@ const afterSolo = await host.evaluate(() => ({
 }));
 const allBack = afterSolo.bus && Object.values(afterSolo.bus).every((v) => v === true) && afterSolo.drums === true;
 check('host: SOLO release restores the mix', allBack, JSON.stringify(afterSolo));
+
+// --- Instrument solo silences the sampler bus too. ---
+await host.evaluate(() => {
+  globalThis.__spy.samplerAudible = null;
+  document.querySelector('#host-screen [data-mix="solo"][data-voice="drums"]')?.click();
+});
+await new Promise((r) => setTimeout(r, 120));
+let smpAud = await host.evaluate(() => globalThis.__spy.samplerAudible);
+check('host: drum solo cuts the sampler', smpAud === false, String(smpAud));
+await host.evaluate(() => document.querySelector('#host-screen [data-mix="solo"][data-voice="drums"]')?.click());
+await new Promise((r) => setTimeout(r, 120));
+smpAud = await host.evaluate(() => globalThis.__spy.samplerAudible);
+check('host: unsolo restores the sampler', smpAud === true, String(smpAud));
 
 // --- FX knock: hold the stutter, then a sample hit drops it. ---
 await host.click('#host-pad-mode [data-padmode="fx"]');
@@ -344,7 +362,9 @@ if (gateNote && gdur <= 0) gdur += 32;
 check('host: gate hit keeps its real off-grid end (frac up)', gateNote && gateNote.frac !== undefined && gdur > 0.2 && gdur < 6, JSON.stringify(gateNote));
 
 // The pad must glow for the whole sounding span — gate voices report
-// start/stop through onVoice (loop playback goes through it too).
+// start/stop through onVoice (loop playback goes through it too). Clear the
+// recorded hit first so a loop replay can't hold the pad lit mid-probe.
+await host.evaluate(() => { globalThis.__jam.loopFor('host').clearSample('scratch105'); });
 await host.evaluate(() => {
   const s = globalThis.__jam.audio.sampler;
   globalThis.__spy.voices = [];

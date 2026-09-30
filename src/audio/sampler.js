@@ -24,8 +24,9 @@
  */
 
 export const SAMPLE_BANK = [
-  { id: 'brah', label: 'BRAH', src: './samples/brah.mp3', mode: 'oneshot' },
-  { id: 'fah', label: 'FAH', src: './samples/fah.mp3', mode: 'oneshot' },
+  // gain — extra trim on top of the peak normalization: brah sits lower.
+  { id: 'brah', label: 'BRAH', src: './samples/brah.mp3', mode: 'oneshot', gain: 0.6 },
+  { id: 'fah', label: 'FAH', src: './samples/fah.mp3', mode: 'oneshot', gain: 0.8 },
   { id: 'scratch105', label: 'SCR 105', src: './samples/scratch-105.mp3', mode: 'gate', bpm: 105 },
 ];
 
@@ -194,6 +195,15 @@ export class PadSampler {
   /** The node the sampler feeds — wired straight to the master gain. */
   get output() {
     return this.#output;
+  }
+
+  /**
+   * Mixer gate — a soloed instrument voice silences the sampler too (the
+   * sampler has no own solo/mute flag; the pad's held SOLO is the opposite:
+   * it mutes everything else, not this bus).
+   */
+  setAudible(on) {
+    this.#output.gain.setTargetAtTime(on ? 1 : 0, this.#tone.now(), 0.02);
   }
 
   paramsOf(id) {

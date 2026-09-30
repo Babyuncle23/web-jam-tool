@@ -945,6 +945,8 @@ export async function createHostView({ lite } = {}) {
       if (id === 'drums') audio.drumsFx.setAudible(heard);
       else audio.bus.setAudible(id, heard);
     }
+    // The sampler bus has no solo flag — an instrument solo cuts it too.
+    audio.sampler.setAudible(!anySolo || sampleSolo);
   }
 
   function paintMixFlags() {
