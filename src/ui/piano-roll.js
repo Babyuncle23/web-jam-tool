@@ -25,7 +25,7 @@ const OCTAVE = 12;
  * A mouse drag on empty space draws a selection marquee only in that mode.
  * The playhead is a div, not a frame loop.
  */
-export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onPlace, onAudition, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
+export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onPlace, onAudition, onZoom, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
   const laneMode = Array.isArray(lanes) && lanes.length > 0;
   const stepPx = Math.max(6, Number(requestedStep) || Number(scrollEl.__stepPx) || ROLL_STEP_PX);
   scrollEl.__stepPx = stepPx;
@@ -63,6 +63,7 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   scrollEl.__midis = rows;
   scrollEl.__lanes = laneMode ? lanes : null;
   scrollEl.__steps = safeSteps;
+  scrollEl.__onZoom = onZoom || null;
   bindPan(scrollEl);
 
   /* Rows, steps, zoom, instrument, owner and the scale mask make the frame.
@@ -403,67 +404,165 @@ function buildRows(notes, pitchesFor, focusMidi) {
   return rows;
 }
 
+/**
+ * Grid gestures: one finger (or a mouse drag) on empty space pans both axes;
+ * two fingers pinch-zoom the step width while the midpoint stays put and
+ * moving both fingers together pans as well. Ctrl/Cmd+wheel zooms at the
+ * cursor, Shift+wheel slides sideways. A tap is still a write.
+ */
 function bindPan(scrollEl) {
   if (scrollEl.dataset.pan === '1') return;
   scrollEl.dataset.pan = '1';
   let drag = null;
+  let pinch = null;
+  let pinchEndedAt = 0;
+  const pointers = new Map();
+
+  /* Every finger counts even on strips, keys and the ruler — those swallow
+     the pointerdown on its way back up, so tracking runs in capture phase. */
+  scrollEl.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.button !== 0) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (pointers.size !== 2 || pinch) return;
+      const [a, b] = [...pointers.values()];
+      const rect = scrollEl.getBoundingClientRect();
+      pinch = {
+        d0: Math.max(24, Math.hypot(a.x - b.x, a.y - b.y)),
+        step0: stepSize(scrollEl),
+        anchorX: scrollEl.scrollLeft + (a.x + b.x) / 2 - rect.left - KEY_PX,
+        anchorY: scrollEl.scrollTop + (a.y + b.y) / 2 - rect.top - RULER_PX,
+        raf: 0,
+      };
+      scrollEl.__pinching = true;
+      scrollEl.__pinchStamp = performance.now();
+      drag = null;
+      /* Strips capture their pointer for note drags; a pinch rebuilds the
+         sheet mid-gesture, which would leave that capture on a detached
+         node and starve the tracker. Hand both fingers back to the roll. */
+      for (const el of scrollEl.querySelectorAll('.roll__note, .roll__resize')) {
+        for (const id of pointers.keys()) {
+          try {
+            el.releasePointerCapture(id);
+          } catch {
+            // That pointer was never captured here.
+          }
+        }
+      }
+    },
+    { capture: true },
+  );
+
+  const applyPinch = () => {
+    if (!pinch) return;
+    pinch.raf = 0;
+    const [a, b] = [...pointers.values()];
+    if (!a || !b) return;
+    const rect = scrollEl.getBoundingClientRect();
+    const spread = Math.hypot(a.x - b.x, a.y - b.y);
+    const wanted = pinch.step0 * Math.max(0.2, Math.min(6, spread / pinch.d0));
+    const applied = scrollEl.__onZoom?.(wanted) ?? wanted;
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    scrollEl.scrollLeft = Math.max(0, KEY_PX + pinch.anchorX * (applied / pinch.step0) - (midX - rect.left));
+    scrollEl.scrollTop = Math.max(0, RULER_PX + pinch.anchorY - (midY - rect.top));
+  };
+
   scrollEl.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0 || event.target.closest('.roll__note, .roll__keys, .roll__ruler, .roll__corner')) return;
+    if (pinch || event.button !== 0) return;
+    if (event.target.closest('.roll__note, .roll__keys')) return;
     const grid = scrollEl.querySelector('.roll__grid');
     const local = gridPoint(grid, event);
     drag = {
       id: event.pointerId,
       x: event.clientX,
       y: event.clientY,
-      left: scrollEl.scrollLeft,
-      axis: null,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      panned: false,
       mouse: event.pointerType === 'mouse',
       local,
     };
-    if (drag.mouse) {
-      try {
-        scrollEl.setPointerCapture(event.pointerId);
-      } catch {
-        // Capture can fail if the pointer already ended.
-      }
+    try {
+      scrollEl.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture can fail if the pointer already ended.
     }
   });
   scrollEl.addEventListener(
     'pointermove',
     (event) => {
+      const point = pointers.get(event.pointerId);
+      if (point) {
+        point.x = event.clientX;
+        point.y = event.clientY;
+      }
+      if (pinch) {
+        event.preventDefault();
+        if (!pinch.raf) pinch.raf = requestAnimationFrame(applyPinch);
+        return;
+      }
       if (!drag || event.pointerId !== drag.id) return;
       const dx = event.clientX - drag.x;
       const dy = event.clientY - drag.y;
-      if (drag.mouse) {
-        if (!scrollEl.__selectMode) return;
+      if (drag.mouse && scrollEl.__selectMode) {
         const grid = scrollEl.querySelector('.roll__grid');
         const now = gridPoint(grid, event);
         paintMarquee(grid, drag.local, now);
         event.preventDefault();
         return;
       }
-      if (!drag.axis && Math.hypot(dx, dy) > 8) drag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-      if (drag.axis !== 'x') return;
-      if (!drag.captured) {
-        drag.captured = true;
-        scrollEl.setPointerCapture?.(event.pointerId);
-      }
+      if (!drag.panned && Math.hypot(dx, dy) < 8) return;
+      drag.panned = true;
       event.preventDefault();
-      scrollEl.scrollLeft = drag.left - dx;
+      scrollEl.scrollLeft -= event.clientX - drag.lastX;
+      const before = scrollEl.scrollTop;
+      scrollEl.scrollTop -= event.clientY - drag.lastY;
+      const rest = drag.lastY - event.clientY - (scrollEl.scrollTop - before);
+      const card = scrollEl.closest('.fx-sheet__card');
+      if (rest && card) card.scrollTop += rest;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
     },
     { passive: false },
   );
   const end = (event) => {
+    pointers.delete(event.pointerId);
+    if (pinch) {
+      if (pinch.raf) cancelAnimationFrame(pinch.raf);
+      applyPinch();
+      pinch = null;
+      scrollEl.__pinching = false;
+      scrollEl.__pinchStamp = performance.now();
+      pinchEndedAt = performance.now();
+      // A finger still on the glass keeps panning instead of tapping.
+      const remaining = [...pointers.entries()][0];
+      if (remaining) {
+        const [id, point] = remaining;
+        drag = {
+          id,
+          x: point.x,
+          y: point.y,
+          lastX: point.x,
+          lastY: point.y,
+          panned: true,
+          mouse: false,
+          local: null,
+        };
+      }
+      return;
+    }
     if (!drag || event.pointerId !== drag.id) return;
     const moved = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
-    const axis = drag.axis;
     const mouse = drag.mouse;
     const local = drag.local;
+    const panned = drag.panned;
     drag = null;
     const grid = scrollEl.querySelector('.roll__grid');
     const marquee = grid?.querySelector('.roll__marquee');
     if (marquee) marquee.hidden = true;
-    if (mouse && scrollEl.__selectMode && moved > 6 && grid) {
+    if (mouse && scrollEl.__selectMode && moved > 6 && grid && local) {
       const now = gridPoint(grid, event);
       const rect = boxBetween(local, now);
       const ids = [];
@@ -474,7 +573,8 @@ function bindPan(scrollEl) {
       setSelected(scrollEl, ids);
       return;
     }
-    if (event.type === 'pointercancel' || axis === 'x' || axis === 'y' || moved > 10) return;
+    if (event.type === 'pointercancel' || panned || moved > 10) return;
+    if (performance.now() - pinchEndedAt < 350) return;
     if (scrollEl.__selectMode) {
       setSelected(scrollEl, []);
       return;
@@ -492,8 +592,31 @@ function bindPan(scrollEl) {
     if (scrollEl.__inScale && !scrollEl.__inScale(midi)) return;
     place({ step, midi, lane: scrollEl.__lanes?.[row]?.id });
   };
-  scrollEl.addEventListener('pointerup', end);
-  scrollEl.addEventListener('pointercancel', end);
+  /* Finger releases must be heard even past the roll's edge — a pointerup
+     that lands outside never bubbles here, and a leaked pointer would
+     resurrect the pinch on the next touch. */
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  scrollEl.addEventListener(
+    'wheel',
+    (event) => {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        const before = stepSize(scrollEl);
+        const rect = scrollEl.getBoundingClientRect();
+        const anchorX = scrollEl.scrollLeft + event.clientX - rect.left - KEY_PX;
+        const wanted = before * (event.deltaY < 0 ? 1.15 : 1 / 1.15);
+        const applied = scrollEl.__onZoom?.(wanted) ?? wanted;
+        scrollEl.scrollLeft = Math.max(0, KEY_PX + anchorX * (applied / before) - (event.clientX - rect.left));
+        return;
+      }
+      if (event.shiftKey) {
+        event.preventDefault();
+        scrollEl.scrollLeft += event.deltaY || event.deltaX;
+      }
+    },
+    { passive: false },
+  );
 }
 
 function bindResize(grip, strip, note, duration, steps, onResize) {
@@ -501,6 +624,9 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
     if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
+    const rollEl = grip.closest('.roll');
+    const startedAt = performance.now();
+    const swallowed = () => rollEl && (rollEl.__pinching || (rollEl.__pinchStamp || 0) > startedAt);
     try {
       grip.setPointerCapture?.(event.pointerId);
     } catch {
@@ -510,7 +636,7 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
     let dragged = false;
     let nextDuration = duration;
     const move = (ev) => {
-      if (ev.pointerId !== event.pointerId) return;
+      if (ev.pointerId !== event.pointerId || swallowed()) return;
       const dx = ev.clientX - startX;
       if (!dragged && Math.abs(dx) < 6) return;
       dragged = true;
@@ -524,7 +650,7 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
-      if (dragged && nextDuration !== duration) onResize?.(note.voiceId, { duration: nextDuration });
+      if (!swallowed() && dragged && nextDuration !== duration) onResize?.(note.voiceId, { duration: nextDuration });
     };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -593,11 +719,13 @@ function bindStrip(strip, scrollEl, steps) {
       scrollEl.__selected.add(voice);
       paintSelection(scrollEl);
     }
+    const startedAt = performance.now();
+    const swallowed = () => scrollEl.__pinching || (scrollEl.__pinchStamp || 0) > startedAt;
     const startX = event.clientX;
     const startY = event.clientY;
     let dragged = false;
     const move = (ev) => {
-      if (ev.pointerId !== event.pointerId) return;
+      if (ev.pointerId !== event.pointerId || swallowed()) return;
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
       if (!dragged && Math.hypot(dx, dy) < 8) return;
@@ -625,11 +753,11 @@ function bindStrip(strip, scrollEl, steps) {
       window.removeEventListener('pointercancel', up);
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
-      if (ev.type === 'pointercancel' || !dragged) {
+      if (ev.type === 'pointercancel' || !dragged || swallowed()) {
         scrollEl.querySelectorAll('.roll__note').forEach((item) => {
           item.style.transform = '';
         });
-        if (ev.type === 'pointercancel') return;
+        if (ev.type === 'pointercancel' || swallowed()) return;
         if (selectMode) {
           if (scrollEl.__selected.has(voice)) scrollEl.__selected.delete(voice);
           else scrollEl.__selected.add(voice);

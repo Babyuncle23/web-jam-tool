@@ -13,6 +13,12 @@ const STEP_GAP = 3;
 /** A release this far from the touchdown was a drag, not a tap. */
 const TAP_PX2 = 10 * 10;
 
+/** Steps begin after the sticky label column — its width shrinks on phones. */
+function labelWidth(tape) {
+  const w = tape ? parseFloat(getComputedStyle(tape).getPropertyValue('--seq-label-w')) : 0;
+  return w > 0 ? w : 132;
+}
+
 function paintCellButton(button, slot, mirrored) {
   const on = Boolean(slot?.on);
   const triplet = on && slot?.division === 3;
@@ -45,6 +51,7 @@ function tapValue(mode, slot) {
  * @param {() => string} [options.writeMode] 'single' | 'triplet'
  * @param {(track: string, step: number, value: {on: boolean, division: number}) => void} options.applyCell
  * @param {(phase: 'end') => void} [options.onGesture] fired after a write so the view can commit
+ * @param {(nextPx: number) => number} [options.onZoom] pinch/wheel zoom: sets the cell size, returns the applied px
  */
 export function createDrumGrid(container, options) {
   const {
@@ -57,13 +64,16 @@ export function createDrumGrid(container, options) {
     writeMode = () => 'single',
     applyCell = () => {},
     onGesture = () => {},
+    onZoom = null,
   } = options;
 
   let tape = null;
   let resizer = null;
   let litStep = -1;
   let panDown = null;
-  let blockClick = false;
+  let pinch = null;
+  let blockUntil = 0;
+  const pointers = new Map();
   const buttons = new Map();
   const columns = [];
 
@@ -73,31 +83,142 @@ export function createDrumGrid(container, options) {
   }
 
   /**
-   * Clicks write cells; drags scroll the tape or the sheet. A release click
-   * that follows a long pull is not a tap — swallow it once.
+   * Clicks write cells; drags pan the tape on both axes (leftover vertical
+   * motion scrolls the sheet card), two fingers pinch-zoom the cell size.
+   * A release click that follows a pull or a pinch is not a tap — clicks are
+   * swallowed for a short window after the gesture ends.
    */
   function onPointerDown(event) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    panDown = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size === 2 && !pinch && tape) {
+      const [a, b] = [...pointers.values()];
+      const rect = tape.getBoundingClientRect();
+      pinch = {
+        d0: Math.max(24, Math.hypot(a.x - b.x, a.y - b.y)),
+        px0: Math.max(8, cellPx()),
+        anchorX: tape.scrollLeft + (a.x + b.x) / 2 - rect.left - labelWidth(tape),
+        anchorY: tape.scrollTop + (a.y + b.y) / 2 - rect.top,
+        raf: 0,
+      };
+      panDown = null;
+      return;
+    }
+    if (pointers.size > 2) return;
+    panDown = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      left: tape?.scrollLeft ?? 0,
+      top: tape?.scrollTop ?? 0,
+      panned: false,
+      pinched: Boolean(pinch),
+    };
+  }
+
+  function applyPinch() {
+    if (!pinch) return;
+    pinch.raf = 0;
+    const [a, b] = [...pointers.values()];
+    if (!a || !b || !tape) return;
+    const rect = tape.getBoundingClientRect();
+    const spread = Math.hypot(a.x - b.x, a.y - b.y);
+    const wanted = pinch.px0 * Math.max(0.2, Math.min(6, spread / pinch.d0));
+    const applied = onZoom?.(wanted) ?? wanted;
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    tape.scrollLeft = Math.max(0, labelWidth(tape) + pinch.anchorX * (applied / pinch.px0) - (midX - rect.left));
+    tape.scrollTop = Math.max(0, pinch.anchorY - (midY - rect.top));
+  }
+
+  function onPointerMove(event) {
+    const point = pointers.get(event.pointerId);
+    if (!point) return;
+    point.x = event.clientX;
+    point.y = event.clientY;
+    if (pinch) {
+      if (event.cancelable) event.preventDefault();
+      if (!pinch.raf) pinch.raf = requestAnimationFrame(applyPinch);
+      return;
+    }
+    if (!panDown || event.pointerId !== panDown.id || !tape) return;
+    const dx = event.clientX - panDown.x;
+    const dy = event.clientY - panDown.y;
+    if (!panDown.panned && dx * dx + dy * dy < 36) return;
+    panDown.panned = true;
+    if (event.cancelable) event.preventDefault();
+    tape.scrollLeft = panDown.left - dx;
+    const wanted = panDown.top - dy;
+    tape.scrollTop = wanted;
+    const rest = wanted - tape.scrollTop;
+    const card = tape.closest('.fx-sheet__card');
+    if (rest && card) card.scrollTop += rest;
   }
 
   function onPointerUp(event) {
+    pointers.delete(event.pointerId);
+    if (pinch) {
+      if (pinch.raf) cancelAnimationFrame(pinch.raf);
+      applyPinch();
+      pinch = null;
+      blockUntil = performance.now() + 350;
+      // A finger still on the glass keeps panning instead of writing a cell.
+      const remaining = [...pointers.entries()][0];
+      panDown = remaining
+        ? {
+            id: remaining[0],
+            x: remaining[1].x,
+            y: remaining[1].y,
+            left: tape?.scrollLeft ?? 0,
+            top: tape?.scrollTop ?? 0,
+            panned: true,
+            pinched: true,
+          }
+        : null;
+      return;
+    }
     if (!panDown || event.pointerId !== panDown.id) return;
     const dx = event.clientX - panDown.x;
     const dy = event.clientY - panDown.y;
+    const suppress = panDown.pinched || dx * dx + dy * dy > TAP_PX2;
     panDown = null;
-    if (dx * dx + dy * dy > TAP_PX2) blockClick = true;
+    if (suppress) blockUntil = performance.now() + 350;
   }
 
   function onPointerCancel(event) {
+    pointers.delete(event.pointerId);
+    if (pinch) {
+      if (pinch.raf) cancelAnimationFrame(pinch.raf);
+      pinch = null;
+      panDown = null;
+      blockUntil = performance.now() + 350;
+      return;
+    }
     if (panDown?.id === event.pointerId) panDown = null;
   }
 
   function onTapeClick(event) {
-    if (!blockClick) return;
-    blockClick = false;
+    if (performance.now() >= blockUntil) return;
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  function onWheel(event) {
+    if (!tape) return;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      const px0 = Math.max(8, cellPx());
+      const rect = tape.getBoundingClientRect();
+      const anchorX = tape.scrollLeft + event.clientX - rect.left - labelWidth(tape);
+      const wanted = px0 * (event.deltaY < 0 ? 1.15 : 1 / 1.15);
+      const applied = onZoom?.(wanted) ?? wanted;
+      tape.scrollLeft = Math.max(0, labelWidth(tape) + anchorX * (applied / px0) - (event.clientX - rect.left));
+      return;
+    }
+    if (event.shiftKey) {
+      event.preventDefault();
+      tape.scrollLeft += event.deltaY || event.deltaX;
+    }
   }
 
   function onKeyClick(button) {
@@ -107,6 +228,9 @@ export function createDrumGrid(container, options) {
     onGesture('end');
   }
 
+  /* Window-level move/up: the tape node is rebuilt on every render, so a
+     pointer captured by an old tape would leave the gesture without events. */
+  window.addEventListener('pointermove', onPointerMove, { passive: false });
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerCancel);
 
@@ -125,6 +249,7 @@ export function createDrumGrid(container, options) {
     tape = document.createElement('div');
     tape.className = 'seq-tape';
     tape.addEventListener('pointerdown', onPointerDown);
+    tape.addEventListener('wheel', onWheel, { passive: false });
     tape.addEventListener('click', onTapeClick, true);
 
     const ruler = document.createElement('div');
@@ -209,8 +334,8 @@ export function createDrumGrid(container, options) {
     tape.append(gridlines);
     container.append(tape);
 
-    // The brush owns every drag on cells, so sideways travel lives on its own
-    // slider — mirroring tape.scrollLeft in both directions.
+    // Drags pan the tape themselves; this range mirrors tape.scrollLeft as a
+    // scrollbar-shaped fallback for anyone who needs one (accessibility).
     const scroll = document.createElement('input');
     scroll.type = 'range';
     scroll.className = 'seq-scroll';
@@ -268,11 +393,14 @@ export function createDrumGrid(container, options) {
   }
 
   function destroy() {
+    window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerCancel);
     resizer?.disconnect();
     panDown = null;
-    blockClick = false;
+    pinch = null;
+    pointers.clear();
+    blockUntil = 0;
     buttons.clear();
     columns.length = 0;
     tape = null;

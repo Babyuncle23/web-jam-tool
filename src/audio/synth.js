@@ -433,7 +433,7 @@ export function padNoteMarks(notes, instrument, { columns = 12 } = {}) {
   const ownColor = INSTRUMENT_COLORS[target] || '#e2b43a';
   for (const mark of marks) {
     mark.radius = MARK_RADIUS;
-    mark.color = mark.own ? ownColor : 'rgba(122, 114, 102, 0.55)';
+    mark.color = mark.own ? ownColor : 'rgba(151, 141, 109, 0.55)';
   }
   return marks;
 }

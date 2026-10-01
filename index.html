@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#f6e6c8" />
+    <meta name="theme-color" content="#141a10" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>DoggoJam</title>
     <link
@@ -69,9 +69,30 @@
         <div id="role-qr" class="share-block__qr" role="img" aria-label="QR code: link to this page"></div>
       </div>
 
+      <button id="btn-ai-disclosure" class="btn btn--ghost role-disclosure" type="button">AI use disclosure</button>
+
       <p class="role-footnote">
         Tone.js, Socket.io, and QRCode.js load from their official CDNs (MIT). The instrument itself is written from scratch.
       </p>
+
+      <div id="ai-disclosure" class="fx-sheet" hidden>
+        <div class="fx-sheet__card disclosure-card">
+          <h2>AI use disclosure</h2>
+          <p>The app was created using AI, but has no connection to AI-generated music.</p>
+          <p>
+            The app's creator condemns the unethical use of AI, such as causing psychological and material harm to
+            various communities and individuals, and the exploitation of intellectual property without respecting the
+            will of their creators. The creator also acknowledges that the use of AI in the app's development may have
+            indirectly contributed to the aforementioned problems.
+          </p>
+          <p>The app's concept was created by humans, but some ideas for its elements were suggested by AI.</p>
+          <p>
+            The following apps were used during development: Devin (including grok 4.7 and claud opus 5), Cursor
+            (SWE-2 high), and the Google Search AI chatbot.
+          </p>
+          <button id="ai-disclosure-close" class="btn btn--primary btn--xl" type="button">Done</button>
+        </div>
+      </div>
     </section>
 
     <!-- Host -->
@@ -144,7 +165,7 @@
           </div>
           <div class="pad-mode" id="host-pad-mode">
             <div class="pad-mode__chips" role="group" aria-label="Pad mode">
-              <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+              <button class="chip is-on" type="button" data-padmode="notes">Keys</button>
               <button class="chip" type="button" data-padmode="sampler">SMP</button>
               <button class="chip" type="button" data-padmode="fx">FX</button>
             </div>
@@ -152,21 +173,9 @@
         </div>
 
         <div class="host-tools">
-          <div class="tool-row" id="harmony-row">
-            <button class="chip is-picked" type="button" data-scale="major">Major</button>
-            <button class="chip" type="button" data-scale="minor">Minor</button>
-            <button class="chip" type="button" data-scale="pentatonic">Pentatonic</button>
-          </div>
-
-          <div class="root-picker" id="root-picker">
-            <button id="root-prev" class="chip" type="button" aria-label="Key down">◀</button>
-            <span id="root-name">C</span>
-            <button id="root-next" class="chip" type="button" aria-label="Key up">▶</button>
-          </div>
-          <div class="chips chips--roots" data-group="root" id="root-chips"></div>
-
-          <div class="tempo-row">
-            <div class="tool-row" id="bpm-presets" data-group="bpm">
+          <div class="tempo-panel">
+            <button id="btn-bars" class="btn btn--ghost tempo-panel__bars" type="button">2 bars</button>
+            <div class="tool-row tempo-panel__bpm" id="bpm-presets" data-group="bpm">
               <span class="tool-row__label">BPM</span>
               <button class="chip" type="button" data-bpm="80">80</button>
               <button class="chip" type="button" data-bpm="96">96</button>
@@ -175,76 +184,109 @@
             </div>
           </div>
 
-          <div class="drum-picker">
-            <div class="tool-row drum-presets drum-picker__presets" id="host-drum-presets" role="group" aria-label="Drum patterns"></div>
-            <button id="btn-drums" class="btn btn--ghost drum-picker__open" type="button">Edit drums</button>
-          </div>
-
-          <div class="fx-stack">
-            <section class="fx-panel">
-              <span class="tool-row__label">Sound</span>
-              <div class="fx-tiles">
-                <div class="tool-row fx-row" id="instrument-fx" aria-label="Effects for the selected instrument"></div>
-                <button id="fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
+          <section class="tool-sec" id="sec-harmony">
+            <div class="tool-sec__head" tabindex="0" aria-expanded="false">
+              <span class="tool-sec__title">Key &amp; scale</span>
+              <span class="tool-sec__value" id="sec-harmony-value">C · Major</span>
+              <span class="tool-sec__chev" aria-hidden="true"></span>
+            </div>
+            <div class="tool-sec__body">
+              <div class="tool-row" id="harmony-row">
+                <button class="chip is-picked" type="button" data-scale="major">Major</button>
+                <button class="chip" type="button" data-scale="minor">Minor</button>
+                <button class="chip" type="button" data-scale="pentatonic">Pentatonic</button>
               </div>
-            </section>
-            <section class="fx-panel">
-              <div class="fx-panel__head">
-                <span class="tool-row__label">Drums</span>
-                <div class="mix-flags">
+              <div class="root-picker" id="root-picker">
+                <button id="root-prev" class="chip" type="button" aria-label="Key down">◀</button>
+                <span id="root-name">C</span>
+                <button id="root-next" class="chip" type="button" aria-label="Key up">▶</button>
+              </div>
+              <div class="chips chips--roots" data-group="root" id="root-chips"></div>
+            </div>
+          </section>
+
+          <section class="tool-sec is-open" id="sec-instruments">
+            <div class="tool-sec__head" tabindex="0" aria-expanded="true">
+              <span class="tool-sec__title">Instrument</span>
+              <span class="tool-sec__value" id="sec-inst-value">Pad</span>
+              <button id="btn-notes" class="btn btn--ghost tool-sec__edit" type="button" disabled>Edit notes</button>
+              <span class="tool-sec__chev" aria-hidden="true"></span>
+            </div>
+            <div class="tool-sec__mini inst-carousel" role="group" aria-label="Instrument">
+              <button class="btn btn--ghost inst-carousel__arrow" type="button" data-inst-cycle="-1" aria-label="Previous instrument"></button>
+              <div class="inst-carousel__name chip has-swatch" data-inst-name aria-live="polite"></div>
+              <button class="btn btn--ghost inst-carousel__arrow" type="button" data-inst-cycle="1" aria-label="Next instrument"></button>
+            </div>
+            <div class="tool-sec__body">
+              <div class="inst-list" id="instrument-row">
+                <div class="inst-card" data-card="pad">
+                  <button class="chip is-on has-swatch inst-card__pick" type="button" data-instrument="pad">Pad</button>
+
+                  <div class="mix-flags inst-card__mix">
+                    <button class="mix-flag" type="button" data-mix="solo" data-voice="pad" aria-pressed="false">S</button>
+                    <button class="mix-flag" type="button" data-mix="mute" data-voice="pad" aria-pressed="false">M</button>
+                  </div>
+                  <button class="btn btn--ghost inst-card__more" type="button" data-more="pad">More</button>
+                </div>
+                <div class="inst-card" data-card="bass">
+                  <button class="chip has-swatch inst-card__pick" type="button" data-instrument="bass">Bass</button>
+
+                  <div class="mix-flags inst-card__mix">
+                    <button class="mix-flag" type="button" data-mix="solo" data-voice="bass" aria-pressed="false">S</button>
+                    <button class="mix-flag" type="button" data-mix="mute" data-voice="bass" aria-pressed="false">M</button>
+                  </div>
+                  <button class="btn btn--ghost inst-card__more" type="button" data-more="bass">More</button>
+                </div>
+                <div class="inst-card" data-card="organ">
+                  <button class="chip has-swatch inst-card__pick" type="button" data-instrument="organ">Organ</button>
+
+                  <div class="mix-flags inst-card__mix">
+                    <button class="mix-flag" type="button" data-mix="solo" data-voice="organ" aria-pressed="false">S</button>
+                    <button class="mix-flag" type="button" data-mix="mute" data-voice="organ" aria-pressed="false">M</button>
+                  </div>
+                  <button class="btn btn--ghost inst-card__more" type="button" data-more="organ">More</button>
+                </div>
+                <div class="inst-card" data-card="kalimba">
+                  <button class="chip has-swatch inst-card__pick" type="button" data-instrument="kalimba">Kalimba</button>
+
+                  <div class="mix-flags inst-card__mix">
+                    <button class="mix-flag" type="button" data-mix="solo" data-voice="kalimba" aria-pressed="false">S</button>
+                    <button class="mix-flag" type="button" data-mix="mute" data-voice="kalimba" aria-pressed="false">M</button>
+                  </div>
+                  <button class="btn btn--ghost inst-card__more" type="button" data-more="kalimba">More</button>
+                </div>
+                <div class="inst-card" data-card="synth">
+                  <button class="chip has-swatch inst-card__pick" type="button" data-instrument="synth">Synth</button>
+
+                  <div class="mix-flags inst-card__mix">
+                    <button class="mix-flag" type="button" data-mix="solo" data-voice="synth" aria-pressed="false">S</button>
+                    <button class="mix-flag" type="button" data-mix="mute" data-voice="synth" aria-pressed="false">M</button>
+                  </div>
+                  <button class="btn btn--ghost inst-card__more" type="button" data-more="synth">More</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="tool-sec is-open" id="sec-drums">
+            <div class="tool-sec__head" tabindex="0" aria-expanded="true">
+              <span class="tool-sec__title">Drums</span>
+              <span class="tool-sec__value" id="sec-drums-value">Break</span>
+              <span class="tool-sec__chev" aria-hidden="true"></span>
+            </div>
+            <div class="tool-sec__body">
+              <div class="tool-row drum-presets" id="host-drum-presets" role="group" aria-label="Drum patterns"></div>
+              <div class="drum-sec__row">
+                <div class="mix-flags drum-sec__mix">
                   <button class="mix-flag" type="button" data-mix="solo" data-voice="drums" aria-pressed="false">S</button>
                   <button class="mix-flag" type="button" data-mix="mute" data-voice="drums" aria-pressed="false">M</button>
                 </div>
+                <button id="btn-drums" class="btn btn--ghost drum-sec__open" type="button">Edit drums</button>
               </div>
-              <div class="fx-tiles">
-                <div class="tool-row fx-row" id="drum-fx" aria-label="Drum machine effects"></div>
-              </div>
-            </section>
-          </div>
+            </div>
+          </section>
 
-          <div class="instrument-grid" id="instrument-row">
-            <div class="instrument-cell">
-              <button class="chip is-on has-swatch" type="button" data-instrument="pad">Pad</button>
-              <div class="mix-flags">
-                <button class="mix-flag" type="button" data-mix="solo" data-voice="pad" aria-pressed="false">S</button>
-                <button class="mix-flag" type="button" data-mix="mute" data-voice="pad" aria-pressed="false">M</button>
-              </div>
-            </div>
-            <div class="instrument-cell">
-              <button class="chip" type="button" data-instrument="bass">Bass</button>
-              <div class="mix-flags">
-                <button class="mix-flag" type="button" data-mix="solo" data-voice="bass" aria-pressed="false">S</button>
-                <button class="mix-flag" type="button" data-mix="mute" data-voice="bass" aria-pressed="false">M</button>
-              </div>
-            </div>
-            <div class="instrument-cell">
-              <button class="chip" type="button" data-instrument="organ">Organ</button>
-              <div class="mix-flags">
-                <button class="mix-flag" type="button" data-mix="solo" data-voice="organ" aria-pressed="false">S</button>
-                <button class="mix-flag" type="button" data-mix="mute" data-voice="organ" aria-pressed="false">M</button>
-              </div>
-            </div>
-            <div class="instrument-cell">
-              <button class="chip" type="button" data-instrument="kalimba">Kalimba</button>
-              <div class="mix-flags">
-                <button class="mix-flag" type="button" data-mix="solo" data-voice="kalimba" aria-pressed="false">S</button>
-                <button class="mix-flag" type="button" data-mix="mute" data-voice="kalimba" aria-pressed="false">M</button>
-              </div>
-            </div>
-            <div class="instrument-cell">
-              <button class="chip" type="button" data-instrument="synth">Synth</button>
-              <div class="mix-flags">
-                <button class="mix-flag" type="button" data-mix="solo" data-voice="synth" aria-pressed="false">S</button>
-                <button class="mix-flag" type="button" data-mix="mute" data-voice="synth" aria-pressed="false">M</button>
-              </div>
-            </div>
-          </div>
           <button id="btn-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
-
-          <div class="loop-actions">
-            <button id="btn-notes" class="btn btn--ghost btn--xl" type="button" disabled>Edit notes</button>
-            <button id="btn-bars" class="btn btn--ghost btn--xl" type="button">2 bars</button>
-          </div>
 
           <ul class="event-log" id="host-log" aria-live="polite"></ul>
         </div>
@@ -295,24 +337,16 @@
               <span id="host-drum-pitch-label">Drum pitch · 0 st</span>
               <input id="host-drum-pitch" type="range" min="-12" max="12" step="1" value="0" aria-label="Drum pitch" />
             </label>
+            <div id="host-drum-fx" class="fx-sliders"></div>
             <p class="seq-hint">Repeat copies the first bars into the rest — switch it off to make bars differ. Pitch retunes every drum voice.</p>
           </div>
-          <p class="seq-hint">Tap a cell or drag across cells like a brush.</p>
-          <label class="zoom-row">
-            <span>Zoom</span>
-            <input id="drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
-          </label>
+          <p class="seq-hint">Tap a cell to write. Drag to move around, pinch or Ctrl+scroll to zoom.</p>
           <div class="sequencer" id="sequencer"></div>
         </div>
       </div>
 
       <div id="host-notes-sheet" class="fx-sheet fx-sheet--stage" hidden>
         <div class="fx-sheet__card">
-          <h2>Notes</h2>
-          <label class="zoom-row">
-            <span>Zoom</span>
-            <input id="host-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
-          </label>
           <div class="inst-carousel" role="group" aria-label="Instrument">
             <button id="host-inst-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous instrument"></button>
             <div id="host-inst-name" class="inst-carousel__name chip has-swatch" aria-live="polite"></div>
@@ -361,7 +395,7 @@
 
       <div id="host-fx-sheet" class="fx-sheet" hidden>
         <div class="fx-sheet__card">
-          <h2>Effect detail</h2>
+          <h2 id="host-fx-title">Effect detail</h2>
           <div id="host-fx-sliders" class="fx-sliders"></div>
           <button id="host-fx-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>
@@ -436,7 +470,7 @@
         </div>
         <div class="pad-mode" id="controller-pad-mode">
           <div class="pad-mode__chips" role="group" aria-label="Pad mode">
-            <button class="chip is-on" type="button" data-padmode="notes">Notes</button>
+            <button class="chip is-on" type="button" data-padmode="notes">Keys</button>
             <button class="chip" type="button" data-padmode="sampler">SMP</button>
             <button class="chip" type="button" data-padmode="fx">FX</button>
           </div>
@@ -444,44 +478,66 @@
       </main>
 
       <footer class="controller-foot">
-        <div class="instrument-grid" id="controller-instruments">
-          <button class="chip is-on has-swatch" type="button" data-instrument="pad">Pad</button>
-          <button class="chip" type="button" data-instrument="bass">Bass</button>
-          <button class="chip" type="button" data-instrument="organ">Organ</button>
-          <button class="chip" type="button" data-instrument="kalimba">Kalimba</button>
-          <button class="chip" type="button" data-instrument="synth">Synth</button>
-        </div>
-        <div class="tool-row drum-presets" id="controller-drum-presets-main" role="group" aria-label="Drum patterns"></div>
-        <div class="loop-actions">
-          <button id="controller-drums" class="btn btn--ghost btn--xl" type="button">Edit drums</button>
-          <button id="controller-notes" class="btn btn--ghost btn--xl" type="button" disabled>Edit notes</button>
-          <button id="controller-advanced" class="btn btn--ghost btn--xl" type="button">Advanced</button>
-        </div>
-      </footer>
+        <section class="tool-sec is-open" id="sec-guest-instruments">
+          <div class="tool-sec__head" tabindex="0" aria-expanded="true">
+            <span class="tool-sec__title">Instrument</span>
+            <span class="tool-sec__value" id="sec-guest-inst-value">Pad</span>
+            <button id="controller-notes" class="btn btn--ghost tool-sec__edit" type="button" disabled>Edit notes</button>
+            <span class="tool-sec__chev" aria-hidden="true"></span>
+          </div>
+          <div class="tool-sec__mini inst-carousel" role="group" aria-label="Instrument">
+            <button class="btn btn--ghost inst-carousel__arrow" type="button" data-inst-cycle="-1" aria-label="Previous instrument"></button>
+            <div class="inst-carousel__name chip has-swatch" data-inst-name aria-live="polite"></div>
+            <button class="btn btn--ghost inst-carousel__arrow" type="button" data-inst-cycle="1" aria-label="Next instrument"></button>
+          </div>
+          <div class="tool-sec__body">
+            <div class="inst-list" id="controller-instruments">
+              <div class="inst-card" data-card="pad">
+                <button class="chip is-on has-swatch inst-card__pick" type="button" data-instrument="pad">Pad</button>
 
-      <div id="controller-advanced-sheet" class="fx-sheet" hidden>
-        <div class="fx-sheet__card">
-          <h2>Advanced</h2>
-          <p class="seq-hint">The key and scale come from the host. These extras still sync for everyone.</p>
-          <section class="fx-panel">
-            <span class="tool-row__label">Sound</span>
-            <div class="fx-tiles">
-              <div class="tool-row fx-row" id="controller-fx" aria-label="Effects for your instrument"></div>
-              <button id="controller-fx-detail" class="btn btn--ghost fx-more" type="button">More</button>
+                <button class="btn btn--ghost inst-card__more" type="button" data-more="pad">More</button>
+              </div>
+              <div class="inst-card" data-card="bass">
+                <button class="chip has-swatch inst-card__pick" type="button" data-instrument="bass">Bass</button>
+
+                <button class="btn btn--ghost inst-card__more" type="button" data-more="bass">More</button>
+              </div>
+              <div class="inst-card" data-card="organ">
+                <button class="chip has-swatch inst-card__pick" type="button" data-instrument="organ">Organ</button>
+
+                <button class="btn btn--ghost inst-card__more" type="button" data-more="organ">More</button>
+              </div>
+              <div class="inst-card" data-card="kalimba">
+                <button class="chip has-swatch inst-card__pick" type="button" data-instrument="kalimba">Kalimba</button>
+
+                <button class="btn btn--ghost inst-card__more" type="button" data-more="kalimba">More</button>
+              </div>
+              <div class="inst-card" data-card="synth">
+                <button class="chip has-swatch inst-card__pick" type="button" data-instrument="synth">Synth</button>
+
+                <button class="btn btn--ghost inst-card__more" type="button" data-more="synth">More</button>
+              </div>
             </div>
-          </section>
-          <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
-          <button id="controller-advanced-close" class="btn btn--primary btn--xl" type="button">Done</button>
-        </div>
-      </div>
+          </div>
+        </section>
+
+        <section class="tool-sec is-open" id="sec-guest-drums">
+          <div class="tool-sec__head" tabindex="0" aria-expanded="true">
+            <span class="tool-sec__title">Drums</span>
+            <span class="tool-sec__value" id="sec-guest-drums-value">Break</span>
+            <span class="tool-sec__chev" aria-hidden="true"></span>
+          </div>
+          <div class="tool-sec__body">
+            <div class="tool-row drum-presets" id="controller-drum-presets-main" role="group" aria-label="Drum patterns"></div>
+            <button id="controller-drums" class="btn btn--ghost btn--xl" type="button">Edit drums</button>
+          </div>
+        </section>
+
+        <button id="controller-master" class="btn btn--ghost btn--xl" type="button">Master Effects</button>
+      </footer>
 
       <div id="controller-notes-sheet" class="fx-sheet fx-sheet--stage" hidden>
         <div class="fx-sheet__card">
-          <h2>Notes</h2>
-          <label class="zoom-row">
-            <span>Zoom</span>
-            <input id="controller-note-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Notes zoom">
-          </label>
           <div class="inst-carousel" role="group" aria-label="Instrument">
             <button id="controller-inst-prev" class="btn btn--ghost inst-carousel__arrow" type="button" aria-label="Previous instrument"></button>
             <div id="controller-inst-name" class="inst-carousel__name chip has-swatch" aria-live="polite"></div>
@@ -542,11 +598,7 @@
             </label>
             <p class="seq-hint">Repeat copies the first bars into the rest — switch it off to make bars differ. Pitch retunes every drum voice.</p>
           </div>
-          <p class="seq-hint">Tap a cell or drag across cells like a brush.</p>
-          <label class="zoom-row">
-            <span>Zoom</span>
-            <input id="controller-drum-zoom" type="range" min="0" max="100" value="0" step="1" aria-label="Drum zoom">
-          </label>
+          <p class="seq-hint">Tap a cell to write. Drag to move around, pinch or Ctrl+scroll to zoom.</p>
           <div class="sequencer" id="controller-sequencer"></div>
         </div>
       </div>
@@ -562,7 +614,7 @@
 
       <div id="controller-fx-sheet" class="fx-sheet" hidden>
         <div class="fx-sheet__card">
-          <h2>Effect detail</h2>
+          <h2 id="controller-fx-title">Effect detail</h2>
           <div id="controller-fx-sliders" class="fx-sliders"></div>
           <button id="controller-fx-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>

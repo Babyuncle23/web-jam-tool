@@ -12,6 +12,7 @@ import {
   INSTRUMENT_IDS,
   INSTRUMENTS,
   NOTE_NAMES,
+  SCALE_LABELS,
   LOOP_STEPS,
   PerformanceRecorder,
   barCountLabel,
@@ -43,7 +44,6 @@ import {
   clampFx,
   createDrumBus,
   createInstrumentBus,
-  cycleFxAmount,
   defaultFxState,
   defaultLevels,
   drumFxSpecs,
@@ -137,9 +137,14 @@ export async function createHostView({ lite } = {}) {
     rootNext: document.getElementById('root-next'),
     drumPresets: document.getElementById('drum-presets'),
     drumPresetsMain: document.getElementById('host-drum-presets'),
-    instrumentFx: document.getElementById('instrument-fx'),
-    drumFx: document.getElementById('drum-fx'),
+    drumFxBox: document.getElementById('host-drum-fx'),
     hostScreen: document.getElementById('host-screen'),
+    topbar: document.querySelector('#host-screen .topbar'),
+    secHarmonyValue: document.getElementById('sec-harmony-value'),
+    secInstValue: document.getElementById('sec-inst-value'),
+    secDrumValue: document.getElementById('sec-drums-value'),
+    secInstruments: document.getElementById('sec-instruments'),
+    instMiniName: document.querySelector('#sec-instruments [data-inst-name]'),
     splash: document.getElementById('audio-splash'),
     splashTitle: document.getElementById('splash-title'),
     splashDetail: document.getElementById('splash-detail'),
@@ -163,9 +168,9 @@ export async function createHostView({ lite } = {}) {
     instName: document.getElementById('host-inst-name'),
     instNext: document.getElementById('host-inst-next'),
     bars: document.getElementById('btn-bars'),
-    fxDetail: document.getElementById('fx-detail'),
     fxSheet: document.getElementById('host-fx-sheet'),
     fxSliders: document.getElementById('host-fx-sliders'),
+    fxTitle: document.getElementById('host-fx-title'),
     fxSheetClose: document.getElementById('host-fx-close'),
     master: document.getElementById('btn-master'),
     exportOpen: document.getElementById('btn-export'),
@@ -206,6 +211,9 @@ export async function createHostView({ lite } = {}) {
     root: 'C',
     scale: 'major',
     instrument: 'pad',
+    // Instrument whose sliders the More sheet shows — follows the card it
+    // was opened from, not always the playing instrument.
+    fxFor: 'pad',
     bpm: 120,
     peers: new Map(),
     effects: defaultFxState(),
@@ -267,6 +275,22 @@ export async function createHostView({ lite } = {}) {
     el.label.textContent = text || '—';
   }
 
+  /** Section headers always read out the current value when collapsed. */
+  function paintSecValues() {
+    if (el.secHarmonyValue) el.secHarmonyValue.textContent = `${state.root} · ${SCALE_LABELS[state.scale] ?? state.scale}`;
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    if (el.secInstValue) el.secInstValue.textContent = spec?.label ?? state.instrument;
+    if (el.secDrumValue) el.secDrumValue.textContent = DRUM_PRESETS[state.drumPreset]?.label ?? 'Custom';
+  }
+
+  /** The collapsed instrument section is a one-item carousel. */
+  function paintInstrumentMini() {
+    if (!el.instMiniName) return;
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    el.instMiniName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    paintIconButton(el.instMiniName, state.instrument, spec?.label || state.instrument);
+  }
+
   const padFingers = new Map();
 
   function sameInstrument(instrument) {
@@ -315,6 +339,7 @@ export async function createHostView({ lite } = {}) {
     audio?.synth.setRoot(note);
     el.rootName.textContent = note;
     el.rootChips.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('is-picked', chip.dataset.root === note));
+    paintSecValues();
     publishHarmony();
     if (!el.notesSheet.hidden) paintHostRoll();
   }
@@ -560,6 +585,18 @@ export async function createHostView({ lite } = {}) {
     return fit + (Math.max(fit, DRUM_EDIT_PX) - fit) * drumZoom;
   }
 
+  /** Pinch/wheel zoom: translate a wanted cell size back into drumZoom. */
+  function applyDrumCellPx(px) {
+    const steps = Math.max(1, state.drumSteps || 16);
+    const view = el.sequencer?.clientWidth || 0;
+    const width = view > 80 ? view : Math.max(280, window.innerWidth - 16);
+    const fit = Math.max(8, (width - 128 - STEP_GAP * Math.max(0, steps - 1) - 8) / steps);
+    const span = Math.max(fit, DRUM_EDIT_PX) - fit;
+    drumZoom = span > 0 ? Math.max(0, Math.min(1, (px - fit) / span)) : 0;
+    renderSequencer();
+    return drumCellPx();
+  }
+
   function drumsPayload() {
     return {
       steps: state.drumSteps,
@@ -645,6 +682,7 @@ export async function createHostView({ lite } = {}) {
     onGesture: (phase) => {
       if (phase === 'end') flushDrumPush();
     },
+    onZoom: applyDrumCellPx,
   });
 
   function renderSequencer() {
@@ -843,6 +881,7 @@ export async function createHostView({ lite } = {}) {
     for (const row of [el.drumPresets, el.drumPresetsMain]) {
       row?.querySelectorAll('.chip').forEach((chip) => chip.classList.toggle('is-picked', chip.dataset.preset === id));
     }
+    paintSecValues();
   }
 
   function pickDrumPreset(id) {
@@ -884,41 +923,43 @@ export async function createHostView({ lite } = {}) {
 
   /* ---------- Per-instrument and drum effects ---------- */
 
-  function renderFxRow(container, specs, levels, onCycle) {
-    container.replaceChildren();
-    for (const spec of specs) {
-      const level = clampFx(levels?.[spec.id] ?? 0);
-      const button = pressable(`chip fx-chip has-swatch${level >= 0.08 ? ' is-on' : ''}`);
-      button.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
-      button.dataset.fx = spec.id;
-      paintIconButton(button, spec.id, spec.label, fxAmountLabel(level));
-      button.addEventListener('click', () => onCycle(spec.id, cycleFxAmount(level)));
-      container.append(button);
-    }
-  }
-
-  function renderInstrumentFx() {
-    const specs = instrumentFxSpecs(state.instrument, lite);
-    // Lite runs the default-on effects silently — an empty row stays hidden
-    // instead of telling the user which chips are stuck on.
-    el.instrumentFx.hidden = !specs.length;
-    renderFxRow(el.instrumentFx, specs, state.effects[state.instrument], (id, level) => {
-      state.effects[state.instrument][id] = level;
-      audio?.bus.setEffect(state.instrument, id, level);
-      renderInstrumentFx();
-      publishHarmony();
-    });
-  }
-
+  /** Drum effects moved into the drum sheet's Advanced panel as sliders. */
   function renderDrumFx() {
     const specs = drumFxSpecs(lite);
-    el.drumFx.hidden = !specs.length;
-    renderFxRow(el.drumFx, specs, state.effects.drums, (id, level) => {
-      state.effects.drums[id] = level;
-      audio?.drumsFx.setEffect(id, level);
-      renderDrumFx();
-      publishHarmony();
-    });
+    const box = el.drumFxBox;
+    if (!box) return;
+    box.replaceChildren();
+    if (!specs.length) return;
+    const heading = document.createElement('p');
+    heading.className = 'fx-slider__group';
+    heading.textContent = 'Drum effects';
+    box.append(heading);
+    for (const spec of specs) {
+      const amount = clampFx(state.effects.drums?.[spec.id] ?? 0);
+      const row = document.createElement('label');
+      row.className = 'fx-slider';
+      row.dataset.fx = spec.id;
+      row.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
+      const name = document.createElement('span');
+      const specName = FX_FULL_LABELS[spec.id] ?? spec.label;
+      name.textContent = `${specName} · ${Math.round(amount * 100)}%`;
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = '0';
+      input.max = '100';
+      input.step = '1';
+      input.value = String(Math.round(amount * 100));
+      input.setAttribute('aria-label', specName);
+      input.addEventListener('input', () => {
+        const value = Number(input.value) / 100;
+        name.textContent = `${specName} · ${input.value}%`;
+        state.effects.drums[spec.id] = value;
+        audio?.drumsFx.setEffect(spec.id, value);
+        publishHarmony();
+      });
+      row.append(name, input);
+      box.append(row);
+    }
   }
 
   function applyStoredEffects() {
@@ -1266,16 +1307,14 @@ export async function createHostView({ lite } = {}) {
     const chip = event.target.closest('[data-padmode]');
     if (chip) setPadMode(chip.dataset.padmode);
   });
-  /** One button, both tools: ✕ wipes a pad's hits, ✎ drags pitch/stretch. */
+  /** The pencil alone is enough — the merged tune/erase layer can read as
+     plain "edit" (✎ also covers wiping a pad's hits). */
   function paintSampleEditButton(button) {
     button.classList.add('has-icon', 'sample-edit-btn');
-    const slash = document.createElement('span');
-    slash.className = 'icon-sep';
-    slash.textContent = '/';
     const text = document.createElement('span');
     text.className = 'chip-label';
     text.textContent = 'Edit';
-    button.replaceChildren(chipIcon('xmark'), slash, chipIcon('edit'), text);
+    button.replaceChildren(chipIcon('edit'), text);
   }
 
   el.sampleEdit?.addEventListener('click', () => {
@@ -1473,6 +1512,7 @@ export async function createHostView({ lite } = {}) {
       chip.classList.add('has-swatch');
       chip.classList.toggle('is-on', id === selected);
       chip.style.setProperty('--chip', INSTRUMENT_COLORS[id] || '#e2b43a');
+      chip.closest('.inst-card')?.classList.toggle('is-on', id === selected);
       paintIconButton(chip, id, spec?.label || id);
     });
   }
@@ -1492,6 +1532,7 @@ export async function createHostView({ lite } = {}) {
       state.scale = chip.dataset.scale;
       audio?.synth.setScale(state.scale);
       selectInRow(el.hostScreen.querySelector('#harmony-row'), 'scale', state.scale, 'is-picked');
+      paintSecValues();
       publishHarmony();
       if (!el.notesSheet.hidden) paintHostRoll();
     }
@@ -1533,11 +1574,19 @@ export async function createHostView({ lite } = {}) {
       audio?.synth.setMode('single');
     }
     state.instrument = normalizeInstrument(instrument);
+    state.fxFor = state.instrument;
     paintInstruments(el.instruments, state.instrument);
-    renderInstrumentFx();
+    paintInstrumentMini();
+    paintSecValues();
     if (!el.fxSheet.hidden) renderFxSliders();
     syncModeChrome();
     paintRollInstrument();
+  }
+
+  function cycleInstrument(direction) {
+    const index = INSTRUMENT_IDS.indexOf(state.instrument);
+    const next = INSTRUMENT_IDS[(index + direction + INSTRUMENT_IDS.length) % INSTRUMENT_IDS.length];
+    pickInstrument(next);
   }
 
   function cycleRollInstrument(direction) {
@@ -1557,6 +1606,56 @@ export async function createHostView({ lite } = {}) {
     if (!chip) return;
     pickInstrument(chip.dataset.instrument);
   });
+
+  /* Section headers toggle; carousel arrows and card MORE live outside the
+     heads so they never fight the collapse toggle. Heads are plain divs so
+     a touch drag still scrolls the page. */
+  el.hostScreen.addEventListener('click', (event) => {
+    const head = event.target.closest('.tool-sec__head');
+    // Controls inside a head (Edit notes) act for themselves, never toggle.
+    if (head && el.hostScreen.contains(head) && !event.target.closest('button, [role="button"], input, select, a')) {
+      const section = head.closest('.tool-sec');
+      const open = section.classList.toggle('is-open');
+      head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      return;
+    }
+    const cycle = event.target.closest('[data-inst-cycle]');
+    if (cycle) {
+      cycleInstrument(Number(cycle.dataset.instCycle) || 1);
+      return;
+    }
+    const more = event.target.closest('[data-more]');
+    if (more) openFxSheet(more.dataset.more);
+  });
+
+  el.hostScreen.addEventListener('keydown', (event) => {
+    const head = event.target.closest('.tool-sec__head');
+    if (!head || event.target !== head || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    head.click();
+  });
+
+  /* Landscape phone: the topbar is hidden by CSS, so Play and Back move
+     into the play-bar (Play lands between the mode chips and Rec).
+     Rotating back moves the buttons home. */
+  const landscapeMq = matchMedia('(orientation: landscape) and (max-height: 560px) and (pointer: coarse)');
+  const backButton = el.topbar?.querySelector('[data-action="back"]');
+  const chromeHomes = [el.transport, backButton]
+    .filter(Boolean)
+    .map((node) => ({ node, parent: node.parentNode, next: node.nextSibling }));
+
+  function placeLandscapeChrome() {
+    if (!el.playBar || !el.transport) return;
+    if (landscapeMq.matches) {
+      el.playBar.insertBefore(el.transport, el.loop ?? null);
+      if (backButton) el.playBar.insertBefore(backButton, el.playBar.firstChild);
+    } else {
+      for (const { node, parent, next } of chromeHomes) parent.insertBefore(node, next);
+    }
+  }
+
+  placeLandscapeChrome();
+  landscapeMq.addEventListener('change', placeLandscapeChrome);
 
   function setSharedBpm(bpm) {
     state.bpm = Number(bpm);
@@ -1812,6 +1911,18 @@ export async function createHostView({ lite } = {}) {
     return fit + (Math.max(fit, 44) - fit) * noteZoom;
   }
 
+  /** Pinch/wheel zoom: translate a wanted step width back into noteZoom. */
+  function applyNoteStepPx(px) {
+    const steps = Math.max(16, state.noteSteps || 32);
+    const view = el.noteTape?.clientWidth || 0;
+    const width = view > 40 ? view : Math.max(280, window.innerWidth - 16);
+    const fit = Math.max(6, (width - 50) / steps);
+    const span = Math.max(fit, 44) - fit;
+    noteZoom = span > 0 ? Math.max(0, Math.min(1, (px - fit) / span)) : 0;
+    paintHostRoll();
+    return hostNoteStepPx();
+  }
+
   /** Pending debounced repaint of the open sheet during a recording burst. */
   let rollPaintTimer = 0;
 
@@ -1827,6 +1938,7 @@ export async function createHostView({ lite } = {}) {
       notes: allLoopNotes(),
       steps: state.noteSteps,
       stepPx: hostNoteStepPx(),
+      onZoom: applyNoteStepPx,
       pitchesFor,
       lanes,
       colorFor: (note) => INSTRUMENT_COLORS[storedInstrument(note.instrument)] || '#e0a12e',
@@ -2028,7 +2140,9 @@ export async function createHostView({ lite } = {}) {
 
   function renderFxSliders() {
     const rows = [];
-    const instrument = state.instrument;
+    const instrument = state.fxFor;
+    const spec0 = INSTRUMENTS.find((item) => item.id === instrument);
+    if (el.fxTitle) el.fxTitle.textContent = spec0 ? `${spec0.label} · sound` : 'Effect detail';
     const level = clampFx(state.levels[instrument] ?? 1);
     const volumeRow = document.createElement('label');
     volumeRow.className = 'fx-slider';
@@ -2090,6 +2204,7 @@ export async function createHostView({ lite } = {}) {
         input.min = '0';
         input.max = '100';
         input.step = '1';
+        input.dataset.fx = spec.id;
         input.value = String(Math.round(amount * 100));
         input.addEventListener('input', () => {
           const value = Number(input.value) / 100;
@@ -2100,22 +2215,26 @@ export async function createHostView({ lite } = {}) {
         rows.push(row);
       }
     };
-    const specs = instrumentFxSpecs(state.instrument, lite);
+    const specs = instrumentFxSpecs(instrument, lite);
     if (specs.length) {
-      addGroup('This instrument', specs, state.effects[state.instrument], (id, value) => {
-        state.effects[state.instrument][id] = value;
-        audio?.bus.setEffect(state.instrument, id, value);
-        renderInstrumentFx();
+      addGroup('This instrument', specs, state.effects[instrument], (id, value) => {
+        state.effects[instrument][id] = value;
+        audio?.bus.setEffect(instrument, id, value);
         publishHarmony();
       });
     }
     el.fxSliders.replaceChildren(...rows);
   }
 
-  el.fxDetail.addEventListener('click', () => {
+  /** A card's MORE opens the slider sheet for that card's instrument —
+      selecting it is optional, editing does not steal the pad. */
+  function openFxSheet(instrument) {
+    const named = namedInstrument(instrument);
+    if (!named) return;
+    state.fxFor = named;
     renderFxSliders();
     el.fxSheet.hidden = false;
-  });
+  }
   el.fxSheetClose.addEventListener('click', () => {
     el.fxSheet.hidden = true;
   });
@@ -2126,15 +2245,6 @@ export async function createHostView({ lite } = {}) {
     button.classList.toggle('is-on', selectMode);
     button.setAttribute('aria-pressed', selectMode ? 'true' : 'false');
     setRollSelectMode(el.noteTape, selectMode);
-  });
-
-  document.getElementById('host-note-zoom')?.addEventListener('input', (event) => {
-    noteZoom = Number(event.target.value) / 100;
-    paintHostRoll();
-  });
-  document.getElementById('drum-zoom')?.addEventListener('input', (event) => {
-    drumZoom = Number(event.target.value) / 100;
-    renderSequencer();
   });
 
   el.notes.addEventListener('click', () => {
@@ -2564,7 +2674,7 @@ export async function createHostView({ lite } = {}) {
     const level = clampFx(effect.level);
     state.effects[instrument][effect.id] = level;
     audio?.bus.setEffect(instrument, effect.id, level);
-    if (state.instrument === instrument) renderInstrumentFx();
+    if (state.fxFor === instrument && !el.fxSheet.hidden) renderFxSliders();
     queueHarmony();
     log(`${data.name ?? 'guest'} · ${instrument} ${effect.id} ${fxAmountLabel(level)}`, 'effect');
   }
@@ -2576,6 +2686,7 @@ export async function createHostView({ lite } = {}) {
     const value = Math.min(6, Math.max(1, Math.round(Number(octave.value))));
     state.octaves[instrument] = value;
     audio?.synth.setInstrumentOctave(instrument, value);
+    if (state.fxFor === instrument && !el.fxSheet.hidden) renderFxSliders();
     queueHarmony();
   }
 
@@ -2586,7 +2697,7 @@ export async function createHostView({ lite } = {}) {
     const value = clampFx(level.value);
     state.levels[instrument] = value;
     audio?.bus.setLevel(instrument, value);
-    if (state.instrument === instrument && !el.fxSheet.hidden) renderFxSliders();
+    if (state.fxFor === instrument && !el.fxSheet.hidden) renderFxSliders();
     queueHarmony();
   }
 
@@ -2996,16 +3107,21 @@ export async function createHostView({ lite } = {}) {
     paintIconButton(el.noteUndoAll, 'undo', 'Undo all');
     paintIconButton(el.noteRedo, 'redo', 'Redo');
     paintIconButton(el.noteClear, 'erase', 'clear inst');
+    el.modeRow?.querySelectorAll('[data-mode]').forEach((chip) => {
+      paintIconButton(chip, chip.dataset.mode === 'chords' ? 'chords' : 'notes', chip.dataset.mode === 'chords' ? 'Chords' : 'Notes');
+    });
     const padNotesChip = el.padMode?.querySelector('[data-padmode="notes"]');
     const padFxChip = el.padMode?.querySelector('[data-padmode="fx"]');
     const padSamplerChip = el.padMode?.querySelector('[data-padmode="sampler"]');
-    if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Notes');
+    if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Keys');
     if (padFxChip) paintIconButton(padFxChip, 'scissors', 'FX');
     if (padSamplerChip) paintIconButton(padSamplerChip, 'sampler', 'SMP');
     if (el.sampleEdit) paintIconButton(el.sampleEdit, 'edit', 'Tune');
     paintIconButton(el.notesClose, 'done', 'Done');
-    paintIconButton(el.fxDetail, 'detail', 'More');
     paintIconButton(el.fxSheetClose, 'done', 'Done');
+    document.querySelectorAll('#host-screen [data-inst-cycle]').forEach((arrow) => {
+      arrow.replaceChildren(chipIcon(Number(arrow.dataset.instCycle) < 0 ? 'prev' : 'next'));
+    });
     paintTransport(Boolean(audio?.engine.transportRunning));
   }
 
@@ -3017,10 +3133,18 @@ export async function createHostView({ lite } = {}) {
   renderRootChips();
   renderDrumPresets();
   publishDrums();
-  renderInstrumentFx();
   renderDrumFx();
   el.litePill.hidden = !lite;
+  el.hostScreen.classList.toggle('is-lite', Boolean(lite));
   paintInstruments(el.instruments, state.instrument);
+  paintInstrumentMini();
+  paintSecValues();
+  // Touch phones start the instruments section on the carousel — the card
+  // grid costs too much pad space.
+  if (matchMedia('(pointer: coarse), (max-width: 700px)').matches) {
+    el.secInstruments?.classList.remove('is-open');
+    el.secInstruments?.querySelector('.tool-sec__head')?.setAttribute('aria-expanded', 'false');
+  }
   paintMixFlags();
   syncModeChrome();
   setPeers();
@@ -3117,7 +3241,6 @@ export async function createHostView({ lite } = {}) {
     state.effects = snapshot.effects;
     state.levels = { ...state.levels, ...snapshot.levels };
     applyStoredEffects();
-    renderInstrumentFx();
     renderDrumFx();
     audio.synth.silence();
     audio.engine.rewindTransport();
@@ -3184,6 +3307,7 @@ export async function createHostView({ lite } = {}) {
       };
     },
     destroy() {
+      landscapeMq.removeEventListener('change', placeLandscapeChrome);
       document.removeEventListener('visibilitychange', onVisibility);
       clearTimeout(parkTimer);
       clearTimeout(drumPushTimer);

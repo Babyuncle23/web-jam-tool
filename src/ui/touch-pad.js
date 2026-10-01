@@ -381,7 +381,7 @@ export class TouchPadRenderer {
       this.#grid = canvas;
       return;
     }
-    ctx.strokeStyle = 'rgba(28, 20, 12, 0.16)';
+    ctx.strokeStyle = 'rgba(214, 205, 176, 0.16)';
     ctx.lineWidth = 1;
     for (let i = 1; i < this.#columns; i += 1) {
       const x = (width / this.#columns) * i;
@@ -391,7 +391,7 @@ export class TouchPadRenderer {
       ctx.stroke();
     }
     if (this.#mode === 'chords') {
-      ctx.strokeStyle = 'rgba(28, 20, 12, 0.34)';
+      ctx.strokeStyle = 'rgba(214, 205, 176, 0.34)';
       ctx.lineWidth = 2;
       for (const edge of CHORD_ZONE_EDGES) {
         const y = (1 - edge) * height;
@@ -413,7 +413,7 @@ export class TouchPadRenderer {
   #paintFxGrid(ctx, width, height) {
     const mid = height / 2;
     const topShade = ctx.createLinearGradient(0, 0, 0, mid);
-    topShade.addColorStop(0, 'rgba(255, 250, 235, 0.5)');
+    topShade.addColorStop(0, 'rgba(255, 250, 235, 0.32)');
     topShade.addColorStop(1, 'rgba(255, 250, 235, 0)');
     ctx.fillStyle = topShade;
     ctx.fillRect(0, 0, width, mid);
@@ -424,7 +424,7 @@ export class TouchPadRenderer {
     ctx.fillRect(0, mid, width, height - mid);
 
     // The neutral line: a finger resting on the middle applies no filter.
-    ctx.strokeStyle = 'rgba(28, 20, 12, 0.55)';
+    ctx.strokeStyle = 'rgba(214, 205, 176, 0.55)';
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 6]);
     ctx.beginPath();
@@ -438,7 +438,7 @@ export class TouchPadRenderer {
     for (let z = 0; z < zones; z += 1) {
       const left = zoneWidth * z;
       if (z > 0) {
-        ctx.strokeStyle = 'rgba(28, 20, 12, 0.5)';
+        ctx.strokeStyle = 'rgba(214, 205, 176, 0.5)';
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(left, 0);
@@ -448,7 +448,7 @@ export class TouchPadRenderer {
       // Zone 0 has no slices — it is the filter-only lane. The rest get
       // 1, 2, 4, 8 slices: the right edge reads as the fastest cut.
       const slices = z === 0 ? 0 : 2 ** (z - 1);
-      ctx.strokeStyle = 'rgba(28, 20, 12, 0.16)';
+      ctx.strokeStyle = 'rgba(214, 205, 176, 0.16)';
       ctx.lineWidth = 1;
       for (let i = 1; i < slices; i += 1) {
         const x = left + (zoneWidth / slices) * i;
@@ -457,7 +457,7 @@ export class TouchPadRenderer {
         ctx.lineTo(x, height);
         ctx.stroke();
       }
-      ctx.fillStyle = 'rgba(28, 20, 12, 0.78)';
+      ctx.fillStyle = 'rgba(214, 205, 176, 0.78)';
       ctx.font = '800 16px system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -465,7 +465,7 @@ export class TouchPadRenderer {
       ctx.fillText(label, left + zoneWidth / 2, height - 62);
     }
 
-    ctx.fillStyle = 'rgba(28, 20, 12, 0.5)';
+    ctx.fillStyle = 'rgba(214, 205, 176, 0.5)';
     ctx.font = '700 11px system-ui, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText('low cut', width - 10, 16);
@@ -554,7 +554,7 @@ export class TouchPadRenderer {
         while (zone < CHORD_ZONE_EDGES.length && point.y >= CHORD_ZONE_EDGES[zone]) zone += 1;
         const top = (1 - zoneBounds[zone + 1]) * height;
         const bottom = (1 - zoneBounds[zone]) * height;
-        ctx.fillStyle = 'rgba(47, 143, 85, 0.16)';
+        ctx.fillStyle = 'rgba(90, 150, 104, 0.18)';
         ctx.fillRect(0, top, width, bottom - top);
       }
       const column = Math.min(this.#columns - 1, Math.max(0, Math.floor(point.x * this.#columns)));

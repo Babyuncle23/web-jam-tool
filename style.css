@@ -1,18 +1,33 @@
 :root {
-  color-scheme: light;
-  --ink: #1c140c;
-  --bg: #f6e6c8;
-  --bg-elevated: #fff6e4;
-  --bg-panel: #f3d7a6;
-  --line: #1c140c;
-  --text: #1c140c;
-  --text-dim: #5c4632;
-  --accent: #f2c14b;
-  --accent-dim: #c49a32;
-  --sun: #f2c14b;
-  --plant: #2f8f55;
-  --warn: #e07a3d;
-  --danger: #c4473a;
+  /* Evening-forest theme: deep moss surfaces, warm parchment ink, muted
+     amber like low sun through trees. Same hue family as the old cream
+     skin, just taken down into dusk. */
+  color-scheme: dark;
+  --ink: #d6cdb0;
+  --ink-rgb: 214 205 176;
+  --bg: #141a10;
+  --bg-rgb: 20 26 16;
+  --bg-elevated: #222b1a;
+  --bg-panel: #29321c;
+  --line: #a79e82;
+  --text: #d6cdb0;
+  --text-dim: #978d6d;
+  --accent: #d9a83f;
+  --accent-dim: #a5822f;
+  --sun: #d9a83f;
+  --sun-rgb: 217 168 63;
+  --plant: #5a9668;
+  --plant-rgb: 90 150 104;
+  --warn: #c97a44;
+  --danger: #b2543f;
+  /* Text/icons drawn on top of saturated accent fills (amber chips, pads). */
+  --on-accent: #1c140c;
+  /* Text/icons drawn on top of instrument-colour fills (notes, lit pads). */
+  --text-on-color: #f2ead4;
+  /* Real shadows stay near-black on a dark surface — not light "ink". */
+  --shadow-rgb: 7 9 4;
+  --row-blocked: #272d1f;
+  --sampler-hit: #574a78;
   --radius: 16px;
   --tap: 52px;
 }
@@ -81,8 +96,8 @@ body[data-view='controller'] {
   padding: 32px 20px 24px;
   overflow-y: auto;
   background:
-    radial-gradient(circle at 8% 12%, #f2c14b 0 64px, transparent 66px),
-    radial-gradient(circle at 92% 88%, #2f8f55 0 78px, transparent 80px),
+    radial-gradient(circle at 8% 12%, rgb(var(--sun-rgb) / 0.55) 0 64px, transparent 66px),
+    radial-gradient(circle at 92% 88%, rgb(var(--plant-rgb) / 0.5) 0 78px, transparent 80px),
     var(--bg);
 }
 
@@ -162,6 +177,20 @@ body[data-view='controller'] {
   text-align: center;
   margin: 0;
   opacity: 0.8;
+}
+
+.role-disclosure {
+  width: min(520px, 100%);
+}
+
+#ai-disclosure.fx-sheet {
+  align-items: center;
+}
+
+.disclosure-card p {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.55;
 }
 
 .share-block {
@@ -256,7 +285,10 @@ body[data-view='controller'] {
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
-  touch-action: none;
+  /* Taps still fire; a drag starts a scroll instead of eating the gesture.
+     Real gesture surfaces (pad, roll keys/notes, sampler pads, sliders,
+     .step) re-declare none/pan-y below. */
+  touch-action: pan-x pan-y;
 }
 
 .btn:disabled,
@@ -320,7 +352,7 @@ input[type='range'] {
   height: 16px;
   flex: none;
   border-radius: 50%;
-  border: 3px solid rgba(28, 20, 12, 0.18);
+  border: 3px solid rgb(var(--ink-rgb) / 0.18);
   border-top-color: var(--ink);
   animation: splash-spin 0.8s linear infinite;
 }
@@ -328,7 +360,7 @@ input[type='range'] {
 .btn--primary,
 .btn.is-on {
   background: var(--sun);
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 /* The Rec button's pip glows red only while a take is open. */
@@ -392,7 +424,6 @@ input[type='range'] {
   line-height: 1.15;
 }
 
-.loop-actions .btn.has-icon,
 .roll-actions .btn.has-icon,
 .fx-sheet__card > .btn.has-icon,
 .seq-pages .btn.has-icon {
@@ -422,7 +453,7 @@ input[type='range'] {
 
 .chip.is-on {
   background: var(--chip, var(--sun));
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 .chip.has-swatch {
@@ -546,12 +577,42 @@ input[type='range'] {
   overflow: visible;
 }
 
+/* Portrait phone: .host-tools is display:contents, so its children become
+   flex items here and can order themselves between the header and the pad. */
+.host-app > .topbar {
+  order: 1;
+}
+
+.host-app > .play-bar {
+  order: 3;
+}
+
+.host-app > .pad-stage {
+  order: 4;
+}
+
+.host-tools > .tempo-panel {
+  order: 2;
+}
+
+.host-tools > .tool-sec {
+  order: 5;
+}
+
+.host-tools > #btn-master {
+  order: 6;
+}
+
+.host-tools > .event-log {
+  order: 7;
+}
+
 .topbar {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: #f3d7a6;
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--line);
   z-index: 5;
 }
@@ -650,7 +711,7 @@ input[type='range'] {
   min-height: 52px;
   border: 3px solid var(--ink);
   border-radius: 12px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   color: var(--ink);
   font: inherit;
   font-size: 22px;
@@ -749,7 +810,7 @@ input[type='range'] {
 }
 
 /* Narrow phones: Notes/Chords and Rec were clipping at the chip edges, so
-   the mode pair takes its own row and labels stay full-size. */
+   the mode pair takes its own row — second, right above the pad. */
 @media (max-width: 480px) {
   .play-bar {
     flex-wrap: wrap;
@@ -757,6 +818,7 @@ input[type='range'] {
 
   .play-bar__modes {
     flex: 1 1 100%;
+    order: 2;
   }
 
   .play-bar .chip {
@@ -777,30 +839,6 @@ input[type='range'] {
     padding-left: 6px;
     padding-right: 6px;
   }
-}
-
-.zoom-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 44px;
-  margin: 0;
-  touch-action: pan-y;
-}
-
-.zoom-row span {
-  flex: 0 0 auto;
-  font-weight: 800;
-  font-size: 15px;
-}
-
-.zoom-row input[type='range'] {
-  flex: 1 1 auto;
-  width: 100%;
-  min-width: 0;
-  height: 44px;
-  margin: 0;
 }
 
 .inst-carousel {
@@ -825,19 +863,19 @@ input[type='range'] {
   cursor: default;
 }
 
-.drum-picker {
+.drum-sec__row {
   display: flex;
   align-items: stretch;
   gap: 8px;
 }
 
-.drum-picker__presets {
-  flex: 1 1 auto;
-  min-width: 0;
+.drum-sec__mix {
+  flex: 0 0 112px;
 }
 
-.drum-picker__open {
-  flex: 0 0 auto;
+.drum-sec__open {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .host-pad {
@@ -857,7 +895,7 @@ input[type='range'] {
    the canvas's intrinsic bitmap height and the grid stripes end early. */
 .pad-stage .host-pad {
   flex: 0 0 auto;
-  height: 50vh;
+  height: 56vh;
   min-height: 300px;
 }
 
@@ -866,7 +904,7 @@ input[type='range'] {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: #f3d7a6;
+  background: var(--bg-panel);
   border: 3px solid var(--ink);
   border-radius: 14px;
   touch-action: pan-y;
@@ -903,28 +941,21 @@ input[type='range'] {
   font-size: inherit;
 }
 
+/* Portrait: contents, not a box — the tempo panel lifts above the play-bar
+   with flex order while every other child stays below the pad. */
 .host-tools {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding: 0 10px calc(12px + env(safe-area-inset-bottom));
-  background: #f6e6c8;
-  border-top: 1px solid var(--line);
+  display: contents;
   min-width: 0;
-  overflow: visible;
 }
 
-.host-tools > .tool-row,
-.host-tools > .root-picker,
-.host-tools > .chips--roots,
-.host-tools > .tempo-row,
-.host-tools > .drum-picker,
-.host-tools > .fx-stack,
-.host-tools > .instrument-grid,
-.host-tools > .loop-actions {
-  border-top: 1px solid rgba(28, 20, 12, 0.28);
-  padding-top: 10px;
-  padding-bottom: 10px;
+.host-tools > * {
+  border-top: 1px solid rgb(var(--ink-rgb) / 0.28);
+  padding: 10px;
+  min-width: 0;
+}
+
+.host-tools > :first-child {
+  border-top: none;
 }
 
 .tool-row {
@@ -942,12 +973,10 @@ input[type='range'] {
   padding: 6px 6px;
 }
 
-.drum-presets {
-  flex-wrap: nowrap;
-}
-
+/* Preset chips keep a readable minimum and wrap onto as many rows as the
+   width allows — a squeezed single row clipped every label to letters. */
 .drum-presets .chip {
-  flex: 1 1 0;
+  flex: 1 1 84px;
   min-width: 0;
   padding-left: 2px;
   padding-right: 2px;
@@ -955,30 +984,6 @@ input[type='range'] {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* Phones: six presets in one row clipped to a few letters each — let them
-   wrap into two full rows and give Edit drums its own line. */
-@media (max-width: 640px) {
-  .drum-picker {
-    flex-wrap: wrap;
-  }
-
-  .drum-picker__presets {
-    flex: 1 1 100%;
-  }
-
-  .drum-presets {
-    flex-wrap: wrap;
-  }
-
-  .drum-presets .chip {
-    flex: 1 1 28%;
-  }
-
-  .drum-picker__open {
-    width: 100%;
-  }
 }
 
 .tool-row__label {
@@ -1058,14 +1063,35 @@ input[type='range'] {
   }
 }
 
-.tempo-row,
+.tempo-panel {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  background: var(--bg-panel);
+  touch-action: pan-y;
+}
+
+.tempo-panel__bars {
+  flex: 0 0 auto;
+  min-width: 104px;
+}
+
+.tempo-panel__bpm {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.tempo-panel__bpm .chip {
+  min-height: 48px;
+}
+
 .effect-row {
   display: flex;
   gap: 6px;
   min-width: 0;
 }
 
-.tempo-row > .tool-row,
 .effect-row > .tool-row {
   flex: 1;
   min-width: 0;
@@ -1157,26 +1183,35 @@ input[type='range'] {
 
 }
 
-@media (min-width: 900px) {
+/* Desktop: header + play bar on top, pad fills the left column, the right
+   column is the settings scroller (same section order as portrait). */
+@media (min-width: 1024px) and (min-height: 640px) {
   .host-app {
     display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(420px, 0.9fr);
+    grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.9fr);
     grid-template-rows: auto auto minmax(0, 1fr);
-    min-height: 100vh;
-    height: auto;
+    height: 100dvh;
   }
 
-  .play-bar {
+  .host-app > .topbar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    order: 0;
+    padding: 10px 16px;
+  }
+
+  .host-app > .play-bar {
     grid-column: 1 / -1;
     grid-row: 2;
+    order: 0;
   }
 
-  .topbar {
-    grid-column: 1 / -1;
-  }
-
-  .topbar {
-    padding: 10px 16px;
+  .host-app > .pad-stage {
+    grid-column: 1;
+    grid-row: 3;
+    order: 0;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   #host-qr img,
@@ -1196,12 +1231,6 @@ input[type='range'] {
     font-size: 28px;
   }
 
-  .pad-stage {
-    grid-column: 1;
-    grid-row: 3;
-    min-height: 70vh;
-  }
-
   .pad-stage .host-pad {
     flex: 1 1 auto;
     min-height: 0;
@@ -1209,12 +1238,52 @@ input[type='range'] {
   }
 
   .host-tools {
+    display: flex;
+    flex-direction: column;
     grid-column: 2;
     grid-row: 3;
-    border-top: none;
+    min-height: 0;
+    overflow-y: auto;
     border-left: 1px solid var(--line);
-    overflow: visible;
-    padding: 0 14px 14px;
+    overscroll-behavior: contain;
+  }
+
+  /* Same two columns for the guest screen. */
+  #controller-screen:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.9fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    height: 100dvh;
+  }
+
+  .controller-bar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  #controller-play-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .pad-wrap {
+    grid-column: 1;
+    grid-row: 3;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    padding-bottom: 12px;
+  }
+
+  .controller-foot {
+    grid-column: 2;
+    grid-row: 3;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    border-left: 1px solid var(--line);
+    overscroll-behavior: contain;
+    padding-bottom: 12px;
   }
 }
 
@@ -1231,7 +1300,8 @@ input[type='range'] {
   position: relative;
   min-width: 0;
   overflow: auto;
-  touch-action: pan-x pan-y;
+  /* The grid pans and pinch-zooms manually — the browser must not steal the gesture. */
+  touch-action: none;
   overscroll-behavior: contain;
 }
 
@@ -1255,7 +1325,7 @@ input[type='range'] {
 }
 
 .seq-beatline {
-  border-left: 1px solid rgba(28, 20, 12, 0.34);
+  border-left: 1px solid rgb(var(--ink-rgb) / 0.34);
   transform: translateX(-0.5px);
 }
 
@@ -1306,7 +1376,7 @@ input[type='range'] {
   flex: 0 0 128px;
   height: 48px;
   padding: 0 6px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   border-right: 2px solid var(--ink);
   color: var(--ink);
   font-weight: 800;
@@ -1324,9 +1394,9 @@ input[type='range'] {
   display: none;
 }
 
-/* Taps write cells; vertical drags scroll the tape, sideways travel uses the slider. */
+/* Taps write cells; drags on cells pan the tape manually — no native scroll. */
 .seq-row__steps .step {
-  touch-action: pan-y;
+  touch-action: none;
 }
 
 .seq-scroll {
@@ -1355,10 +1425,11 @@ input[type='range'] {
   min-height: 180px;
   overflow: auto;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  /* One finger pans both axes, two fingers pinch-zoom — handled in JS. */
+  touch-action: none;
   border: 3px solid var(--ink);
   border-radius: 16px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   scroll-padding-top: 26px;
 }
 
@@ -1372,7 +1443,7 @@ input[type='range'] {
   top: 0;
   left: 0;
   z-index: 5;
-  background: #f3d7a6;
+  background: var(--bg-panel);
   border-right: 2px solid var(--ink);
   border-bottom: 2px solid var(--ink);
 }
@@ -1381,7 +1452,7 @@ input[type='range'] {
   position: sticky;
   left: 0;
   z-index: 4;
-  background: #f3d7a6;
+  background: var(--bg-panel);
   border-right: 2px solid var(--ink);
 }
 
@@ -1403,13 +1474,13 @@ input[type='range'] {
 }
 
 .roll__key.is-sharp {
-  color: rgba(28, 20, 12, 0.55);
-  background: rgba(28, 20, 12, 0.06);
+  color: rgb(var(--ink-rgb) / 0.55);
+  background: rgb(var(--ink-rgb) / 0.06);
 }
 
 .roll__key.is-blocked {
   opacity: 0.38;
-  color: rgba(28, 20, 12, 0.4);
+  color: rgb(var(--ink-rgb) / 0.4);
 }
 
 .roll__row {
@@ -1417,14 +1488,14 @@ input[type='range'] {
   left: 0;
   right: 0;
   height: 28px;
-  background: #fff6e4;
-  border-bottom: 1px solid rgba(28, 20, 12, 0.16);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid rgb(var(--ink-rgb) / 0.16);
   pointer-events: none;
   z-index: 0;
 }
 
 .roll__row.is-blocked {
-  background: #e4dfd6;
+  background: var(--row-blocked);
   border-bottom: none;
 }
 
@@ -1433,7 +1504,7 @@ input[type='range'] {
   top: 0;
   z-index: 3;
   height: 26px;
-  background: #f3d7a6;
+  background: var(--bg-panel);
   border-bottom: 2px solid var(--ink);
 }
 
@@ -1450,7 +1521,7 @@ input[type='range'] {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(28, 20, 12, 0.22);
+  background: rgb(var(--ink-rgb) / 0.22);
   transform: translateX(-50%);
   pointer-events: none;
   z-index: 1;
@@ -1458,12 +1529,12 @@ input[type='range'] {
 
 .roll__beat--bar {
   width: 2px;
-  background: rgba(28, 20, 12, 0.55);
+  background: rgb(var(--ink-rgb) / 0.55);
 }
 
 .roll__grid {
   position: relative;
-  background: #fff6e4;
+  background: var(--bg-elevated);
 }
 
 .roll__empty {
@@ -1473,7 +1544,7 @@ input[type='range'] {
 }
 
 .roll__note.is-selected {
-  outline: 3px solid #1c140c;
+  outline: 3px solid var(--ink);
   outline-offset: 1px;
   z-index: 3;
 }
@@ -1484,7 +1555,7 @@ input[type='range'] {
 }
 
 .roll__note.is-undo-preview {
-  outline: 3px solid rgba(242, 193, 75, 0.9);
+  outline: 3px solid rgb(var(--sun-rgb) / 0.9);
   outline-offset: 1px;
   z-index: 3;
 }
@@ -1492,7 +1563,7 @@ input[type='range'] {
 .roll__marquee {
   position: absolute;
   z-index: 5;
-  border: 2px solid #1c140c;
+  border: 2px solid var(--ink);
   background: rgba(224, 161, 46, 0.28);
   pointer-events: none;
 }
@@ -1504,7 +1575,7 @@ input[type='range'] {
   height: 22px;
   border: 2px solid var(--ink);
   border-radius: 7px;
-  color: #fff6e4;
+  color: var(--text-on-color);
   font-size: 12px;
   font-weight: 700;
   text-align: left;
@@ -1532,7 +1603,7 @@ input[type='range'] {
   right: 4px;
   width: 4px;
   border-radius: 2px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
 }
 
 .roll__playhead {
@@ -1612,13 +1683,13 @@ input[type='range'] {
   border-width: 3px;
   padding: 0;
   cursor: pointer;
-  color: #24180a;
+  color: var(--ink);
   font-size: 18px;
   font-weight: 700;
 }
 
 .step[data-beat='true'] {
-  background: #f3d7a6;
+  background: var(--bg-panel);
 }
 
 .step[data-bar='true'] {
@@ -1628,10 +1699,11 @@ input[type='range'] {
 .step.is-on {
   background: var(--sun);
   border-color: var(--ink);
+  color: var(--on-accent);
 }
 
 .step.is-triplet {
-  background: #e07a3d;
+  background: var(--warn);
   border-color: var(--ink);
 }
 
@@ -1640,13 +1712,14 @@ input[type='range'] {
   outline-offset: 1px;
 }
 
-.seq-row[data-track='kick'] { --row: #c4473a; --row-soft: #f6d2cc; }
-.seq-row[data-track='snare'] { --row: #e0a12e; --row-soft: #f8e7be; }
-.seq-row[data-track='hat'] { --row: #2f8f55; --row-soft: #d3efdf; }
-.seq-row[data-track='openhat'] { --row: #1c7c88; --row-soft: #d0eef2; }
-.seq-row[data-track='clap'] { --row: #e07a3d; --row-soft: #f8dcc8; }
-.seq-row[data-track='tom'] { --row: #7a4ea3; --row-soft: #eadcf6; }
-.seq-row[data-track='cowbell'] { --row: #3a6ea5; --row-soft: #d5e4f6; }
+.seq-row[data-track] { --row-soft: color-mix(in srgb, var(--row) 20%, var(--bg-elevated)); }
+.seq-row[data-track='kick'] { --row: #c4473a; }
+.seq-row[data-track='snare'] { --row: #e0a12e; }
+.seq-row[data-track='hat'] { --row: #2f8f55; }
+.seq-row[data-track='openhat'] { --row: #1c7c88; }
+.seq-row[data-track='clap'] { --row: #e07a3d; }
+.seq-row[data-track='tom'] { --row: #7a4ea3; }
+.seq-row[data-track='cowbell'] { --row: #3a6ea5; }
 
 .seq-row[data-track] .seq-row__label {
   background: var(--row-soft);
@@ -1664,11 +1737,11 @@ input[type='range'] {
 .seq-row[data-track] .step.is-on {
   background: var(--row);
   border-color: var(--ink);
-  color: #fff6e4;
+  color: var(--text-on-color);
 }
 
 .seq-row[data-track='snare'] .step.is-on {
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 .seq-row[data-track] .step.is-triplet {
@@ -1785,15 +1858,15 @@ input[type='range'] {
 }
 
 .controller-foot > * {
-  border-top: 1px solid rgba(28, 20, 12, 0.28);
+  border-top: 1px solid rgb(var(--ink-rgb) / 0.28);
   padding-top: 10px;
   padding-bottom: 10px;
 }
 
 .pad-wrap {
   flex: 0 0 auto;
-  height: 48vh;
-  min-height: 220px;
+  height: 56vh;
+  min-height: 280px;
   padding: 0 12px;
   display: flex;
   flex-direction: column;
@@ -1813,8 +1886,8 @@ input[type='range'] {
   border-radius: 20px;
   border: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(47, 143, 85, 0.18) 0%, rgba(246, 230, 200, 0) 42%),
-    #fff6e4;
+    linear-gradient(180deg, rgb(var(--plant-rgb) / 0.18) 0%, transparent 42%),
+    var(--bg-elevated);
   border: 4px solid var(--ink);
   overflow: hidden;
   touch-action: none;
@@ -1844,7 +1917,7 @@ input[type='range'] {
   aspect-ratio: 1;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, rgba(255, 220, 130, 0.72) 0%, rgba(242, 193, 75, 0.3) 46%, rgba(242, 193, 75, 0) 76%);
+  background: radial-gradient(circle, rgba(255, 220, 130, 0.55) 0%, rgb(var(--sun-rgb) / 0.3) 46%, rgb(var(--sun-rgb) / 0) 76%);
   filter: blur(30px);
   opacity: 0;
   transform: translate(-50%, -50%);
@@ -1915,7 +1988,7 @@ input[type='range'] {
   font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1;
-  text-shadow: 3px 3px 0 #fff6e4;
+  text-shadow: 3px 3px 0 var(--bg-elevated);
 }
 
 .beat-dots {
@@ -1928,12 +2001,12 @@ input[type='range'] {
   height: 26px;
   border-radius: 50%;
   box-sizing: border-box;
-  background: #fff;
-  border: 3px solid #1c140c;
+  background: var(--bg-elevated);
+  border: 3px solid var(--ink);
 }
 
 .beat-dot.is-on {
-  background: #1c140c;
+  background: var(--ink);
 }
 
 .harmony-label {
@@ -1950,7 +2023,7 @@ input[type='range'] {
   line-height: 0.95;
   text-align: center;
   pointer-events: none;
-  text-shadow: 3px 3px 0 #fff6e4;
+  text-shadow: 3px 3px 0 var(--bg-elevated);
 }
 
 .y-zones {
@@ -1972,7 +2045,7 @@ input[type='range'] {
 .y-zones span.is-active {
   color: var(--ink);
   font-weight: 700;
-  text-shadow: 0 0 10px rgba(242, 193, 75, 0.9);
+  text-shadow: 0 0 10px rgb(var(--sun-rgb) / 0.9);
 }
 
 /* ---------- Sampler pads ---------- */
@@ -2027,7 +2100,7 @@ input[type='range'] {
   gap: 2px;
   border: 3px solid var(--ink);
   border-radius: 12px;
-  background: #fffdf4;
+  background: var(--bg-elevated);
   color: var(--ink);
   font: inherit;
   font-weight: 800;
@@ -2048,14 +2121,14 @@ input[type='range'] {
 .sampler-pad__badge {
   font-size: 11px;
   font-weight: 700;
-  color: rgba(28, 20, 12, 0.6);
+  color: rgb(var(--ink-rgb) / 0.6);
   min-height: 13px;
 }
 
 .sampler-pad--empty {
-  background: rgba(28, 20, 12, 0.05);
+  background: rgb(var(--ink-rgb) / 0.05);
   border-style: dashed;
-  border-color: rgba(28, 20, 12, 0.35);
+  border-color: rgb(var(--ink-rgb) / 0.35);
   opacity: 0.55;
   cursor: default;
 }
@@ -2063,7 +2136,7 @@ input[type='range'] {
 /* Held finger: the pad sinks and lights — the classic sampler look. */
 .sampler-pad.is-lit {
   background: #7c53b8;
-  color: #fff6e4;
+  color: var(--text-on-color);
   transform: scale(0.95);
   box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.22);
 }
@@ -2074,17 +2147,17 @@ input[type='range'] {
 
 /* Trigger flash from loop playback or remote hits — lighter than the hold. */
 .sampler-pad.is-hit:not(.is-lit) {
-  background: #cbb4ef;
+  background: var(--sampler-hit);
 }
 
 .sampler-pad--solo {
   background: var(--ink);
-  color: #fff6e4;
+  color: var(--bg);
 }
 
 .sampler-pad--solo.is-lit {
   background: #e0a12e;
-  color: var(--ink);
+  color: var(--on-accent);
 }
 
 .sampler-pad.is-bump {
@@ -2106,7 +2179,7 @@ input[type='range'] {
   border-color: #7c53b8;
   box-shadow:
     inset 0 0 0 2px #7c53b8,
-    0 4px 0 rgba(28, 20, 12, 0.3);
+    0 4px 0 rgb(var(--shadow-rgb) / 0.3);
 }
 
 .sampler.is-tuning .sampler-pad:not(.is-editing):not(.sampler-pad--solo) {
@@ -2134,7 +2207,7 @@ input[type='range'] {
   height: 30px;
   border-radius: 9px;
   border: 3px solid #c4512c;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   color: #c4512c;
   font-size: 17px;
   font-weight: 900;
@@ -2142,7 +2215,7 @@ input[type='range'] {
   text-align: center;
   cursor: pointer;
   touch-action: none;
-  box-shadow: 0 2px 0 rgba(28, 20, 12, 0.28);
+  box-shadow: 0 2px 0 rgb(var(--shadow-rgb) / 0.28);
   z-index: 2;
 }
 
@@ -2154,24 +2227,18 @@ input[type='range'] {
 
 .sampler-pad__x:active {
   background: #c4512c;
-  color: #fff6e4;
+  color: var(--text-on-color);
 }
 
 .sampler-pad.is-erase {
   animation: pad-erase 0.22s ease;
 }
 
-/* The merged ✕/✎ edit button: both icons split by a slash, label drops on
-   narrow screens so the pair still fits the play bar. */
+/* The sampler edit button carries only the pencil — it covers both the
+   tune drag and the hit wipe, so no ✕ needed. */
 .sample-edit-btn .ico {
   width: 20px;
   height: 20px;
-}
-
-.sample-edit-btn .icon-sep {
-  font-weight: 800;
-  opacity: 0.55;
-  margin: 0 -3px;
 }
 
 @media (max-width: 480px) {
@@ -2181,9 +2248,9 @@ input[type='range'] {
 }
 
 @keyframes pad-erase {
-  0% { background: #fffdf4; }
-  40% { background: #c4512c; color: #fff6e4; transform: scale(0.94); }
-  100% { background: #fffdf4; }
+  0% { background: var(--bg-elevated); }
+  40% { background: #c4512c; color: var(--text-on-color); transform: scale(0.94); }
+  100% { background: var(--bg-elevated); }
 }
 
 /* The pad can never record while an edit layer is up — Rec reads as off. */
@@ -2217,14 +2284,14 @@ input[type='range'] {
   left: 0;
   right: 0;
   top: var(--hy, 50%);
-  border-top: 2px dashed rgba(28, 20, 12, 0.5);
+  border-top: 2px dashed rgb(var(--ink-rgb) / 0.5);
 }
 
 .sampler-hud__axis-y {
   top: 0;
   bottom: 0;
   left: var(--hx, 50%);
-  border-left: 2px dashed rgba(28, 20, 12, 0.5);
+  border-left: 2px dashed rgb(var(--ink-rgb) / 0.5);
 }
 
 /* Tempo-locked pads have no stretch axis — drop the misleading hint line. */
@@ -2236,7 +2303,7 @@ input[type='range'] {
   position: absolute;
   right: 10px;
   top: 4px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   padding: 0 6px;
 }
 
@@ -2244,7 +2311,7 @@ input[type='range'] {
   position: absolute;
   top: 10px;
   left: 6px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   padding: 0 6px;
 }
 
@@ -2257,7 +2324,7 @@ input[type='range'] {
   margin: -8px 0 0 -8px;
   border-radius: 50%;
   background: #7c53b8;
-  border: 3px solid #fff6e4;
+  border: 3px solid var(--text-on-color);
   box-shadow: 0 0 0 2px var(--ink);
 }
 
@@ -2269,7 +2336,7 @@ input[type='range'] {
   margin: 0;
   color: var(--ink);
   text-align: center;
-  text-shadow: 2px 2px 0 #fff6e4;
+  text-shadow: 2px 2px 0 var(--bg-elevated);
   white-space: nowrap;
 }
 
@@ -2307,62 +2374,146 @@ input[type='range'] {
   text-transform: uppercase;
 }
 
-.fx-stack {
+/* Collapsible settings sections: the head always shows the current value,
+   the chevron flips on .is-open, bodies are plain scrollable areas. Heads
+   are plain divs (not role=button) so touch scrolls can start on them. */
+.tool-sec {
+  min-width: 0;
+}
+
+.tool-sec__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+.tool-sec__head:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+
+.tool-sec__title {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tool-sec__value {
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-sec__chev {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 8px solid var(--ink);
+  transition: transform 0.15s ease;
+}
+
+.tool-sec.is-open .tool-sec__chev {
+  transform: rotate(180deg);
+}
+
+.tool-sec__body {
+  display: none;
+}
+
+.tool-sec.is-open .tool-sec__body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding-top: 8px;
 }
 
-.fx-panel {
+.tool-sec__mini {
+  display: none;
+}
+
+.tool-sec:not(.is-open) .tool-sec__mini {
+  display: flex;
+}
+
+/* Compact button living inside a section head, next to the current value —
+   Edit notes for the instruments section. */
+.tool-sec__edit {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.inst-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.inst-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
-  padding: 6px;
+  padding: 8px;
   border: 3px solid var(--ink);
   border-radius: 16px;
   background: var(--bg-elevated);
+  touch-action: pan-x pan-y;
 }
 
-.fx-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-  gap: 6px;
-  align-items: stretch;
+.inst-card[data-card='pad'] { --inst: #2f8f55; }
+.inst-card[data-card='bass'] { --inst: #c4512c; }
+.inst-card[data-card='organ'] { --inst: #3d6f9a; }
+.inst-card[data-card='kalimba'] { --inst: #e0a12e; }
+.inst-card[data-card='synth'] { --inst: #6b4423; }
+
+/* The selected card fills with its instrument colour, but the frame stays
+   the plain black border every card has — colour lives only inside. */
+.inst-card.is-on {
+  background: color-mix(in srgb, var(--inst, #e2b43a) 30%, var(--bg-elevated));
 }
 
-.fx-tiles > .fx-row {
-  display: contents;
-}
-
-.fx-chip {
+/* The card is the frame; the name inside stays plain text with a swatch.
+   Selection is the card's gold ring, so the pick keeps no fill either. */
+.inst-card__pick,
+.inst-card__pick.is-on {
+  width: 100%;
   min-height: 56px;
-  height: 56px;
-  max-height: 56px;
-  font-size: 12px;
-  line-height: 1.1;
-  white-space: normal;
-  padding: 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.instrument-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.inst-card__mix {
   gap: 6px;
 }
 
-.instrument-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+/* MORE keeps the plain beige button look even on the tinted selected card —
+   the ghost background would otherwise pick up the instrument colour. */
+.inst-card__more {
+  width: 100%;
+  min-height: 48px;
+  background: var(--bg-elevated);
 }
 
-.fx-panel__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.is-lite .inst-card__more {
+  display: none;
 }
 
 .mix-flags {
@@ -2371,15 +2522,11 @@ input[type='range'] {
   gap: 4px;
 }
 
-.fx-panel__head .mix-flags {
-  width: 112px;
-}
-
 .mix-flag {
   min-height: 36px;
   border: 3px solid var(--ink);
   border-radius: 10px;
-  background: #fff6e4;
+  background: var(--bg-elevated);
   color: var(--ink);
   font-weight: 800;
   font-size: 16px;
@@ -2387,11 +2534,12 @@ input[type='range'] {
 
 .mix-flag.is-on[data-mix='solo'] {
   background: #e0a12e;
+  color: var(--on-accent);
 }
 
 .mix-flag.is-on[data-mix='mute'] {
   background: #c4512c;
-  color: #fff6e4;
+  color: var(--text-on-color);
 }
 
 .fx-slider--master span {
@@ -2413,27 +2561,6 @@ input[type='range'] {
   font-weight: 800;
 }
 
-.instrument-grid .chip {
-  width: 100%;
-  min-height: 64px;
-  height: auto;
-  padding: 6px 4px;
-}
-
-.loop-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
-  gap: 8px;
-}
-
-.loop-actions .btn {
-  height: auto;
-  min-height: 56px;
-  white-space: normal;
-  line-height: 1.15;
-  padding: 8px 12px;
-}
-
 .key-pill {
   font-weight: 700;
 }
@@ -2449,7 +2576,7 @@ input[type='range'] {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(246, 230, 200, 0.92);
+  background: rgb(var(--bg-rgb) / 0.92);
 }
 
 .splash--guest {
@@ -2513,26 +2640,12 @@ input[type='range'] {
   .splash {
     top: 132px;
   }
-
-  .instrument-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-
-  .fx-stack {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-  }
 }
 
 @media (max-height: 920px) {
   .event-log {
     display: none;
   }
-}
-
-.loop-actions {
-  grid-template-columns: 1fr 1fr;
 }
 
 #btn-erase-notes,
@@ -2548,7 +2661,7 @@ input[type='range'] {
   align-items: flex-end;
   justify-content: center;
   padding: 12px;
-  background: rgba(246, 230, 200, 0.72);
+  background: rgb(var(--bg-rgb) / 0.72);
 }
 
 .fx-sheet--stage {
@@ -2566,7 +2679,10 @@ input[type='range'] {
   border: 0;
   border-radius: 0;
   padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
-  overflow: hidden;
+  /* The card itself scrolls when the header stack (presets, Advanced panel)
+     outgrows the screen — the grid keeps a floor so it never collapses. */
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 0;
 }
 
@@ -2579,7 +2695,9 @@ input[type='range'] {
 
 .fx-sheet--stage .sequencer {
   flex: 1 1 auto;
-  min-height: 0;
+  /* Rows must stay tappable even when the Advanced panel eats the height —
+     below the floor the card scrolls instead of the tape vanishing. */
+  min-height: 280px;
 }
 
 .fx-sheet--stage .seq-tape {
@@ -2636,7 +2754,7 @@ input[type='range'] {
 #host-notes-sheet .stage-bar .select-move.is-on,
 #controller-notes-sheet .stage-bar .select-move.is-on {
   background: var(--sun);
-  color: var(--ink);
+  color: var(--on-accent);
   border-color: var(--ink);
 }
 
@@ -2813,14 +2931,9 @@ input[type='range'] {
   margin-top: -14px;
 }
 
-.fx-more {
-  width: 100%;
-}
-
 @media (max-height: 740px) {
   .controller-foot .chip,
-  .fx-chip,
-  .loop-actions .btn {
+  .inst-card__more {
     min-height: 52px;
   }
 }
@@ -2894,152 +3007,188 @@ input[type='range'] {
   width: 100%;
 }
 
-/* Phone lying on its side: the same stacked mobile screen, refit to a short
-   wide viewport. A tall landscape window keeps the layout above this query. */
-@media (orientation: landscape) and (max-height: 520px) {
-  html,
-  body[data-view='host'],
-  body[data-view='controller'] {
-    height: auto;
-    max-height: none;
-    overflow-x: hidden;
-    overflow-y: auto;
-    touch-action: pan-y;
-  }
-
-  .screen--host,
-  .screen--controller {
-    height: auto;
-    max-height: none;
-    min-height: 100%;
-    overflow: visible;
-    touch-action: pan-y;
-  }
-
+/* Phone lying on its side: a compact header + play bar + pad in the left
+   column, the settings sections in a scrollable right column. pointer:coarse
+   keeps a short desktop window out of this layout. */
+@media (orientation: landscape) and (max-height: 560px) and (pointer: coarse) {
   .host-app {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: auto;
-    max-height: none;
+    display: grid;
+    grid-template-columns: minmax(0, 7fr) minmax(240px, 3fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
     min-height: 0;
-    overflow: visible;
-    touch-action: pan-y;
+    overflow: hidden;
   }
 
-  .topbar {
-    grid-column: 1 / -1;
-    min-width: 0;
+  /* Portrait-only chrome: the whole topbar (QR, statuses, Export) is hidden
+     in landscape — JS moves Play and Back into the play-bar instead. */
+  .host-app > .topbar {
+    display: none;
   }
 
-  .topbar {
-    padding: 4px 8px;
+  .host-app > .play-bar {
+    grid-column: 1;
+    grid-row: 1;
+    order: 0;
   }
 
-  #host-qr img,
-  #host-qr canvas,
-  #host-qr table {
-    width: 44px !important;
-    height: 44px !important;
-  }
-
-  .topbar__code {
-    font-size: 18px;
-  }
-
-  .topbar__actions .btn {
-    height: 40px;
-    padding: 0 12px;
-    font-size: 15px;
-    white-space: nowrap;
+  .host-app > .pad-stage {
+    grid-column: 1;
+    grid-row: 2;
+    order: 0;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   .pad-stage .host-pad {
-    width: 100%;
-    max-width: 100%;
-    height: min(46dvh, 220px);
-    max-height: 46dvh;
-    min-height: 140px;
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
   }
 
   .host-tools {
-    min-width: 0;
-    min-height: 0;
-    max-width: 100%;
-    max-height: none;
-    height: auto;
-    overflow: visible;
-    border-top: 1px solid var(--line);
-    border-left: none;
-    padding: 0 8px 28px;
-    touch-action: pan-y;
-  }
-
-  .host-tools > .tool-row,
-  .host-tools > .root-picker,
-  .host-tools > .tempo-row,
-  .host-tools > .drum-picker,
-  .host-tools > .fx-stack,
-  .host-tools > .instrument-grid,
-  .host-tools > .loop-actions {
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .screen.screen--controller:not([hidden]) {
     display: flex;
     flex-direction: column;
-    height: auto;
-    max-height: none;
-    overflow: visible;
+    grid-column: 2;
+    grid-row: 1 / -1;
+    min-height: 0;
+    overflow-y: auto;
+    border-left: 1px solid var(--line);
+    overscroll-behavior: contain;
   }
 
-  .controller-bar {
-    grid-column: 1 / -1;
+  .host-tools > :first-child {
+    border-top: none;
+  }
+
+  /* Moved into the play-bar in landscape: Back, Play, Rec, the mode chips
+     and the sampler Edit all read as square icon buttons — the row stays
+     airy and nothing clips. 44px squares keep the whole row visible. */
+  .play-bar {
+    gap: 4px;
+    padding: 4px 6px 0;
+  }
+
+  .play-bar [data-action='back'],
+  .play-bar #btn-transport,
+  .play-bar #controller-transport,
+  .play-bar #btn-loop,
+  .play-bar #controller-loop,
+  .play-bar #host-sample-edit,
+  .play-bar #controller-sample-edit {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    margin-left: 0;
+  }
+
+  .play-bar__modes {
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
+  .play-bar__modes .chip {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+
+  .play-bar__modes .chip .chip-label,
+  .play-bar #btn-transport .chip-label,
+  .play-bar #controller-transport .chip-label,
+  .play-bar #btn-loop .chip-label,
+  .play-bar #controller-loop .chip-label,
+  .play-bar #host-sample-edit .chip-label,
+  .play-bar #controller-sample-edit .chip-label {
+    display: none;
+  }
+
+  /* Narrow side column: instruments read as a plain list there. The Edit
+     notes head button goes icon-only so the fold chevron stays on screen. */
+  .host-app .inst-list,
+  .screen--controller .inst-list {
+    grid-template-columns: 1fr;
+  }
+
+  .tool-sec__edit {
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+  }
+
+  .tool-sec__edit .chip-label {
+    display: none;
+  }
+
+  /* The tempo strip stacks in the narrow column: loop length on its own
+     row, then the BPM chips wrapped under it. */
+  .host-app .tempo-panel {
+    flex-wrap: wrap;
+  }
+
+  .host-app .tempo-panel__bars {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .host-app .tempo-panel__bpm {
+    flex: 1 1 100%;
     flex-wrap: nowrap;
+  }
+
+  .host-app .tempo-panel__bpm .chip {
+    flex: 1 1 0;
     min-width: 0;
     min-height: 44px;
   }
 
-  .controller-bar__modes {
-    min-width: 0;
+  /* Guest screen: same split. The controller bar (session name, key pill)
+     is portrait-only — Play and Back are moved into the play-bar by JS. */
+  .screen--controller:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(0, 7fr) minmax(240px, 3fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
   }
 
-  .controller-bar__modes .chip {
-    min-width: 0;
-    padding-left: 8px;
-    padding-right: 8px;
+  .controller-bar {
+    display: none;
+  }
+
+  #controller-play-bar {
+    grid-column: 1;
+    grid-row: 1;
   }
 
   .pad-wrap {
-    height: min(46dvh, 220px);
-    min-height: 140px;
-    max-height: 46dvh;
-    width: 100%;
-    max-width: 100%;
-    flex: 0 0 auto;
+    grid-column: 1;
+    grid-row: 2;
+    height: auto;
+    min-height: 0;
+    max-height: none;
     padding: 0 8px 8px;
   }
 
   .controller-foot {
-    max-height: none;
-    height: auto;
-    min-width: 0;
+    grid-column: 2;
+    grid-row: 1 / -1;
     min-height: 0;
-    max-width: 100%;
-    overflow: visible;
-    padding-bottom: 28px;
-    touch-action: pan-y;
+    max-height: none;
+    overflow-y: auto;
+    border-left: 1px solid var(--line);
+    overscroll-behavior: contain;
+    padding-bottom: 12px;
   }
 
-  .controller-foot .instrument-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .controller-foot > :first-child {
+    border-top: none;
   }
 
-  .instrument-grid .chip,
-  .loop-actions .btn,
-  .fx-chip,
   .controller-foot .chip,
   .pad-mode__chips .chip,
   .seq-page,
@@ -3051,8 +3200,15 @@ input[type='range'] {
     white-space: normal;
   }
 
+  /* Slimmer pad-mode row buys the pad extra height while staying tappable. */
   .pad-mode {
-    padding: 6px 8px;
+    padding: 3px 8px;
+  }
+
+  .pad-mode__chips .chip {
+    min-height: 40px;
+    min-width: 64px;
+    padding: 3px 10px;
   }
 
   .tool-block,
@@ -3060,18 +3216,57 @@ input[type='range'] {
   .seq-tape,
   .seq-labels,
   .roll,
-  .fx-panel,
-  .fx-tiles,
   .fx-row {
     min-width: 0;
     max-width: 100%;
+  }
+
+  /* Stage sheets: chrome shrinks so the editor grid owns the space. */
+  .fx-sheet--stage .fx-sheet__card {
+    gap: 6px;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+
+  .fx-sheet--stage .inst-carousel__arrow {
+    flex-basis: 40px;
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .fx-sheet--stage .inst-carousel__name {
+    min-height: 40px;
+  }
+
+  .fx-sheet--stage .stage-head .btn {
+    min-height: 40px;
+    min-width: 64px;
+  }
+
+  #host-notes-sheet .stage-bar .btn,
+  #controller-notes-sheet .stage-bar .btn,
+  .fx-sheet--stage .stage-bar .btn {
+    min-height: 40px;
+    height: 40px;
+    max-height: 40px;
+  }
+
+  #host-notes-sheet .stage-bar .select-move,
+  #controller-notes-sheet .stage-bar .select-move {
+    flex: 1 1 0;
+    width: auto;
+    min-height: 40px;
+    font-size: 13px;
   }
 
   .splash {
     top: 0;
     padding: 8px;
   }
+}
 
+/* Any short landscape window: keep the sheets usable — two-column invite,
+   capped note roll, tighter cards. */
+@media (orientation: landscape) and (max-height: 560px) {
   .fx-sheet {
     padding: 8px;
   }
@@ -3081,7 +3276,7 @@ input[type='range'] {
     overflow: auto;
   }
 
-  /* Sideways phone: stack the invite QR beside the code, link, and Done —
+  /* Sideways invite: stack the QR beside the code, link, and Done —
      a tall single column would push them below the fold. */
   .fx-sheet__card.share-sheet {
     display: grid;
@@ -3118,12 +3313,17 @@ input[type='range'] {
 
   .fx-sheet--stage .fx-sheet__card {
     max-height: 100%;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .fx-sheet--stage .roll {
     max-height: none;
     min-height: 0;
+  }
+
+  .fx-sheet--stage .sequencer {
+    min-height: 200px;
   }
 }
 
@@ -3163,75 +3363,42 @@ input[type='range'] {
   }
 }
 
-.fx-tiles .fx-chip.has-swatch.has-icon,
-.fx-tiles .fx-more.has-icon {
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-  height: 56px;
-  min-height: 56px;
-  max-height: 56px;
-  padding: 4px 6px;
-  overflow: hidden;
-}
-
-.fx-tiles .fx-chip.has-swatch.has-icon::before {
-  display: none;
-}
-
-.fx-tiles .fx-chip .ico,
-.fx-tiles .fx-more .ico {
-  width: 22px;
-  height: 22px;
-}
-
-.fx-tiles .chip-label {
-  font-size: 12px;
-  line-height: 1.05;
-}
-
-.fx-tiles .chip-label small {
-  font-size: 10px;
-}
-
 .seq-tape.edge-left,
 .roll.edge-left {
-  box-shadow: inset 14px 0 0 -9px rgba(28, 20, 12, 0.85), inset 28px 0 18px -14px rgba(28, 20, 12, 0.35);
+  box-shadow: inset 14px 0 0 -9px rgb(var(--shadow-rgb) / 0.85), inset 28px 0 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 .seq-tape.edge-right,
 .roll.edge-right {
-  box-shadow: inset -14px 0 0 -9px rgba(28, 20, 12, 0.85), inset -28px 0 18px -14px rgba(28, 20, 12, 0.35);
+  box-shadow: inset -14px 0 0 -9px rgb(var(--shadow-rgb) / 0.85), inset -28px 0 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 .seq-tape.edge-left.edge-right,
 .roll.edge-left.edge-right {
   box-shadow:
-    inset 14px 0 0 -9px rgba(28, 20, 12, 0.85),
-    inset -14px 0 0 -9px rgba(28, 20, 12, 0.85),
-    inset 28px 0 18px -14px rgba(28, 20, 12, 0.35),
-    inset -28px 0 18px -14px rgba(28, 20, 12, 0.35);
+    inset 14px 0 0 -9px rgb(var(--shadow-rgb) / 0.85),
+    inset -14px 0 0 -9px rgb(var(--shadow-rgb) / 0.85),
+    inset 28px 0 18px -14px rgb(var(--shadow-rgb) / 0.35),
+    inset -28px 0 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 .host-tools.edge-top,
 .controller-foot.edge-top {
-  box-shadow: inset 0 14px 0 -9px rgba(28, 20, 12, 0.85), inset 0 28px 18px -14px rgba(28, 20, 12, 0.35);
+  box-shadow: inset 0 14px 0 -9px rgb(var(--shadow-rgb) / 0.85), inset 0 28px 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 .host-tools.edge-bottom,
 .controller-foot.edge-bottom {
-  box-shadow: inset 0 -14px 0 -9px rgba(28, 20, 12, 0.85), inset 0 -28px 18px -14px rgba(28, 20, 12, 0.35);
+  box-shadow: inset 0 -14px 0 -9px rgb(var(--shadow-rgb) / 0.85), inset 0 -28px 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 .host-tools.edge-top.edge-bottom,
 .controller-foot.edge-top.edge-bottom {
   box-shadow:
-    inset 0 14px 0 -9px rgba(28, 20, 12, 0.85),
-    inset 0 -14px 0 -9px rgba(28, 20, 12, 0.85),
-    inset 0 28px 18px -14px rgba(28, 20, 12, 0.35),
-    inset 0 -28px 18px -14px rgba(28, 20, 12, 0.35);
+    inset 0 14px 0 -9px rgb(var(--shadow-rgb) / 0.85),
+    inset 0 -14px 0 -9px rgb(var(--shadow-rgb) / 0.85),
+    inset 0 28px 18px -14px rgb(var(--shadow-rgb) / 0.35),
+    inset 0 -28px 18px -14px rgb(var(--shadow-rgb) / 0.35);
 }
 
 body.page-edge-top::before,
@@ -3247,21 +3414,10 @@ body.page-edge-bottom::after {
 
 body.page-edge-top::before {
   top: 0;
-  background: linear-gradient(to bottom, rgba(28, 20, 12, 0.4), transparent);
+  background: linear-gradient(to bottom, rgb(var(--shadow-rgb) / 0.4), transparent);
 }
 
 body.page-edge-bottom::after {
   bottom: 0;
-  background: linear-gradient(to top, rgba(28, 20, 12, 0.4), transparent);
-}
-
-@media (orientation: landscape) and (max-height: 520px) {
-  .fx-tiles .fx-chip.has-swatch.has-icon,
-  .fx-tiles .fx-more.has-icon,
-  .fx-tiles .fx-chip,
-  .fx-tiles .btn.has-icon {
-    height: 48px;
-    min-height: 48px;
-    max-height: 48px;
-  }
+  background: linear-gradient(to top, rgb(var(--shadow-rgb) / 0.4), transparent);
 }

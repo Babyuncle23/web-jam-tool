@@ -100,9 +100,7 @@ if (afterDrop?.cutoff !== 0 || afterDrop?.hipass !== 0 || afterDrop?.hold) {
   console.log('FAIL: dropped volatile release left the filter clamped');
 }
 
-// Guest wah lives only in the master sheet now (inside Advanced): wah + volume → host
-await guest.click('#controller-advanced');
-await new Promise((r) => setTimeout(r, 300));
+// Guest wah lives only in the master sheet now (button at the foot): wah + volume → host
 await guest.click('#controller-master');
 await new Promise((r) => setTimeout(r, 300));
 await guest.evaluate(() => {
@@ -130,15 +128,17 @@ await guest.click('#controller-pad-mode [data-padmode="notes"]');
 await new Promise((r) => setTimeout(r, 300));
 
 // Guest dies mid-gesture: peer:leave must open the filter they held.
-// The master/advanced sheets still cover the pad — close them first.
+// The master sheet still covers the pad — close it first.
 await guest.click('#controller-master-close');
-await guest.click('#controller-advanced-close');
 await new Promise((r) => setTimeout(r, 300));
 await guest.click('#controller-pad-mode [data-padmode="fx"]');
 await new Promise((r) => setTimeout(r, 300));
-await guest.mouse.move(...gpx(0.55, 0.3));
+// The sheet clicks scrolled the page — the pad box from above is stale.
+const gbox2 = await (await guest.$('#pad')).boundingBox();
+const gpx2 = (fx, fy) => [gbox2.x + gbox2.width * fx, gbox2.y + gbox2.height * (1 - fy)];
+await guest.mouse.move(...gpx2(0.55, 0.3));
 await guest.mouse.down();
-await guest.mouse.move(...gpx(0.6, 0.22), { steps: 3 });
+await guest.mouse.move(...gpx2(0.6, 0.22), { steps: 3 });
 await new Promise((r) => setTimeout(r, 400));
 const heldBeforeLeave = await host.evaluate(() => globalThis.__jam?.masterFx?.cutoff);
 if (!(heldBeforeLeave > 0)) console.log('FAIL: guest filter did not engage before leave test');

@@ -44,7 +44,7 @@ await page.evaluate(() => {
   j.audio.engine.tone.getTransport().ticks = 768 * 12; // bar 12
 });
 // mute the drum voice through the UI flag
-await page.click('#host-screen .fx-panel .mix-flag[data-mix="mute"][data-voice="drums"]');
+await page.click('#host-screen .drum-sec__mix .mix-flag[data-mix="mute"][data-voice="drums"]');
 
 await page.click('#btn-transport'); // play
 await page.click('#btn-loop'); // Rec on

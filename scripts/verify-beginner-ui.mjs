@@ -1,6 +1,6 @@
 /**
- * Beginner-UI smoke: guest Advanced sheet, drum advanced gating, drum pitch sync,
- * personal undo/redo arrows next to clr all, pad zone highlight markup.
+ * Beginner-UI smoke: guest sections + MORE sheet, drum advanced gating, drum
+ * pitch sync, personal undo/redo arrows next to clr all, pad zone highlight markup.
  */
 import puppeteer from 'puppeteer-core';
 
@@ -59,37 +59,60 @@ try {
   await guest.goto(`${BASE}/?role=controller&code=${code}`, { waitUntil: 'domcontentloaded' });
   await pollExpr(guest, '({ ok: document.getElementById("controller-splash").hidden })');
 
-  // 1. Foreground: pad, mode chips, instruments, Rec, undo/redo/clr. Hidden: fx row lives in Advanced sheet.
+  // 1. Foreground: pad, mode chips, instrument cards, Rec, undo/redo/clr.
+  //    FX controls live behind each card's MORE sheet; Master FX sits at the
+  //    end of the foot column.
   const foreground = await guest.evaluate(`(() => ({
     pad: !document.getElementById('pad').hidden,
     modes: document.querySelectorAll('#controller-screen [data-mode]').length === 2,
     inst: Boolean(document.getElementById('controller-instruments')),
+    cards: document.querySelectorAll('#controller-instruments .inst-card').length === 5,
+    moreButtons: document.querySelectorAll('#controller-instruments [data-more]').length === 5,
     rec: Boolean(document.getElementById('controller-loop')),
     undo: Boolean(document.getElementById('controller-loop-undo')),
     redo: Boolean(document.getElementById('controller-loop-redo')),
     clr: Boolean(document.getElementById('controller-loop-clear')),
-    advSheetHidden: document.getElementById('controller-advanced-sheet').hidden,
-    fxInsideAdv: Boolean(document.getElementById('controller-advanced-sheet')?.contains(document.getElementById('controller-fx'))),
-    moreInsideAdv: Boolean(document.getElementById('controller-advanced-sheet')?.contains(document.getElementById('controller-fx-detail'))),
-    masterInsideAdv: Boolean(document.getElementById('controller-advanced-sheet')?.contains(document.getElementById('controller-master'))),
+    fxSheetHidden: document.getElementById('controller-fx-sheet').hidden,
+    masterInFoot: Boolean(document.querySelector('.controller-foot')?.contains(document.getElementById('controller-master'))),
+    oldAdvancedGone: !document.getElementById('controller-advanced') && !document.getElementById('controller-advanced-sheet'),
     keyReadout: Boolean(document.getElementById('controller-key')),
     guestScalePicker: Boolean(document.querySelector('#controller-screen [data-scale], #controller-screen [data-root]')),
   }))()`);
   console.log('foreground:', JSON.stringify(foreground));
-  if (!foreground.pad || !foreground.modes || !foreground.inst || !foreground.rec) throw new Error('foreground control missing');
+  if (!foreground.pad || !foreground.modes || !foreground.inst || !foreground.cards || !foreground.rec)
+    throw new Error('foreground control missing');
   if (!foreground.undo || !foreground.redo || !foreground.clr) throw new Error('undo/redo/clr missing');
-  if (!foreground.advSheetHidden || !foreground.fxInsideAdv || !foreground.moreInsideAdv || !foreground.masterInsideAdv)
-    throw new Error('advanced sheet contents wrong');
+  if (!foreground.fxSheetHidden || !foreground.moreButtons || !foreground.masterInFoot || !foreground.oldAdvancedGone)
+    throw new Error('sections/MORE/master layout wrong');
   if (foreground.guestScalePicker) throw new Error('guest must not pick key/scale');
   const clrLabel = await guest.evaluate(`document.getElementById('controller-loop-clear').textContent.trim()`);
   if (clrLabel) throw new Error(`clr all should be icon-only, got "${clrLabel}"`);
 
-  // 2. Advanced sheet opens/closes.
-  await clickSelector(guest, '#controller-advanced');
-  await pollExpr(guest, `({ ok: !document.getElementById('controller-advanced-sheet').hidden })`);
-  await clickSelector(guest, '#controller-advanced-close');
-  await pollExpr(guest, `({ ok: document.getElementById('controller-advanced-sheet').hidden })`);
-  console.log('advanced sheet toggles ok');
+  // 2. Instrument card MORE opens the FX sheet for that card; section heads
+  //    collapse/expand their bodies. Narrow screens start the instruments
+  //    section on the carousel — expand it before tapping a card's MORE.
+  const instOpened = await guest.evaluate(`(() => {
+    const sec = document.getElementById('sec-guest-instruments');
+    if (sec.classList.contains('is-open')) return true;
+    sec.querySelector('.tool-sec__head').click();
+    return sec.classList.contains('is-open');
+  })()`);
+  if (!instOpened) throw new Error('instruments section did not expand');
+  await clickSelector(guest, '#controller-instruments [data-more="bass"]');
+  await pollExpr(guest, `({ ok: !document.getElementById('controller-fx-sheet').hidden })`);
+  const fxTitle = await guest.evaluate(`document.getElementById('controller-fx-title').textContent`);
+  if (!/bass/i.test(fxTitle)) throw new Error(`fx sheet title should name bass, got "${fxTitle}"`);
+  await clickSelector(guest, '#controller-fx-close');
+  await pollExpr(guest, `({ ok: document.getElementById('controller-fx-sheet').hidden })`);
+  // Section collapse: tapping the head hides the body, chevron state flips.
+  await clickSelector(guest, '#sec-guest-drums .tool-sec__head');
+  const secState = await guest.evaluate(`(() => ({
+    open: document.getElementById('sec-guest-drums').classList.contains('is-open'),
+    aria: document.querySelector('#sec-guest-drums .tool-sec__head').getAttribute('aria-expanded'),
+  }))()`);
+  if (secState.open || secState.aria !== 'false') throw new Error('section did not collapse');
+  await clickSelector(guest, '#sec-guest-drums .tool-sec__head');
+  console.log('more sheet + section toggles ok');
 
   // 3. Guest drum sheet: adv panel hidden until checkbox; pitch slider syncs to host.
   await clickSelector(guest, '#controller-drums');

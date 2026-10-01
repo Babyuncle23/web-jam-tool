@@ -7,7 +7,7 @@
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, SAMPLER_INSTRUMENT, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, padNoteMarks, pitchChoice, resolveGesture, storedInstrument } from '../audio/synth.js';
 import { SAMPLE_BANK, defaultSampleParams, sampleMode } from '../audio/sampler.js';
-import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, clampFx, cycleFxAmount, defaultFxState, defaultLevels, fxAmountLabel, instrumentFxSpecs, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
+import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, clampFx, defaultFxState, defaultLevels, instrumentFxSpecs, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
 import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import { JamSocket, EVENTS } from '../network/socket.js';
@@ -49,12 +49,12 @@ export async function createControllerView({ code, name } = {}) {
     loopClear: document.getElementById('controller-loop-clear'),
     loopUndo: document.getElementById('controller-loop-undo'),
     loopRedo: document.getElementById('controller-loop-redo'),
-    advanced: document.getElementById('controller-advanced'),
-    advancedSheet: document.getElementById('controller-advanced-sheet'),
-    advancedClose: document.getElementById('controller-advanced-close'),
     transport: document.getElementById('controller-transport'),
     instruments: document.getElementById('controller-instruments'),
-    fx: document.getElementById('controller-fx'),
+    secInstruments: document.getElementById('sec-guest-instruments'),
+    secInstValue: document.getElementById('sec-guest-inst-value'),
+    secDrumValue: document.getElementById('sec-guest-drums-value'),
+    instMiniName: document.querySelector('#sec-guest-instruments [data-inst-name]'),
     notes: document.getElementById('controller-notes'),
     notesSheet: document.getElementById('controller-notes-sheet'),
     noteTape: document.getElementById('controller-note-tape'),
@@ -66,9 +66,9 @@ export async function createControllerView({ code, name } = {}) {
     instPrev: document.getElementById('controller-inst-prev'),
     instName: document.getElementById('controller-inst-name'),
     instNext: document.getElementById('controller-inst-next'),
-    fxDetail: document.getElementById('controller-fx-detail'),
     fxSheet: document.getElementById('controller-fx-sheet'),
     fxSliders: document.getElementById('controller-fx-sliders'),
+    fxTitle: document.getElementById('controller-fx-title'),
     fxSheetClose: document.getElementById('controller-fx-close'),
     master: document.getElementById('controller-master'),
     masterSheet: document.getElementById('controller-master-sheet'),
@@ -81,7 +81,6 @@ export async function createControllerView({ code, name } = {}) {
     drumPresetsMain: document.getElementById('controller-drum-presets-main'),
     drumsClose: document.getElementById('controller-drums-close'),
     drumTransport: document.getElementById('controller-drums-transport'),
-    drumZoom: document.getElementById('controller-drum-zoom'),
     drumWriteRow: document.getElementById('controller-drum-write'),
     drumRepeatRow: document.getElementById('controller-drum-repeat'),
     drumAdvCheck: document.getElementById('controller-drum-adv-check'),
@@ -100,6 +99,9 @@ export async function createControllerView({ code, name } = {}) {
     root: 'C',
     scale: 'major',
     instrument: 'pad',
+    // Instrument whose sliders the More sheet shows — follows the card it
+    // was opened from, not always the playing instrument.
+    fxFor: 'pad',
     effects: defaultFxState(),
     levels: defaultLevels(),
     octaves: defaultOctaves(),
@@ -193,9 +195,12 @@ export async function createControllerView({ code, name } = {}) {
       chip.classList.add('has-swatch');
       chip.classList.toggle('is-on', id === state.instrument);
       chip.style.setProperty('--chip', INSTRUMENT_COLORS[id] || '#e2b43a');
+      chip.closest('.inst-card')?.classList.toggle('is-on', id === state.instrument);
       const spec = INSTRUMENTS.find((item) => item.id === id);
       paintIconButton(chip, id, spec?.label || id);
     });
+    paintInstrumentMini();
+    paintSecValues();
     const bass = state.instrument === 'bass';
     const chords = !fxMode && !samplerMode && state.mode === 'chords' && !bass;
     el.zones.hidden = !chords;
@@ -224,28 +229,19 @@ export async function createControllerView({ code, name } = {}) {
     renderer.setMarks(padNoteMarks(state.marks, state.instrument));
   }
 
-  function renderGuestFx() {
-    const specs = instrumentFxSpecs(state.instrument, state.lite);
-    // Lite hosts run only the default-on effects and show no chips for them.
-    el.fx.hidden = !specs.length;
-    const levels = state.effects[state.instrument] ?? {};
-    el.fx.replaceChildren();
-    for (const spec of specs) {
-      const level = clampFx(levels[spec.id] ?? 0);
-      const button = pressable(`chip fx-chip has-swatch${level >= 0.08 ? ' is-on' : ''}`);
-      button.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
-      button.dataset.fx = spec.id;
-      paintIconButton(button, spec.id, spec.label, fxAmountLabel(level));
-      el.fx.append(button);
-    }
+  /** Section headers always read out the current value when collapsed. */
+  function paintSecValues() {
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    if (el.secInstValue) el.secInstValue.textContent = spec?.label ?? state.instrument;
+    if (el.secDrumValue) el.secDrumValue.textContent = DRUM_PRESETS[state.drums.preset]?.label ?? 'Custom';
   }
 
-  function cycleGuestFx(id) {
-    const level = cycleFxAmount(state.effects[state.instrument]?.[id] ?? 0);
-    if (!state.effects[state.instrument]) state.effects[state.instrument] = {};
-    state.effects[state.instrument][id] = level;
-    socket.sendControl({ effect: { instrument: state.instrument, id, level } });
-    renderGuestFx();
+  /** The collapsed instrument section is a one-item carousel. */
+  function paintInstrumentMini() {
+    if (!el.instMiniName) return;
+    const spec = INSTRUMENTS.find((item) => item.id === state.instrument);
+    el.instMiniName.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    paintIconButton(el.instMiniName, state.instrument, spec?.label || state.instrument);
   }
 
   function unlock() {
@@ -339,6 +335,18 @@ export async function createControllerView({ code, name } = {}) {
     return fit + (Math.max(fit, 44) - fit) * noteZoom;
   }
 
+  /** Pinch/wheel zoom: translate a wanted step width back into noteZoom. */
+  function applyGuestNoteStepPx(px) {
+    const steps = Math.max(16, state.noteSteps || 32);
+    const view = el.noteTape?.clientWidth || 0;
+    const width = view > 40 ? view : Math.max(280, window.innerWidth - 16);
+    const fit = Math.max(6, (width - 50) / steps);
+    const span = Math.max(fit, 44) - fit;
+    noteZoom = span > 0 ? Math.max(0, Math.min(1, (px - fit) / span)) : 0;
+    paintGuestNotes();
+    return guestNoteStepPx();
+  }
+
   /* While any player is recording the host pushes a fresh loopNotes map every
      ~80 ms; repainting the open sheet on a ~180 ms timer batches those bursts
      and the latest map still lands within a quarter beat of the capture.
@@ -364,6 +372,7 @@ export async function createControllerView({ code, name } = {}) {
       notes: state.marks,
       steps: state.noteSteps,
       stepPx: guestNoteStepPx(),
+      onZoom: applyGuestNoteStepPx,
       pitchesFor,
       lanes,
       colorFor: (note) => INSTRUMENT_COLORS[storedInstrument(note.instrument)] || '#e0a12e',
@@ -454,6 +463,18 @@ export async function createControllerView({ code, name } = {}) {
     return fit + (Math.max(fit, 46) - fit) * drumZoom;
   }
 
+  /** Pinch/wheel zoom: translate a wanted cell size back into drumZoom. */
+  function applyGuestDrumCellPx(px) {
+    const steps = Math.max(1, state.drums.steps || 16);
+    const view = el.drumSequencer?.clientWidth || 0;
+    const width = view > 80 ? view : Math.max(280, window.innerWidth - 16);
+    const fit = Math.max(8, (width - 128 - 3 * Math.max(0, steps - 1) - 8) / steps);
+    const span = Math.max(fit, 46) - fit;
+    drumZoom = span > 0 ? Math.max(0, Math.min(1, (px - fit) / span)) : 0;
+    drumGrid.render();
+    return guestDrumCellPx();
+  }
+
   function ensureGuestDrumRows() {
     for (const { id } of TRACKS) {
       const row = state.drums.grid[id] || (state.drums.grid[id] = []);
@@ -510,6 +531,7 @@ export async function createControllerView({ code, name } = {}) {
     onGesture: (phase) => {
       if (phase === 'flush' || phase === 'end') flushGuestDrumWrites();
     },
+    onZoom: applyGuestDrumCellPx,
   });
 
   function paintGuestDrumPreset() {
@@ -520,6 +542,7 @@ export async function createControllerView({ code, name } = {}) {
     }
     const preset = DRUM_PRESETS[state.drums.preset];
     if (el.drumsOpen) setIconLabel(el.drumsOpen, 'Edit drums', preset?.label);
+    if (el.secDrumValue) el.secDrumValue.textContent = preset?.label ?? 'Custom';
   }
 
   function renderGuestDrumPresets() {
@@ -713,10 +736,6 @@ export async function createControllerView({ code, name } = {}) {
     if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
     socket.sendControl({ bpm: Number(chip.dataset.bpm) });
   });
-  el.drumZoom?.addEventListener('input', (event) => {
-    drumZoom = Number(event.target.value) / 100;
-    drumGrid.render();
-  });
   el.drumAdvCheck?.addEventListener('change', () => {
     const on = Boolean(el.drumAdvCheck.checked);
     if (el.drumAdvPanel) el.drumAdvPanel.hidden = !on;
@@ -747,10 +766,13 @@ export async function createControllerView({ code, name } = {}) {
 
   function renderGuestSliders() {
     const rows = [];
-    const level = clampFx(state.levels[state.instrument] ?? 1);
+    const target = state.fxFor;
+    const spec0 = INSTRUMENTS.find((item) => item.id === target);
+    if (el.fxTitle) el.fxTitle.textContent = spec0 ? `${spec0.label} · sound` : 'Effect detail';
+    const level = clampFx(state.levels[target] ?? 1);
     const volumeRow = document.createElement('label');
     volumeRow.className = 'fx-slider';
-    volumeRow.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    volumeRow.style.setProperty('--chip', INSTRUMENT_COLORS[target] || '#e2b43a');
     const volumeName = document.createElement('span');
     volumeName.textContent = `Volume · ${Math.round(level * 100)}%`;
     const volume = document.createElement('input');
@@ -762,15 +784,15 @@ export async function createControllerView({ code, name } = {}) {
     volume.addEventListener('input', () => {
       const value = Number(volume.value) / 100;
       volumeName.textContent = `Volume · ${volume.value}%`;
-      state.levels[state.instrument] = value;
-      socket.sendControlThrottled({ level: { instrument: state.instrument, value } });
+      state.levels[target] = value;
+      socket.sendControlThrottled({ level: { instrument: target, value } });
     });
     volumeRow.append(volumeName, volume);
     rows.push(volumeRow);
-    const octaveValue = state.octaves[state.instrument] ?? defaultOctaves()[state.instrument];
+    const octaveValue = state.octaves[target] ?? defaultOctaves()[target];
     const octaveRow = document.createElement('label');
     octaveRow.className = 'fx-slider fx-slider--octave';
-    octaveRow.style.setProperty('--chip', INSTRUMENT_COLORS[state.instrument] || '#e2b43a');
+    octaveRow.style.setProperty('--chip', INSTRUMENT_COLORS[target] || '#e2b43a');
     const octaveName = document.createElement('span');
     octaveName.textContent = `Octave · ${octaveValue}`;
     const octave = document.createElement('input');
@@ -783,13 +805,13 @@ export async function createControllerView({ code, name } = {}) {
     octave.addEventListener('input', () => {
       const value = Number(octave.value);
       octaveName.textContent = `Octave · ${value}`;
-      state.octaves[state.instrument] = value;
-      socket.sendControlThrottled({ octave: { instrument: state.instrument, value } });
+      state.octaves[target] = value;
+      socket.sendControlThrottled({ octave: { instrument: target, value } });
     });
     octaveRow.append(octaveName, octave);
     rows.push(octaveRow);
-    for (const spec of instrumentFxSpecs(state.instrument, state.lite)) {
-      const amount = clampFx(state.effects[state.instrument]?.[spec.id] ?? 0);
+    for (const spec of instrumentFxSpecs(target, state.lite)) {
+      const amount = clampFx(state.effects[target]?.[spec.id] ?? 0);
       const row = document.createElement('label');
       row.className = 'fx-slider';
       row.style.setProperty('--chip', FX_COLORS[spec.id] || '#e2b43a');
@@ -801,14 +823,14 @@ export async function createControllerView({ code, name } = {}) {
       input.min = '0';
       input.max = '100';
       input.step = '1';
+      input.dataset.fx = spec.id;
       input.value = String(Math.round(amount * 100));
       input.addEventListener('input', () => {
         const value = Number(input.value) / 100;
         name.textContent = `${specName} · ${input.value}%`;
-        if (!state.effects[state.instrument]) state.effects[state.instrument] = {};
-        state.effects[state.instrument][spec.id] = value;
-        socket.sendControlThrottled({ effect: { instrument: state.instrument, id: spec.id, level: value } });
-        renderGuestFx();
+        if (!state.effects[target]) state.effects[target] = {};
+        state.effects[target][spec.id] = value;
+        socket.sendControlThrottled({ effect: { instrument: target, id: spec.id, level: value } });
       });
       row.append(name, input);
       rows.push(row);
@@ -1081,16 +1103,14 @@ export async function createControllerView({ code, name } = {}) {
     syncChrome();
   }
 
-  /** One button, both tools: ✕ wipes a pad's hits, ✎ drags pitch/stretch. */
+  /** The pencil alone is enough — the merged tune/erase layer can read as
+     plain "edit" (✎ also covers wiping a pad's hits). */
   function paintSampleEditButton(button) {
     button.classList.add('has-icon', 'sample-edit-btn');
-    const slash = document.createElement('span');
-    slash.className = 'icon-sep';
-    slash.textContent = '/';
     const text = document.createElement('span');
     text.className = 'chip-label';
     text.textContent = 'Edit';
-    button.replaceChildren(chipIcon('xmark'), slash, chipIcon('edit'), text);
+    button.replaceChildren(chipIcon('edit'), text);
   }
 
   el.sampleEdit?.addEventListener('click', () => {
@@ -1135,14 +1155,6 @@ export async function createControllerView({ code, name } = {}) {
     hasHits: (id) => state.marks.some((note) => note.instrument === SAMPLER_INSTRUMENT && note.sample === id),
   });
 
-  el.advanced?.addEventListener('click', () => {
-    renderGuestFx();
-    el.advancedSheet.hidden = false;
-  });
-  el.advancedClose?.addEventListener('click', () => {
-    el.advancedSheet.hidden = true;
-  });
-
   el.master?.addEventListener('click', () => {
     renderGuestMaster();
     el.masterSheet.hidden = false;
@@ -1164,7 +1176,8 @@ export async function createControllerView({ code, name } = {}) {
     if (typeof payload?.lite === 'boolean' && payload.lite !== state.lite) {
       state.lite = payload.lite;
       renderer.setLite(payload.lite);
-      renderGuestFx();
+      el.screen.classList.toggle('is-lite', payload.lite);
+      if (!el.fxSheet.hidden) renderGuestSliders();
     }
     if (payload?.masterFx && typeof payload.masterFx === 'object') {
       const next = payload.masterFx;
@@ -1186,11 +1199,11 @@ export async function createControllerView({ code, name } = {}) {
     }
     if ((state.root !== previousRoot || state.scale !== previousScale) && !el.notesSheet.hidden) paintGuestNotes();
     if (payload?.effects && typeof payload.effects === 'object') {
-      // Harmony patches echo every ~90 ms while the host drags — the FX
-      // chips only repaint on a real change or while their sheet is open.
+      // Harmony patches echo every ~90 ms while the host drags — the sheet
+      // sliders only repaint on a real change so a local drag is not cut.
       const changed = !sameFxMap(payload.effects, state.effects);
       state.effects = payload.effects;
-      if (changed || !el.advancedSheet.hidden) renderGuestFx();
+      if (changed && !el.fxSheet.hidden) renderGuestSliders();
     }
     if (payload?.levels && typeof payload.levels === 'object') {
       state.levels = { ...state.levels, ...payload.levels };
@@ -1358,10 +1371,6 @@ export async function createControllerView({ code, name } = {}) {
       setPadMode(chip.dataset.padmode);
       return;
     }
-    if (chip.dataset.fx) {
-      cycleGuestFx(chip.dataset.fx);
-      return;
-    }
     if (chip.dataset.mode && !(state.instrument === 'bass' && chip.dataset.mode === 'chords')) state.mode = chip.dataset.mode;
     if (chip.dataset.instrument) pickGuestInstrument(chip.dataset.instrument);
     syncChrome();
@@ -1377,8 +1386,9 @@ export async function createControllerView({ code, name } = {}) {
     if (state.padMode !== 'notes') setPadMode('notes');
     state.mode = 'single';
     state.instrument = normalizeInstrument(instrument);
+    // The More sheet follows the playing instrument until a card reopens it.
+    state.fxFor = state.instrument;
     socket.sendControl({ instrument: state.instrument });
-    renderGuestFx();
     if (!el.fxSheet.hidden) renderGuestSliders();
     syncChrome();
     paintRollInstrument();
@@ -1421,6 +1431,42 @@ export async function createControllerView({ code, name } = {}) {
   }
 
   el.screen.addEventListener('click', onChipClick);
+
+  /** Card MORE opens the shared FX sheet pointed at that card's instrument. */
+  function openFxSheet(instrument) {
+    if (instrument) state.fxFor = normalizeInstrument(instrument);
+    renderGuestSliders();
+    el.fxSheet.hidden = false;
+  }
+
+  /* Section headers toggle; carousel arrows and card MORE live outside the
+     heads so they never fight the collapse toggle. */
+  el.screen.addEventListener('click', (event) => {
+    const head = event.target.closest('.tool-sec__head');
+    // Controls inside a head (Edit notes) act for themselves, never toggle.
+    if (head && el.screen.contains(head) && !event.target.closest('button, [role="button"], input, select, a')) {
+      const section = head.closest('.tool-sec');
+      const open = section.classList.toggle('is-open');
+      head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      return;
+    }
+    const cycle = event.target.closest('[data-inst-cycle]');
+    if (cycle) {
+      const index = INSTRUMENT_IDS.indexOf(state.instrument);
+      const step = Number(cycle.dataset.instCycle) || 1;
+      const next = INSTRUMENT_IDS[(index + step + INSTRUMENT_IDS.length) % INSTRUMENT_IDS.length];
+      pickGuestInstrument(next);
+      return;
+    }
+    const more = event.target.closest('[data-more]');
+    if (more) openFxSheet(more.dataset.more);
+  });
+  el.screen.addEventListener('keydown', (event) => {
+    const head = event.target.closest('.tool-sec__head');
+    if (!head || event.target !== head || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    head.click();
+  });
 
   function setRecording(next) {
     state.recording = next;
@@ -1497,11 +1543,6 @@ export async function createControllerView({ code, name } = {}) {
   el.loopUndo.addEventListener('click', () => socket.sendControl({ history: 'undo' }));
   el.loopRedo.addEventListener('click', () => socket.sendControl({ history: 'redo' }));
 
-  document.getElementById('controller-note-zoom')?.addEventListener('input', (event) => {
-    noteZoom = Number(event.target.value) / 100;
-    paintGuestNotes();
-  });
-
   el.notes.addEventListener('click', () => {
     if (!state.audioReady) return;
     socket.sendControl({ erase: 'show' });
@@ -1522,7 +1563,7 @@ export async function createControllerView({ code, name } = {}) {
   const padNotesChip = el.padMode?.querySelector('[data-padmode="notes"]');
   const padFxChip = el.padMode?.querySelector('[data-padmode="fx"]');
   const padSamplerChip = el.padMode?.querySelector('[data-padmode="sampler"]');
-  if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Notes');
+  if (padNotesChip) paintIconButton(padNotesChip, 'notes', 'Keys');
   if (padFxChip) paintIconButton(padFxChip, 'scissors', 'FX');
   if (padSamplerChip) paintIconButton(padSamplerChip, 'sampler', 'SMP');
   if (el.sampleEdit) paintIconButton(el.sampleEdit, 'edit', 'Tune');
@@ -1530,10 +1571,6 @@ export async function createControllerView({ code, name } = {}) {
   el.noteClear.addEventListener('click', () => {
     if (!state.audioReady) return;
     socket.sendControl({ loop: 'clear', fromEditor: true, instrument: rollInstrument() });
-  });
-  el.fxDetail.addEventListener('click', () => {
-    renderGuestSliders();
-    el.fxSheet.hidden = false;
   });
   el.fxSheetClose.addEventListener('click', () => {
     el.fxSheet.hidden = true;
@@ -1544,21 +1581,29 @@ export async function createControllerView({ code, name } = {}) {
 
   updateKey();
   syncChrome();
-  for (const chip of [...el.instruments.querySelectorAll('[data-instrument]')]) {
-    if (!INSTRUMENTS.some((item) => item.id === chip.dataset.instrument)) chip.remove();
+  for (const card of [...el.instruments.querySelectorAll('.inst-card')]) {
+    if (!INSTRUMENTS.some((item) => item.id === card.dataset.card)) card.remove();
   }
   for (const instrument of INSTRUMENTS) {
-    if (!el.instruments.querySelector(`[data-instrument="${instrument.id}"]`)) {
-      const button = pressable('chip');
-      button.dataset.instrument = instrument.id;
-      paintIconButton(button, instrument.id, instrument.label);
-      el.instruments.append(button);
-    }
+    if (el.instruments.querySelector(`[data-card="${instrument.id}"]`)) continue;
+    const card = document.createElement('div');
+    card.className = 'inst-card';
+    card.dataset.card = instrument.id;
+    const pick = pressable('chip has-swatch inst-card__pick');
+    pick.dataset.instrument = instrument.id;
+    paintIconButton(pick, instrument.id, instrument.label);
+    const more = pressable('btn btn--ghost inst-card__more');
+    more.dataset.more = instrument.id;
+    paintIconButton(more, 'detail', 'More');
+    card.append(pick, more);
+    el.instruments.append(card);
   }
+  el.playBar?.querySelectorAll('[data-mode]').forEach((chip) => {
+    paintIconButton(chip, chip.dataset.mode === 'chords' ? 'chords' : 'notes', chip.dataset.mode === 'chords' ? 'Chords' : 'Notes');
+  });
   paintIconButton(el.loop, 'loop', 'Rec');
   el.loopUndo.replaceChildren(chipIcon('undo'));
   el.loopRedo.replaceChildren(chipIcon('redo'));
-  paintIconButton(el.advanced, 'detail', 'Advanced');
   paintGuestTransport();
   paintGuestClear();
   paintGuestDrumLength();
@@ -1570,14 +1615,49 @@ export async function createControllerView({ code, name } = {}) {
   paintIconButton(el.noteRedo, 'redo', 'Redo');
   paintIconButton(el.noteClear, 'erase', 'clear inst');
   paintIconButton(el.notesClose, 'done', 'Done');
-  paintIconButton(el.fxDetail, 'detail', 'More');
   paintIconButton(el.fxSheetClose, 'done', 'Done');
-  renderGuestFx();
+  el.screen.querySelectorAll('[data-inst-cycle]').forEach((arrow) => {
+    arrow.replaceChildren(chipIcon(Number(arrow.dataset.instCycle) < 0 ? 'prev' : 'next'));
+  });
+  el.screen.querySelectorAll('.inst-card__more').forEach((button) => {
+    paintIconButton(button, 'detail', 'More');
+  });
+  el.screen.classList.toggle('is-lite', state.lite);
+  paintInstrumentMini();
+  paintSecValues();
+  // Touch phones start the instruments section on the carousel — the card
+  // grid costs too much pad space.
+  if (matchMedia('(pointer: coarse), (max-width: 700px)').matches) {
+    el.secInstruments?.classList.remove('is-open');
+    el.secInstruments?.querySelector('.tool-sec__head')?.setAttribute('aria-expanded', 'false');
+  }
   renderGuestDrumPresets();
   paintGuestDrumEditRows();
   paintGuestBpm();
   markScrollEdges(document.querySelector('.controller-foot'), 'y');
   markPageEdges();
+
+  /* Landscape phone: the controller bar (session pill, key pill) is hidden
+     by CSS, so Play and Back move into the play-bar — Play lands between
+     the mode chips and Rec. Rotating back restores the buttons. */
+  const landscapeMq = matchMedia('(orientation: landscape) and (max-height: 560px) and (pointer: coarse)');
+  const backButton = el.screen.querySelector('.controller-bar [data-action="back"]');
+  const chromeHomes = [el.transport, backButton]
+    .filter(Boolean)
+    .map((node) => ({ node, parent: node.parentNode, next: node.nextSibling }));
+
+  function placeLandscapeChrome() {
+    if (!el.playBar || !el.transport) return;
+    if (landscapeMq.matches) {
+      el.playBar.insertBefore(el.transport, el.loop ?? null);
+      if (backButton) el.playBar.insertBefore(backButton, el.playBar.firstChild);
+    } else {
+      for (const { node, parent, next } of chromeHomes) parent.insertBefore(node, next);
+    }
+  }
+
+  placeLandscapeChrome();
+  landscapeMq.addEventListener('change', placeLandscapeChrome);
 
   const view = {
     get code() {
@@ -1590,6 +1670,7 @@ export async function createControllerView({ code, name } = {}) {
       return { ...state.masterFx };
     },
     destroy() {
+      landscapeMq.removeEventListener('change', placeLandscapeChrome);
       pad.destroy();
       drumGrid.destroy();
       samplerUi.destroy();

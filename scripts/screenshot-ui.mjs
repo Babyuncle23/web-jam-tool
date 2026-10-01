@@ -75,8 +75,8 @@ await page.waitForFunction(
   { timeout: 30000, ...POLL },
 );
 await shot(page, 'host-landscape-running');
-await page.tap('.qr-card');
-await shot(page, 'host-landscape-invite');
+// Landscape has no topbar at all — Play and Back move into the play-bar.
+await shot(page, 'host-landscape-nochrome');
 await page.close();
 
 // --- PWA standalone emulation on phone (matchMedia stub: CDP has no display-mode) ---

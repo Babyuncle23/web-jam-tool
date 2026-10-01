@@ -27,6 +27,14 @@ function ensureSocketIo() {
 installQuietTouch(document.getElementById('host-screen'), document.getElementById('controller-screen'));
 initRoleExtras();
 
+const aiSheet = document.getElementById('ai-disclosure');
+document.getElementById('btn-ai-disclosure')?.addEventListener('click', () => {
+  aiSheet.hidden = false;
+});
+document.getElementById('ai-disclosure-close')?.addEventListener('click', () => {
+  aiSheet.hidden = true;
+});
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }

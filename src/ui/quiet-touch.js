@@ -65,6 +65,17 @@ function wantsClick(el) {
   return el.matches('[role="button"]');
 }
 
+/**
+ * Pure gesture surfaces keep the touchstart veto: a drag on them must write,
+ * never scroll — and their CSS already says touch-action: none. Everything
+ * else (buttons, chips, cards) lets the browser take the gesture as a scroll;
+ * a stationary tap still gets its synthesized click on touchend, and the
+ * native click that now arrives as well is swallowed by suppressClick.
+ */
+function keepsVeto(el) {
+  return Boolean(el?.closest?.('.pad, .roll__key, .roll__note, .roll__resize, .sampler-pad, input[type="range"]'));
+}
+
 function writeRange(input, clientX) {
   const rect = input.getBoundingClientRect();
   const ratio = rect.width > 0 ? Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) : 0;
@@ -162,7 +173,7 @@ export function installQuietTouch(...roots) {
         }
         const el = quietTarget(touch.target);
         if (!el) continue;
-        quiet = true;
+        if (keepsVeto(el)) quiet = true;
         pending.set(touch.identifier, { el, x: touch.clientX, y: touch.clientY });
       }
       if (quiet && event.cancelable) event.preventDefault();
@@ -179,6 +190,12 @@ export function installQuietTouch(...roots) {
         if (!armed) continue;
         if (Math.hypot(touch.clientX - armed.x, touch.clientY - armed.y) > 12) continue;
         if (!wantsClick(armed.el)) continue;
+        // Cancel the trailing native click right here: when this tap closed a
+        // sheet, the browser would otherwise re-hit-test what sits under the
+        // sheet at release time — Done on the master sheet re-opened it by
+        // clicking the Master Effects button beneath. suppressClick stays as
+        // a fallback for agents that dispatch the click regardless.
+        if (event.cancelable) event.preventDefault();
         suppressClick = armed.el;
         suppressAt = performance.now();
         armed.el.click();
