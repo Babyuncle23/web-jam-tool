@@ -6,7 +6,7 @@
 
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { INSTRUMENT_COLORS, INSTRUMENT_IDS, INSTRUMENTS, LOOP_STEPS, NOTE_NAMES, SCALE_LABELS, SCALES, SAMPLER_INSTRUMENT, defaultOctaves, extensionFromY, instrumentHomeMidi, midiInScale, normalizeInstrument, padNoteMarks, pitchChoice, resolveGesture, storedInstrument } from '../audio/synth.js';
-import { SAMPLE_BANK, defaultSampleParams, sampleMode } from '../audio/sampler.js';
+import { SAMPLE_BANK, clampSampleVolume, defaultSampleParams, sampleMode } from '../audio/sampler.js';
 import { FX_COLORS, FX_FULL_LABELS, FX_PAD_DIVISIONS, clampFx, defaultFxState, defaultLevels, instrumentFxSpecs, masterCutoffHz, masterHipassHz, REPEAT_ORDER } from '../audio/effects.js';
 import { DEFAULT_MASTER_GAIN } from '../audio/engine.js';
 import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
@@ -209,7 +209,7 @@ export async function createControllerView({ code, name } = {}) {
     syncPadMarks();
     el.hint.textContent = samplerMode
       ? state.samplerEdit
-        ? 'Drag pads — ↕ pitch, → stretch / ← squeeze. Tap ✕ to wipe a sample’s hits. Rec is off.'
+        ? 'Tap a pad to edit it — the panel sliders set pitch, stretch, volume. ✕ wipes a sample’s hits. Rec is off.'
         : 'Tap pads to play. SOLO mutes everything else while held.'
       : fxMode
         ? '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.'
@@ -1142,17 +1142,29 @@ export async function createControllerView({ code, name } = {}) {
       if (params && next) {
         params.pitch = next.pitch;
         params.stretch = next.stretch;
+        params.volume = next.volume;
       }
       if (phase === 'start' || !state.audioReady) return;
-      const tune = { sample: id, pitch: next.pitch, stretch: next.stretch };
-      // 'set' commits (wheel, double-tap reset) skip the host-side audition.
+      const tune = { sample: id, pitch: next.pitch, stretch: next.stretch, volume: next.volume };
+      // 'set' commits skip the host-side audition.
       if (phase === 'end' || phase === 'set') socket.sendControl({ sampleTuneDone: { ...tune, quiet: phase === 'set' } });
       else socket.sendControlThrottled({ sampleTune: tune });
     },
     onErase: (id) => {
       if (state.audioReady) socket.sendControl({ sampleClear: id });
     },
+    // Picking a sample in the panel plays it on the host — never recorded.
+    onSelect: (id) => {
+      if (state.audioReady) socket.sendControl({ samplePreview: id });
+    },
+    // Done keeps the committed params and leaves the edit layer.
+    onDone: () => {
+      state.samplerEdit = '';
+      samplerUi.releaseAll();
+      syncChrome();
+    },
     hasHits: (id) => state.marks.some((note) => note.instrument === SAMPLER_INSTRUMENT && note.sample === id),
+    panelHost: el.screen,
   });
 
   el.master?.addEventListener('click', () => {
@@ -1229,6 +1241,7 @@ export async function createControllerView({ code, name } = {}) {
           state.sampleParams[spec.id] = {
             pitch: Math.round(Number(next.pitch) || 0),
             stretch: Number(next.stretch) || 1,
+            volume: clampSampleVolume(next.volume ?? 1),
           };
           samplerUi.updateParam(spec.id);
         }

@@ -2,13 +2,17 @@ import {
   SAMPLE_BANK,
   SAMPLER_PAD_CELLS,
   SOLO_ACTION,
+  SAMPLE_PITCH_RANGE,
+  SAMPLE_VOLUME_MAX,
   clampSamplePitch,
   clampSampleStretch,
+  clampSampleVolume,
   sampleBpm,
   sampleLabel,
   sampleMode,
 } from '../audio/sampler.js';
-import { pressable } from './quiet-touch.js';
+import { pressable, setControlEnabled } from './quiet-touch.js';
+import { chipIcon } from './icons.js';
 
 /**
  * The pad that replaces the touchpad in sampler mode — host and guest build
@@ -16,61 +20,72 @@ import { pressable } from './quiet-touch.js';
  *
  * Play mode: a press fires onHit and lights the pad while held; several
  * fingers can hold different pads at once (sample + SOLO together included).
- * Edit mode (editMode() truthy) merges tuning and erasing: tapping a pad
- * arms it — the crosshair HUD stays on it — and any drag, on the pad or on
- * empty grid space, retunes it: vertical moves pitch in semitones,
- * horizontal stretches time without pitch. A double-tap resets the pad, a
- * mouse wheel steps pitch (shift → stretch), and the corner ✕ calls
- * onErase — it ignores presses that land while a tune gesture is held, so
- * an edit drag can never wipe hits by accident.
+ * Edit mode (editMode() truthy): tapping a pad selects its sample for the
+ * editor panel and auditions it through onSelect (gate pads sound only
+ * while held, like live play). The panel offers pitch, stretch and volume
+ * sliders plus a carousel (◀ name ▶) that picks the edited sample without
+ * touching the grid. The corner ✕ on a pad still calls onErase.
+ *
+ * Placement follows the layout: in portrait the panel is a plain block
+ * right below the pad — it scrolls with the page and can never cover a
+ * cell; on landscape/desktop it rides the top of the tools column (sticky),
+ * always in reach without hiding pads. The panel must live OUTSIDE the pad
+ * element: .pad clips children and quiet-touch never synthesizes clicks
+ * inside it, so it mounts next to the pad's stage instead.
  */
 
-const PITCH_PX_PER_STEP = 28;
-const STRETCH_PX_PER_OCTAVE = 240;
 const FLASH_MS = 150;
-const TAP_DRAG_PX = 5;
-const DOUBLE_TAP_MS = 320;
-const WHEEL_STRETCH_STEP = 1 / 12;
+/** Stretch slider is logarithmic: position 50 = ×1, 0 = ×0.5, 100 = ×2. */
+const STRETCH_POS_MID = 50;
 
-function formatBadge(params) {
-  const pitch = params?.pitch || 0;
-  const stretch = params?.stretch ?? 1;
-  const flat = pitch === 0 && stretch === 1;
-  return flat ? '' : `${pitch > 0 ? '+' : ''}${pitch} · ×${stretch.toFixed(2)}`;
+function stretchToPos(stretch) {
+  return Math.round(STRETCH_POS_MID + STRETCH_POS_MID * Math.log2(clampSampleStretch(stretch)));
 }
 
-export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo, onTune, onErase, hasHits, params } = {}) {
+function posToStretch(pos) {
+  return clampSampleStretch(Math.pow(2, (pos - STRETCH_POS_MID) / STRETCH_POS_MID));
+}
+
+function formatBadge(params, tempoLocked) {
+  const pitch = params?.pitch || 0;
+  const stretch = params?.stretch ?? 1;
+  const volume = params?.volume ?? 1;
+  const parts = [];
+  if (pitch) parts.push(`${pitch > 0 ? '+' : ''}${pitch}`);
+  // A tempo-locked pad's stretch is the bpm fit, not a user setting —
+  // showing ×0.75 on BEAT reads like someone retuned it.
+  if (!tempoLocked && stretch !== 1) parts.push(`×${stretch.toFixed(2)}`);
+  if (volume !== 1) parts.push(`${Math.round(volume * 100)}%`);
+  return parts.join(' ');
+}
+
+export function createSampleGrid(
+  container,
+  { editMode, onHit, onRelease, onSolo, onTune, onErase, onSelect, onDone, hasHits, params, panelHost } = {},
+) {
   container.classList.add('sampler');
   const grid = document.createElement('div');
   grid.className = 'sampler-grid';
-  const hud = document.createElement('div');
-  hud.className = 'sampler-hud';
-  hud.hidden = true;
-  hud.innerHTML =
-    '<div class="sampler-hud__axis-x"><span>← squeeze · stretch →</span></div>' +
-    '<div class="sampler-hud__axis-y"><span>pitch</span></div>' +
-    '<div class="sampler-hud__dot" hidden></div>' +
-    '<p class="sampler-hud__label">—</p>' +
-    '<p class="sampler-hud__value">—</p>';
   // Legal strip over the grid's reserved headroom — the meme sources are
   // not cleared for commercial use (see README § «Семплер: откуда сэмплы»).
   const notice = document.createElement('p');
   notice.className = 'sampler-note';
   notice.textContent = 'meme sounds · non-commercial use only';
-  container.append(grid, hud, notice);
+  container.append(grid, notice);
 
   const pads = [];
   const flashTimers = new Map();
   /** Gate pads currently sounding (live or loop playback) — lit the whole way. */
   const playing = new Set();
   const playTimers = new Map();
-  /** pointerId → { kind:'solo'|'hit'|'tune', pad, … } */
+  /** pointerId → { kind:'solo'|'hit', pad } */
   const held = new Map();
   let soloRemote = false;
 
-  /** truthy = the merged tune/erase edit layer, driven by the view. */
+  /** truthy = the edit layer, driven by the view. */
   const editing = () => (typeof editMode === 'function' ? editMode() : editMode) || '';
-  const paramsOf = (id) => (typeof params === 'function' ? params(id) : params?.[id]) || { pitch: 0, stretch: 1 };
+  const paramsOf = (id) =>
+    (typeof params === 'function' ? params(id) : params?.[id]) || { pitch: 0, stretch: 1, volume: 1 };
   /** A pad only wears its ✕ when the loops hold hits of that sample. */
   const hitsOf = (id) => (typeof hasHits === 'function' ? hasHits(id) : true);
 
@@ -80,53 +95,273 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
     }
   }
 
-  /** Tune mode keeps one pad armed: background drags still steer it. */
-  let armedPad = null;
-  let armedId = null;
-  let lastTap = { pad: null, at: 0 };
-
-  function armPad(pad) {
-    if (armedPad && armedPad !== pad) armedPad.classList.remove('is-editing');
-    armedPad = pad;
-    armedId = pad?.dataset.sample || null;
-    if (armedPad) {
-      armedPad.classList.add('is-editing');
-      showHud(armedPad, armedId);
-      paintHud(armedId, paramsOf(armedId), null);
-    } else {
-      hideHud();
-    }
+  function updateBadge(id) {
+    const pad = pads.find((item) => item.dataset.sample === id);
+    const tempoLocked = Boolean(SAMPLE_BANK.find((spec) => spec.id === id)?.bpm);
+    if (pad) pad.querySelector('.sampler-pad__badge').textContent = formatBadge(paramsOf(id), tempoLocked);
   }
 
-  function startTune(event, pad, sampleId, fromPad = true) {
-    held.set(event.pointerId, {
-      kind: 'tune',
+  /* ---------- Editor panel (overlay beside/below the pad) ---------- */
+
+  /** Sample ids in grid order — the carousel walks this list. */
+  const ORDER = SAMPLER_PAD_CELLS.filter((cell) => cell.sample).map((cell) => cell.sample);
+  /** The sample the panel edits — a pad tap or the carousel moves it. */
+  let selectedId = null;
+  /** Slider under a finger — echo repaints must not yank it mid-drag. */
+  let activeSlider = null;
+  /** A move happened since the last commit — release sends the 'set'. */
+  let pendingEnd = false;
+
+  const editor = document.createElement('div');
+  editor.className = 'sampler-editor';
+  editor.hidden = true;
+
+  const carousel = document.createElement('div');
+  carousel.className = 'sampler-editor__carousel';
+  const prevBtn = pressable('btn btn--ghost sampler-editor__arrow');
+  prevBtn.setAttribute('aria-label', 'Previous sample');
+  prevBtn.append(chipIcon('prev'));
+  // The name doubles as the audition button — tap it to hear the pick.
+  const nameBtn = pressable('sampler-editor__name');
+  nameBtn.title = 'Tap to hear the sample';
+  const nextBtn = pressable('btn btn--ghost sampler-editor__arrow');
+  nextBtn.setAttribute('aria-label', 'Next sample');
+  nextBtn.append(chipIcon('next'));
+  carousel.append(prevBtn, nameBtn, nextBtn);
+
+  function makeSlider(ariaLabel) {
+    const row = document.createElement('label');
+    row.className = 'fx-slider sampler-editor__slider';
+    const name = document.createElement('span');
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.step = '1';
+    input.setAttribute('aria-label', ariaLabel);
+    row.append(name, input);
+    return { row, name, input };
+  }
+
+  const pitchSlider = makeSlider('Pitch');
+  pitchSlider.input.min = String(-SAMPLE_PITCH_RANGE);
+  pitchSlider.input.max = String(SAMPLE_PITCH_RANGE);
+  const stretchSlider = makeSlider('Stretch');
+  stretchSlider.input.min = '0';
+  stretchSlider.input.max = '100';
+  const volumeSlider = makeSlider('Volume');
+  volumeSlider.input.min = '0';
+  volumeSlider.input.max = String(SAMPLE_VOLUME_MAX * 100);
+  const sliders = [pitchSlider, stretchSlider, volumeSlider];
+
+  const resetBtn = pressable('btn btn--ghost sampler-editor__reset');
+  resetBtn.textContent = 'Reset';
+  resetBtn.setAttribute('aria-label', 'Reset pitch, stretch and volume');
+  // Done leaves edit mode — the moves were already committed live.
+  const doneBtn = pressable('btn btn--primary sampler-editor__done has-icon');
+  const doneLabel = document.createElement('span');
+  doneLabel.className = 'chip-label';
+  doneLabel.textContent = 'Done';
+  doneBtn.append(chipIcon('done'), doneLabel);
+  const actions = document.createElement('div');
+  actions.className = 'sampler-editor__actions';
+  actions.append(resetBtn, doneBtn);
+
+  editor.append(carousel, pitchSlider.row, stretchSlider.row, volumeSlider.row, actions);
+
+  /**
+   * Mount the editor for the current layout — portrait docks it in the page
+   * flow right below the pad (nothing covers the cells, the page scrolls
+   * normally), landscape/desktop parks it inside the tools column where CSS
+   * sticks it to the column's top. Re-runs on orientation/breakpoint flips.
+   */
+  const padBoxEl = container.closest('.pad');
+  const flowAnchor = padBoxEl?.closest('.pad-stage, .pad-wrap') || null;
+  const toolsColumn =
+    (panelHost || document).querySelector?.('.host-tools, .controller-foot') || null;
+  const railQuery =
+    typeof matchMedia === 'function'
+      ? matchMedia(
+          '(min-width: 1024px) and (min-height: 640px), (orientation: landscape) and (max-height: 560px) and (pointer: coarse)',
+        )
+      : null;
+  function mountEditor() {
+    if (railQuery?.matches && toolsColumn) toolsColumn.prepend(editor);
+    else if (flowAnchor) flowAnchor.after(editor);
+    else (panelHost || document.body).append(editor);
+  }
+  railQuery?.addEventListener?.('change', mountEditor);
+  mountEditor();
+
+  function paintEditor() {
+    if (!selectedId) return;
+    const current = paramsOf(selectedId);
+    const bpm = sampleBpm(selectedId);
+    nameBtn.textContent = sampleLabel(selectedId);
+    pitchSlider.name.textContent = `Pitch · ${current.pitch > 0 ? '+' : ''}${current.pitch || 0} st`;
+    if (activeSlider !== pitchSlider.input) {
+      pitchSlider.input.value = String(clampSamplePitch(current.pitch));
+    }
+    stretchSlider.name.textContent = bpm
+      ? `Stretch · locked to ${bpm} BPM`
+      : `Stretch · ×${(current.stretch ?? 1).toFixed(2)}`;
+    setControlEnabled(stretchSlider.input, !bpm);
+    if (activeSlider !== stretchSlider.input) {
+      stretchSlider.input.value = String(stretchToPos(current.stretch ?? 1));
+    }
+    const percent = Math.round(clampSampleVolume(current.volume ?? 1) * 100);
+    volumeSlider.name.textContent = `Volume · ${percent}%`;
+    if (activeSlider !== volumeSlider.input) volumeSlider.input.value = String(percent);
+  }
+
+  function flashPad(id) {
+    const pad = pads.find((item) => item.dataset.sample === id);
+    if (!pad) return;
+    pad.classList.add('is-hit');
+    clearTimeout(flashTimers.get(pad));
+    flashTimers.set(
       pad,
-      sample: sampleId,
-      startX: event.clientX,
-      startY: event.clientY,
-      // Snapshot — paramsOf hands back the view's live object, which the
-      // onTune callbacks mutate in place. Aliasing it would compound every
-      // move delta into runaway drift.
-      start: { ...paramsOf(sampleId) },
-      current: { ...paramsOf(sampleId) },
-      moved: false,
-      fromPad,
-    });
-    try {
-      pad.setPointerCapture(event.pointerId);
-    } catch {
-      // An already-ended pointer can still tune on window listeners.
-    }
-    onTune?.(sampleId, paramsOf(sampleId), 'start');
-    // The dot lands on the press point — that spot IS the zero anchor for
-    // this drag, so showing it keeps the neutral position readable.
-    const rect = container.getBoundingClientRect();
-    paintHud(sampleId, held.get(event.pointerId).current, {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-    });
+      setTimeout(() => {
+        pad.classList.remove('is-hit');
+        flashTimers.delete(pad);
+      }, FLASH_MS),
+    );
   }
+
+  function selectSample(id, { audition = false } = {}) {
+    selectedId = id;
+    for (const pad of pads) pad.classList.toggle('is-editing', Boolean(id) && pad.dataset.sample === id);
+    paintEditor();
+    // The pick flashes even without local audio — a guest's audition sounds
+    // on the host, so the pad itself is the feedback.
+    if (audition && id) {
+      flashPad(id);
+      onSelect?.(id);
+    }
+  }
+
+  function writeParam(key, value) {
+    if (!selectedId) return;
+    onTune?.(selectedId, { ...paramsOf(selectedId), [key]: value }, 'move');
+    pendingEnd = true;
+    updateBadge(selectedId);
+  }
+
+  /** Finger lift / keyboard commit — silent ('set'), the slider never
+     triggers a playback; audition stays on the pad tap / name button. */
+  function commitParams() {
+    if (!pendingEnd || !selectedId) return;
+    pendingEnd = false;
+    activeSlider = null;
+    onTune?.(selectedId, { ...paramsOf(selectedId) }, 'set');
+    updateBadge(selectedId);
+  }
+
+  pitchSlider.input.addEventListener('input', () => {
+    if (pitchSlider.input.disabled) return;
+    writeParam('pitch', clampSamplePitch(Number(pitchSlider.input.value)));
+    paintEditor();
+  });
+  stretchSlider.input.addEventListener('input', () => {
+    if (stretchSlider.input.disabled) return;
+    writeParam('stretch', posToStretch(Number(stretchSlider.input.value)));
+    paintEditor();
+  });
+  volumeSlider.input.addEventListener('input', () => {
+    if (volumeSlider.input.disabled) return;
+    writeParam('volume', clampSampleVolume(Number(volumeSlider.input.value) / 100));
+    paintEditor();
+  });
+  for (const slider of sliders) {
+    const input = slider.input;
+    input.addEventListener('pointerdown', () => {
+      activeSlider = input;
+    });
+    input.addEventListener(
+      'touchstart',
+      () => {
+        activeSlider = input;
+      },
+      { passive: true },
+    );
+    for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel', 'change']) {
+      input.addEventListener(type, commitParams);
+    }
+  }
+  const clearActiveSlider = () => {
+    activeSlider = null;
+  };
+  window.addEventListener('pointerup', clearActiveSlider);
+  window.addEventListener('pointercancel', clearActiveSlider);
+  window.addEventListener('touchend', clearActiveSlider);
+  window.addEventListener('touchcancel', clearActiveSlider);
+
+  prevBtn.addEventListener('click', () => {
+    const index = Math.max(0, ORDER.indexOf(selectedId));
+    selectSample(ORDER[(index - 1 + ORDER.length) % ORDER.length]);
+  });
+  nextBtn.addEventListener('click', () => {
+    const index = Math.max(0, ORDER.indexOf(selectedId));
+    selectSample(ORDER[(index + 1) % ORDER.length]);
+  });
+  /**
+   * The carousel name auditions the pick. Gate pads play while the button is
+   * held (pointer down→up); a click-activated audition (keyboard, the
+   * quiet-touch synthesized tap) still plays — that lift releases the voice
+   * through onRelease, so a tap is a blip and a hold plays until let go.
+   */
+  let nameGatePointer = null;
+  let nameGateEndedAt = -Infinity;
+  nameBtn.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || nameGatePointer !== null) return;
+    if (!selectedId || sampleMode(selectedId) !== 'gate') return;
+    nameGatePointer = event.pointerId;
+    try {
+      nameBtn.setPointerCapture(event.pointerId);
+    } catch {
+      // The window listeners below still close the voice.
+    }
+    onSelect?.(selectedId);
+  });
+  const endNameGate = (event) => {
+    if (nameGatePointer === null || event.pointerId !== nameGatePointer) return;
+    nameGatePointer = null;
+    nameGateEndedAt = performance.now();
+    onRelease?.(selectedId);
+  };
+  window.addEventListener('pointerup', endNameGate);
+  window.addEventListener('pointercancel', endNameGate);
+  nameBtn.addEventListener('click', () => {
+    if (!selectedId) return;
+    if (sampleMode(selectedId) !== 'gate') {
+      onSelect?.(selectedId);
+      return;
+    }
+    // A pointer tap already held the gate above — its trailing click must not
+    // re-fire. A keyboard/screen-reader click has no hold: give it a bounded
+    // preview instead of the whole buffer.
+    if (performance.now() - nameGateEndedAt < 400) return;
+    onSelect?.(selectedId);
+    const previewing = selectedId;
+    setTimeout(() => {
+      if (selectedId === previewing) onRelease?.(previewing);
+    }, 1200);
+  });
+  resetBtn.addEventListener('click', () => {
+    if (!selectedId) return;
+    // Locked pads keep their bpm-fitted stretch — "neutral" for them is the
+    // synced value the host already reports. 'set' = silent commit.
+    const current = paramsOf(selectedId);
+    onTune?.(selectedId, { pitch: 0, stretch: current.stretch, volume: 1 }, 'set');
+    pendingEnd = false;
+    updateBadge(selectedId);
+    paintEditor();
+  });
+  doneBtn.addEventListener('click', () => {
+    // A slider still in flight commits quietly before the panel closes.
+    commitParams();
+    onDone?.();
+  });
+
+  /* ---------- Pad grid ---------- */
 
   function litState(pad) {
     let on = false;
@@ -137,42 +372,7 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
     pad.classList.toggle('is-lit', on);
   }
 
-  function padCenter(pad) {
-    return { x: pad.offsetLeft + pad.offsetWidth / 2, y: pad.offsetTop + pad.offsetHeight / 2 };
-  }
-
-  function showHud(pad, id) {
-    const at = padCenter(pad);
-    hud.style.setProperty('--hx', `${at.x}px`);
-    hud.style.setProperty('--hy', `${at.y}px`);
-    hud.querySelector('.sampler-hud__label').textContent = sampleLabel(id);
-    hud.hidden = false;
-    container.classList.add('is-tuning');
-  }
-
-  function paintHud(id, next, dot) {
-    const value = hud.querySelector('.sampler-hud__value');
-    const pitch = next.pitch || 0;
-    // Locked pads show the tempo-fit, not a gesture-editable stretch.
-    const locked = Boolean(sampleBpm(id));
-    hud.classList.toggle('is-locked', locked);
-    const time = locked ? 'bpm' : next.stretch < 1 ? 'squeeze' : 'stretch';
-    value.textContent = `pitch ${pitch > 0 ? '+' : ''}${pitch} st · ${time} ×${next.stretch.toFixed(2)}`;
-    const marker = hud.querySelector('.sampler-hud__dot');
-    if (dot) {
-      marker.hidden = false;
-      marker.style.transform = `translate(${dot.x}px, ${dot.y}px)`;
-    } else {
-      marker.hidden = true;
-    }
-  }
-
-  function hideHud() {
-    hud.hidden = true;
-    container.classList.remove('is-tuning');
-  }
-
-  const endPointer = (event, cancelled = false) => {
+  const endPointer = (event) => {
     const entry = held.get(event.pointerId);
     if (!entry) return;
     held.delete(event.pointerId);
@@ -185,63 +385,18 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
       const id = entry.pad?.dataset.sample;
       const still = [...held.values()].some((item) => item.kind === 'hit' && item.pad === entry.pad);
       if (!still && id && sampleMode(id) === 'gate') onRelease?.(id);
-    } else if (entry.kind === 'tune' && !cancelled) {
-      if (!entry.moved) {
-        const now = performance.now();
-        if (entry.fromPad && lastTap.pad === entry.pad && now - lastTap.at < DOUBLE_TAP_MS) {
-          // Double-tap resets the pad's tuning without an extra audition.
-          onTune?.(entry.sample, { pitch: 0, stretch: 1 }, 'set');
-          paintHud(entry.sample, { pitch: 0, stretch: 1 }, null);
-          lastTap = { pad: null, at: 0 };
-        } else {
-          lastTap = { pad: entry.fromPad ? entry.pad : null, at: now };
-          // A tap on empty grid space disarms — the pad's own taps keep it.
-          if (!entry.fromPad) armPad(null);
-        }
-      }
-      onTune?.(entry.sample, entry.current, 'end');
-      // The gesture is over — park the dot instead of leaving it frozen at
-      // the release point, which read as a drifting "zero".
-      paintHud(entry.sample, entry.current, null);
     }
-    if (!armedPad && ![...held.values()].some((item) => item.kind === 'tune')) hideHud();
     litState(entry.pad);
   };
 
-  const movePointer = (event) => {
-    const entry = held.get(event.pointerId);
-    if (!entry || entry.kind !== 'tune') return;
-    event.preventDefault();
-    const dy = entry.startY - event.clientY;
-    const dx = event.clientX - entry.startX;
-    if (!entry.moved && Math.abs(dx) + Math.abs(dy) > TAP_DRAG_PX) entry.moved = true;
-    let pitch = clampSamplePitch(entry.start.pitch + dy / PITCH_PX_PER_STEP);
-    // Tempo-locked pads (scratches) stretch only with the session BPM — a
-    // horizontal drag on them tunes nothing.
-    const locked = Boolean(sampleBpm(entry.sample));
-    let stretch = locked
-      ? entry.start.stretch
-      : clampSampleStretch(entry.start.stretch * Math.pow(2, dx / STRETCH_PX_PER_OCTAVE));
-    if (Math.abs(pitch) < 0.6) pitch = 0;
-    if (Math.abs(stretch - 1) < 0.05) stretch = locked ? stretch : 1;
-    entry.current = { pitch, stretch };
-    const rect = container.getBoundingClientRect();
-    paintHud(entry.sample, entry.current, {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-    });
-    onTune?.(entry.sample, entry.current, 'move');
-  };
-
-  const upPointer = (event) => endPointer(event, event.type === 'pointercancel');
-  window.addEventListener('pointermove', movePointer, { passive: false });
+  const upPointer = endPointer;
   window.addEventListener('pointerup', upPointer);
   window.addEventListener('pointercancel', upPointer);
 
   /**
    * Losing the window mid-gesture (alt-tab, an OS edge swipe stealing the
-   * touch) must not leave a stuck entry — that stale 'tune' would block the
-   * erase ✕ and keep the pad lit forever. Drop everything, like a pointerup.
+   * touch) must not leave a stuck entry — a stale 'hit' would keep the pad
+   * lit forever. Drop everything, like a pointerup.
    */
   const dropAll = () => {
     const gates = new Set();
@@ -249,7 +404,6 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
       held.delete(pointerId);
       if (entry.kind === 'solo') onSolo?.(false);
       else if (entry.kind === 'hit' && entry.pad?.dataset.sample) gates.add(entry.pad.dataset.sample);
-      else if (entry.kind === 'tune') paintHud(entry.sample, entry.current, null);
       litState(entry.pad);
     }
     for (const id of gates) {
@@ -269,9 +423,8 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
       label.textContent = sampleLabel(cell.sample);
       const badge = document.createElement('span');
       badge.className = 'sampler-pad__badge';
-      // Edit mode's erase handle. Tuning starts from a pad drag, so a ✕
-      // press that lands while a tune gesture is held is ignored — the
-      // finger was aiming at the pad, not the corner.
+      // Edit mode's erase handle. A ✕ press that lands while a finger is on
+      // the grid is ignored — it was aiming at the pad, not the corner.
       const cross = document.createElement('span');
       cross.className = 'sampler-pad__x';
       cross.textContent = '✕';
@@ -280,7 +433,7 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
         event.preventDefault();
         event.stopPropagation();
         if (!editing() || !hitsOf(cell.sample)) return;
-        if ([...held.values()].some((entry) => entry.kind === 'tune')) return;
+        if (held.size) return;
         pad.classList.add('is-erase');
         setTimeout(() => pad.classList.remove('is-erase'), 220);
         onErase?.(cell.sample);
@@ -304,7 +457,6 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      const mode = editing();
       const sampleId = pad.dataset.sample;
       if (pad.dataset.action === SOLO_ACTION) {
         held.set(event.pointerId, { kind: 'solo', pad });
@@ -318,18 +470,24 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
         return;
       }
       if (!sampleId) {
-        // An empty cell in edit mode steers the armed pad — more room to drag.
-        if (mode && armedPad) {
-          startTune(event, armedPad, armedId, false);
-          return;
-        }
         pad.classList.add('is-bump');
         setTimeout(() => pad.classList.remove('is-bump'), 160);
         return;
       }
-      if (mode) {
-        armPad(pad);
-        startTune(event, pad, sampleId, true);
+      if (editing()) {
+        // A tap picks the sample for the panel and auditions it. Gate pads
+        // keep their hold-to-play feel while previewing — the finger lift
+        // cuts the voice instead of letting the whole buffer ring out.
+        if (sampleMode(sampleId) === 'gate') {
+          held.set(event.pointerId, { kind: 'hit', pad });
+          try {
+            pad.setPointerCapture(event.pointerId);
+          } catch {
+            // Window listeners still release the gate.
+          }
+        }
+        selectSample(sampleId, { audition: true });
+        litState(pad);
         return;
       }
       held.set(event.pointerId, { kind: 'hit', pad });
@@ -347,55 +505,23 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
     pad.addEventListener('click', (event) => {
       if (event.detail !== 0) return;
       if (pad.dataset.action === SOLO_ACTION || !pad.dataset.sample) return;
-      if (editing()) armPad(pad);
+      if (editing()) selectSample(pad.dataset.sample, { audition: true });
       else onHit?.(pad.dataset.sample);
     });
 
-    // Wheel = fine pitch steps; shift+wheel = stretch. Desktop tuning without
-    // the drag gesture.
-    pad.addEventListener(
-      'wheel',
-      (event) => {
-        if (!editing() || !pad.dataset.sample) return;
-        event.preventDefault();
-        const id = pad.dataset.sample;
-        const next = { ...paramsOf(id) };
-        const dir = event.deltaY < 0 ? 1 : -1;
-        if (event.shiftKey && !sampleBpm(id)) next.stretch = clampSampleStretch(next.stretch * Math.pow(2, dir * WHEEL_STRETCH_STEP));
-        else next.pitch = clampSamplePitch(next.pitch + dir);
-        armPad(pad);
-        onTune?.(id, next, 'set');
-        paintHud(id, next, null);
-      },
-      { passive: false },
-    );
     pads.push(pad);
     grid.append(pad);
   });
 
-  // Pointers that land between cells must not fall through to the touchpad —
-  // and while a pad is armed, empty space is the roomiest tuning surface.
+  // Pointers that land between cells must not fall through to the touchpad.
   grid.addEventListener('pointerdown', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (editing() && armedPad) startTune(event, armedPad, armedId, false);
   });
 
   return {
     /** Brief trigger flash — loop playback, remote hits, auditions. */
-    flash(id) {
-      const pad = pads.find((item) => item.dataset.sample === id);
-      if (!pad) return;
-      pad.classList.add('is-hit');
-      clearTimeout(flashTimers.get(pad));
-      flashTimers.set(
-        pad,
-        setTimeout(() => {
-          pad.classList.remove('is-hit');
-          flashTimers.delete(pad);
-        }, FLASH_MS),
-      );
-    },
+    flash: flashPad,
     /** Someone else is holding SOLO — glow without owning the gesture. */
     setSoloRemote(on) {
       soloRemote = Boolean(on);
@@ -432,33 +558,55 @@ export function createSampleGrid(container, { editMode, onHit, onRelease, onSolo
       );
     },
     updateParam(id) {
-      const pad = pads.find((item) => item.dataset.sample === id);
-      if (pad) pad.querySelector('.sampler-pad__badge').textContent = formatBadge(paramsOf(id));
+      updateBadge(id);
+      if (id === selectedId) paintEditor();
     },
     updateAllParams() {
       for (const spec of SAMPLE_BANK) this.updateParam(spec.id);
     },
     setEditMode(mode) {
-      container.classList.toggle('is-editing', Boolean(mode));
-      if (mode) refreshErase();
-      else armPad(null);
+      const on = Boolean(mode);
+      container.classList.toggle('is-editing', on);
+      editor.hidden = !on;
+      if (on) {
+        refreshErase();
+        if (!selectedId) selectSample(ORDER[0]);
+        else {
+          for (const pad of pads) {
+            pad.classList.toggle('is-editing', pad.dataset.sample === selectedId);
+          }
+          paintEditor();
+        }
+      } else {
+        for (const pad of pads) pad.classList.remove('is-editing');
+      }
     },
     /** Re-check which pads carry recorded hits — the ✕ follows. */
     refreshErase,
     /** Mode switches and locks drop every held pad like a real pointerup. */
     releaseAll() {
       dropAll();
-      armPad(null);
     },
     destroy() {
-      window.removeEventListener('pointermove', movePointer);
       window.removeEventListener('pointerup', upPointer);
       window.removeEventListener('pointercancel', upPointer);
       window.removeEventListener('blur', dropAll);
+      window.removeEventListener('pointerup', clearActiveSlider);
+      window.removeEventListener('pointercancel', clearActiveSlider);
+      window.removeEventListener('touchend', clearActiveSlider);
+      window.removeEventListener('touchcancel', clearActiveSlider);
+      railQuery?.removeEventListener?.('change', mountEditor);
+      window.removeEventListener('pointerup', endNameGate);
+      window.removeEventListener('pointercancel', endNameGate);
       for (const timer of flashTimers.values()) clearTimeout(timer);
       for (const timer of playTimers.values()) clearTimeout(timer);
+      if (padBoxEl) {
+        padBoxEl.style.removeProperty('max-height');
+        padBoxEl.style.removeProperty('min-height');
+      }
+      editor.remove();
       container.replaceChildren();
-      container.classList.remove('sampler', 'is-editing', 'is-erasing', 'is-tuning');
+      container.classList.remove('sampler', 'is-editing');
     },
   };
 }

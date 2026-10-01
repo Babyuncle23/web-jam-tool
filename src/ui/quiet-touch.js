@@ -100,8 +100,21 @@ function armRangePointer(input, event) {
   } catch {
     // Window tracking still follows this pointer if capture is refused.
   }
+  // The first real move decides the axis: a vertical gesture is the page
+  // scrolling through the slider — never touch the value or block it; only
+  // horizontal motion is ours to veto and write.
+  const startX = event.clientX;
+  const startY = event.clientY;
+  let axis = '';
   const move = (ev) => {
     if (ev.pointerId !== pointerId) return;
+    if (!axis) {
+      const dx = Math.abs(ev.clientX - startX);
+      const dy = Math.abs(ev.clientY - startY);
+      if (dx < 8 && dy < 8) return;
+      axis = dx >= dy ? 'x' : 'y';
+    }
+    if (axis === 'y') return;
     if (ev.cancelable) ev.preventDefault();
     writeRange(input, ev.clientX);
   };
@@ -122,9 +135,20 @@ function armRangeTouch(input, touch) {
   const id = touch.identifier;
   if (input.__rangeTouch === id) return;
   input.__rangeTouch = id;
+  // Same axis rule as the pointer path — a vertical drag scrolls the page.
+  const startX = touch.clientX;
+  const startY = touch.clientY;
+  let axis = '';
   const move = (ev) => {
     const current = [...ev.touches].find((item) => item.identifier === id);
     if (!current) return;
+    if (!axis) {
+      const dx = Math.abs(current.clientX - startX);
+      const dy = Math.abs(current.clientY - startY);
+      if (dx < 8 && dy < 8) return;
+      axis = dx >= dy ? 'x' : 'y';
+    }
+    if (axis === 'y') return;
     if (ev.cancelable) ev.preventDefault();
     writeRange(input, current.clientX);
   };
@@ -167,8 +191,11 @@ export function installQuietTouch(...roots) {
         if (!inJamScreen(touch.target)) continue;
         const range = rangeInJam(touch.target);
         if (range) {
+          // No veto: a vetoed touchstart kills the whole gesture's scrolling,
+          // so a finger that swipes down over a slider could never move the
+          // page. The move handler vetoes only once a horizontal drag is
+          // certain — vertical swipes pass through untouched.
           armRangeTouch(range, touch);
-          quiet = true;
           continue;
         }
         const el = quietTarget(touch.target);

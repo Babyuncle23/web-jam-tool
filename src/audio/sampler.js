@@ -13,6 +13,14 @@
  * changes live. Edit gestures on them move pitch only — there is no manual
  * stretch on tempo-locked pads.
  *
+ * A pad may also carry `sync` — a phase-locked loop pad (the BEAT drum
+ * loop). The trigger position inside the session cycle decides the buffer
+ * offset, so a hit that lands mid-bar enters the loop mid-bar instead of
+ * restarting it, and the voice loops only `cycle` seconds of the source —
+ * a 4-bar loop pad plays one bar while the session loops one bar. Callers
+ * pass {phase, cycle} (seconds inside the session loop) — live hits read
+ * the transport, recorded hits get it from their step.
+ *
  * Per-pad tuning uses two independent axes of the GrainPlayer:
  *   `stretch` is a DURATION multiplier (×2 = twice as long, slower) — the
  *   GrainPlayer rate is speed, so it gets 1/stretch;
@@ -22,25 +30,36 @@
  *
  * Sources (meme sounds are user-provided downloads, documented in README):
  *   scratch-105.mp3 — "Scratch 105 bpm" by freesound_community, Pixabay Content License.
- *   okay-lets-go.mp3 — "Okay, let's go" ride-operator kid, Man bijt hond (TROS, NL), viral 2020+.
+ *   boom-bap-90bpm.wav — "Bassy 90s Old School Boom Bap Drum Beat 90 BPM" by
+ *                        Alabafruit, looperman.com (free for non-commercial
+ *                        use per the site's terms); kept as WAV — an mp3's
+ *                        encoder padding would skew the beat lock.
  *   vine-boom.mp3 — Vine app's stock dramatic bass hit, ~2014.
- *   anime-wow.mp3 — "Wow!" voice from Konami's Parodius! (1990), stock anime SFX.
- *   why-are-you-running.mp3 — "Why are you running?" from Nollywood's Pretty Liars 1 (2014).
+ *   anime-wow.mp3 — "Wow!" voice from Konami's Parodius! (1990), stock anime SFX;
+ *                    file is cut at 2.35 s with a fade — the source rings ~4 s.
  *   omg-hell-nah.mp3 — "Oh my god bro, oh hell nah man" TikTok reaction (osofaneto, ~2019).
- *   im-stronger.mp3 — "I'm stronger, I'm smarter" viral gym/motivation meme audio.
+ *   cat-meow.mp3 — "Funny Cat Meow", Pixabay Content License.
+ *   dog-bark.mp3 — "Dog Bark" by DRAGON-STUDIO, Pixabay Content License.
+ *   bonk.mp3 — "Bonk Sound effect" by thecoolcookie17, Pixabay Content License.
+ *   peanut-butter.mp3 — kid spells "Nutella" but says "peanut butter",
+ *                    https://youtube.com/shorts/654nhKfz5Vs
+ * All files are trimmed (no leading silence/room tone) and peak-normalized;
+ * `gain` below matches perceived loudness (~-15.5 dBFS RMS after the
+ * TARGET_PEAK normalization).
  */
 
 export const SAMPLE_BANK = [
-  // gain — extra trim on top of the peak normalization: bruh sits lower.
-  { id: 'brah', label: 'BRUH', src: './samples/bruh.mp3', mode: 'oneshot', gain: 0.6 },
-  { id: 'fah', label: 'FAH', src: './samples/fah.mp3', mode: 'oneshot', gain: 0.8 },
-  { id: 'scratch105', label: 'SCR 105', src: './samples/scratch-105.mp3', mode: 'gate', bpm: 105 },
-  { id: 'okayletsgo', label: 'LETS GO', src: './samples/okay-lets-go.mp3', mode: 'oneshot' },
-  { id: 'vineboom', label: 'BOOM', src: './samples/vine-boom.mp3', mode: 'oneshot' },
-  { id: 'animewow', label: 'WOW', src: './samples/anime-wow.mp3', mode: 'gate', release: 0.3 },
-  { id: 'whyrun', label: 'WHY RUN', src: './samples/why-are-you-running.mp3', mode: 'gate' },
-  { id: 'omg', label: 'OMG', src: './samples/omg-hell-nah.mp3', mode: 'gate' },
-  { id: 'stronger', label: 'STRONG', src: './samples/im-stronger.mp3', mode: 'gate' },
+  { id: 'brah', label: 'BRUH', src: './samples/bruh.mp3', mode: 'oneshot', gain: 0.42 },
+  { id: 'fah', label: 'FAH', src: './samples/fah.mp3', mode: 'oneshot', gain: 0.6 },
+  { id: 'scratch105', label: 'SCR 105', src: './samples/scratch-105.mp3', mode: 'gate', bpm: 105, gain: 1.25 },
+  { id: 'boombap', label: 'BEAT', src: './samples/boom-bap-90bpm.wav', mode: 'gate', bpm: 90, sync: true, gain: 1.2, guardHz: 45 },
+  { id: 'vineboom', label: 'BOOM', src: './samples/vine-boom.mp3', mode: 'oneshot', gain: 0.5 },
+  { id: 'animewow', label: 'WOW', src: './samples/anime-wow.mp3', mode: 'oneshot', gain: 0.5 },
+  { id: 'omg', label: 'OMG', src: './samples/omg-hell-nah.mp3', mode: 'gate', gain: 0.9 },
+  { id: 'meow', label: 'MEOW', src: './samples/cat-meow.mp3', mode: 'oneshot', gain: 0.75 },
+  { id: 'bark', label: 'BARK', src: './samples/dog-bark.mp3', mode: 'oneshot' },
+  { id: 'bonk', label: 'BONK', src: './samples/bonk.mp3', mode: 'oneshot' },
+  { id: 'peanut', label: 'PEANUT', src: './samples/peanut-butter.mp3', mode: 'oneshot', gain: 0.375 },
 ];
 
 export const SOLO_ACTION = 'solo';
@@ -51,23 +70,24 @@ export const SOLO_ACTION = 'solo';
  * every other voice muted while a finger is on it.
  */
 export const SAMPLER_PAD_CELLS = [
-  { sample: 'okayletsgo' },
+  { sample: 'boombap' },
   { sample: 'vineboom' },
   { sample: 'animewow' },
-  { sample: 'whyrun' },
+  { sample: 'meow' },
   { sample: 'scratch105' },
   { sample: 'omg' },
-  { sample: 'stronger' },
-  {},
+  { sample: 'bonk' },
+  { sample: 'bark' },
   { sample: 'brah' },
   { sample: 'fah' },
-  {},
+  { sample: 'peanut' },
   { action: SOLO_ACTION, label: 'SOLO' },
 ];
 
 export const SAMPLE_PITCH_RANGE = 12;
 export const SAMPLE_STRETCH_MIN = 0.5;
 export const SAMPLE_STRETCH_MAX = 2;
+export const SAMPLE_VOLUME_MAX = 2;
 
 export function clampSamplePitch(value) {
   return Math.max(-SAMPLE_PITCH_RANGE, Math.min(SAMPLE_PITCH_RANGE, Math.round(Number(value) || 0)));
@@ -77,9 +97,14 @@ export function clampSampleStretch(value) {
   return Math.max(SAMPLE_STRETCH_MIN, Math.min(SAMPLE_STRETCH_MAX, Number(value) || 1));
 }
 
+export function clampSampleVolume(value) {
+  const v = Number(value);
+  return Number.isFinite(v) ? Math.max(0, Math.min(SAMPLE_VOLUME_MAX, v)) : 1;
+}
+
 /** Initial per-sample tuning, one entry per bank row. */
 export function defaultSampleParams() {
-  return Object.fromEntries(SAMPLE_BANK.map((spec) => [spec.id, { pitch: 0, stretch: 1 }]));
+  return Object.fromEntries(SAMPLE_BANK.map((spec) => [spec.id, { pitch: 0, stretch: 1, volume: 1 }]));
 }
 
 export function sampleLabel(id) {
@@ -108,8 +133,8 @@ const ONSET_BACKOFF_S = 0.005;
  */
 const BASS_GUARD_HZ = 120;
 
-function guardHz(pitch) {
-  return BASS_GUARD_HZ * Math.pow(2, Math.max(0, -(pitch || 0)) / 24);
+function guardHz(pitch, base = BASS_GUARD_HZ) {
+  return base * Math.pow(2, Math.max(0, -(pitch || 0)) / 24);
 }
 
 /** First sample above the noise floor → seconds, with a tiny pre-onset backoff. */
@@ -184,11 +209,12 @@ export class PadSampler {
         spec,
         // High-pass per pad keeps the sampler from masking the bass; pitching
         // down lifts the cut a little (see guardHz).
-        filter: new this.#tone.Filter(guardHz(clampSamplePitch(params[spec.id]?.pitch)), 'highpass').connect(this.#output),
+        filter: new this.#tone.Filter(guardHz(clampSamplePitch(params[spec.id]?.pitch), spec.guardHz), 'highpass').connect(this.#output),
         offset: 0,
         params: {
           pitch: clampSamplePitch(params[spec.id]?.pitch),
           stretch: clampSampleStretch(params[spec.id]?.stretch),
+          volume: clampSampleVolume(params[spec.id]?.volume ?? 1),
         },
         /** Peak-normalized level for the pad's voices (set after load). */
         vol: 1,
@@ -262,11 +288,13 @@ export class PadSampler {
     if (!pad) return null;
     pad.params.pitch = 0;
     pad.params.stretch = this.#autoStretch(pad);
-    pad.filter.frequency.rampTo(guardHz(0), 0.05);
+    pad.params.volume = 1;
+    pad.filter.frequency.rampTo(guardHz(0, pad.spec.guardHz), 0.05);
     for (const slot of pad.pool) {
       if (!slot.sounding) continue;
       setTarget(slot.player, 'detune', 0);
       setTarget(slot.player, 'playbackRate', 1 / pad.params.stretch);
+      slot.gain.gain.setTargetAtTime(pad.vol, this.#tone.now(), 0.03);
     }
     return { ...pad.params };
   }
@@ -282,6 +310,7 @@ export class PadSampler {
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), LOAD_TIMEOUT_MS)),
           ]);
           if (!buffer.loaded || !(buffer.duration > 0)) throw new Error('empty buffer');
+          pad.buffer = buffer;
           // Skip encoder delay and any leading hush baked into the file.
           pad.offset = onsetSeconds(buffer);
           const peak = peakAmplitude(buffer);
@@ -294,8 +323,17 @@ export class PadSampler {
             const player = new tone.GrainPlayer({ grainSize: 0.16, overlap: 0.04, loop: false });
             player.buffer = buffer;
             player.connect(gain);
-            const slot = { pad, player, gain, sounding: false, voiceId: null };
+            const slot = { pad, player, gain, sounding: false, voiceId: null, startedAt: -Infinity };
             player.onstop = () => {
+              // trigger() restarts a still-playing slot via stop(when)+start(when):
+              // the retired source's onstop then echoes ~at the new voice's start
+              // time and would wipe its flags — leaving a gate voice unstoppable
+              // by releasePad and invisible to the choke (the "plays after
+              // release and stacks" bug). player.state can't separate that echo
+              // from a real buffer end (both read 'started' inside the lookahead
+              // window), so compare against the last start: a genuine end lands
+              // a whole voice length after it.
+              if (this.#tone.now() - slot.startedAt < 0.12) return;
               slot.sounding = false;
               if (slot.voiceId && this.#voices.get(slot.voiceId)?.slot === slot) {
                 this.#voices.delete(slot.voiceId);
@@ -331,8 +369,27 @@ export class PadSampler {
     return [...this.#pads.values()].some((pad) => pad.pool.some((slot) => slot.sounding));
   }
 
+  /**
+   * Last sync-window a pad triggered with ({offset, loopStart, loopEnd}) —
+   * probe aid. `pos` is the sounding slot's real buffer position read off the
+   * grain clock, so a mis-scaled start offset is observable.
+   */
+  syncOf(id) {
+    const pad = this.#pads.get(id);
+    if (!pad) return null;
+    const slot = pad.pool.find((item) => item.sounding);
+    const clock = slot?.player._clock;
+    const pos = clock ? clock.getTicksAtTime(this.#tone.now()) * (slot.player._grainSize || 0) : null;
+    return { ...(pad.lastSync || {}), pos: Number.isFinite(pos) ? pos : null };
+  }
+
+  /** Pad ids with a sounding slot — probe aid (sounding alone can't say which). */
+  get soundingIds() {
+    return [...this.#pads.entries()].filter(([, pad]) => pad.pool.some((slot) => slot.sounding)).map(([id]) => id);
+  }
+
   /** Retune one pad. A voice that is still sounding follows the new values. */
-  setParams(id, { pitch, stretch } = {}) {
+  setParams(id, { pitch, stretch, volume } = {}) {
     const pad = this.#pads.get(id);
     if (!pad) return;
     if (pitch !== undefined) pad.params.pitch = clampSamplePitch(pitch);
@@ -340,24 +397,37 @@ export class PadSampler {
     if (stretch !== undefined && !pad.spec.bpm) {
       pad.params.stretch = clampSampleStretch(stretch);
     }
-    pad.filter.frequency.rampTo(guardHz(pad.params.pitch), 0.05);
+    if (volume !== undefined) pad.params.volume = clampSampleVolume(volume);
+    pad.filter.frequency.rampTo(guardHz(pad.params.pitch, pad.spec.guardHz), 0.05);
     for (const slot of pad.pool) {
       if (!slot.sounding) continue;
       setTarget(slot.player, 'detune', pad.params.pitch * 100);
       setTarget(slot.player, 'playbackRate', 1 / pad.params.stretch);
+      // Volume edits reach ringing voices too — a slot gain already fading
+      // out on a choke/release keeps sounding=false, so it is skipped.
+      slot.gain.gain.setTargetAtTime(pad.vol * pad.params.volume, this.#tone.now(), 0.03);
     }
   }
 
   /**
    * Fire a pad. One-shots choke only this pad's sounding voices — the fade is
    * on a per-slot Gain so the new voice (next pool slot) is never clipped.
+   *
+   * {phase, cycle} — seconds inside the session loop at `time`. Sync pads
+   * (`spec.sync`, the BEAT loop) start at the matching buffer position and
+   * loop only `cycle` seconds of the source, so a hit that lands mid-bar
+   * continues the beat mid-bar and a 4-bar loop pad plays one bar while the
+   * session loops one bar.
    */
-  trigger(id, { time, id: voiceId } = {}) {
+  trigger(id, { time, id: voiceId, phase, cycle } = {}) {
     const pad = this.#pads.get(id);
     if (!pad?.pool.length) return false;
     const when = Math.max(0, Number.isFinite(time) ? time : this.#tone.now());
     for (const slot of pad.pool) {
-      if (!slot.sounding) continue;
+      // `sounding` is the fast path; player.state also catches a voice whose
+      // flag was wiped by a stale onstop, so a retrigger can never stack on
+      // an untracked still-running source.
+      if (!slot.sounding && slot.player.state !== 'started') continue;
       slot.sounding = false;
       if (slot.voiceId) {
         this.#voices.delete(slot.voiceId);
@@ -374,9 +444,29 @@ export class PadSampler {
     pad.cursor += 1;
     const gain = slot.gain.gain;
     gain.cancelScheduledValues(when);
-    gain.setValueAtTime(pad.vol, when);
+    gain.setValueAtTime(pad.vol * pad.params.volume, when);
     setTarget(slot.player, 'detune', pad.params.pitch * 100);
     setTarget(slot.player, 'playbackRate', 1 / pad.params.stretch);
+    let offset = pad.offset;
+    pad.lastSync = null;
+    if (pad.spec.sync && pad.buffer) {
+      // Buffer seconds move at 1/stretch — a session second covers 1/stretch
+      // source seconds. The window is the session cycle in source seconds,
+      // capped at what the file actually holds; a longer session cycle wraps
+      // the beat's own 4 bars.
+      const stretch = pad.params.stretch;
+      const source = Math.max(0.05, pad.buffer.duration - pad.offset);
+      const cycleBuf = Math.min(Number.isFinite(cycle) ? cycle / stretch : Infinity, source);
+      const loopStart = pad.offset;
+      const loopEnd = loopStart + Math.max(0.05, cycleBuf);
+      offset = loopStart + (Number.isFinite(phase) ? (phase / stretch) % (loopEnd - loopStart) : 0);
+      slot.player.loop = true;
+      slot.player.loopStart = loopStart;
+      slot.player.loopEnd = loopEnd;
+      pad.lastSync = { offset, loopStart, loopEnd };
+    } else if (slot.player.loop) {
+      slot.player.loop = false;
+    }
     try {
       // A release()/stopAll() stop scheduled in the slot's future would kill
       // the fresh start — pull any pending stop up to the trigger moment.
@@ -385,10 +475,15 @@ export class PadSampler {
       // The slot was never started.
     }
     try {
-      slot.player.start(when, pad.offset);
+      // GrainPlayer.start's offset is in *playback* seconds, not buffer
+      // seconds: its grain clock maps the argument × playbackRate into the
+      // buffer. Feed it offset × stretch or a tempo-stretched pad enters at
+      // the wrong position.
+      slot.player.start(when, offset * pad.params.stretch);
     } catch {
       return false;
     }
+    slot.startedAt = when;
     slot.sounding = true;
     if (voiceId) {
       slot.voiceId = voiceId;
@@ -417,7 +512,7 @@ export class PadSampler {
     if (pad?.spec.mode !== 'gate') return;
     const when = time ?? this.#tone.now();
     for (const slot of pad.pool) {
-      if (slot.sounding && !String(slot.voiceId || '').startsWith('loop:')) {
+      if ((slot.sounding || slot.player.state === 'started') && !String(slot.voiceId || '').startsWith('loop:')) {
         this.#stopSlot(slot, when);
       }
     }
@@ -426,7 +521,7 @@ export class PadSampler {
   #stopSlot(slot, time) {
     const when = Math.max(0, time);
     const release = slot.pad.spec.release ?? GATE_RELEASE_SECONDS;
-    if (slot.sounding) {
+    if (slot.sounding || slot.player.state === 'started') {
       const gain = slot.gain.gain;
       gain.cancelScheduledValues(when);
       gain.setValueAtTime(gain.value, when);

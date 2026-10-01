@@ -40,8 +40,9 @@ const hostFx = (page, inst) =>
     document.querySelector('#instrument-row [data-more="${inst}"]')?.click();
     await new Promise((r) => setTimeout(r, 60));
     const ids = [...document.querySelectorAll('#host-fx-sliders [data-fx]')].map((i) => i.dataset.fx);
+    const sliders = document.querySelectorAll('#host-fx-sliders .fx-slider').length;
     document.getElementById('host-fx-sheet').hidden = true;
-    return ids;
+    return { fx: ids, sliders };
   })()`);
 
 const browser = await puppeteer.launch({
@@ -76,14 +77,15 @@ try {
   const fullInstFx = await hostFx(full, 'pad');
   console.log('full host:', JSON.stringify({ ...fullUi, instFx: fullInstFx }));
   if (fullUi.pillHidden !== true) errors.push('full host: lite pill visible');
-  if (fullInstFx.length !== 3) errors.push(`full host: expected 3 pad fx sliders, got ${JSON.stringify(fullInstFx)}`);
+  if (fullInstFx.fx.length !== 3) errors.push(`full host: expected 3 pad fx sliders, got ${JSON.stringify(fullInstFx)}`);
   if (fullUi.drumFx !== 3) errors.push(`full host: expected 3 drum fx sliders, got ${fullUi.drumFx}`);
   if (!fullUi.qr) errors.push('full host: QR image was never painted');
   if (!/^[A-Z2-9]{4}$/.test(fullUi.code || '')) errors.push(`full host: bad session code "${fullUi.code}"`);
   await full.close();
 
   // Lite host: instruments run dry (bass cutoff is the only surviving node)
-  // and the UI shows no FX controls — the More buttons hide entirely.
+  // and the UI shows no FX sliders — but MORE stays: the sheet still carries
+  // the volume and octave sliders.
   const lite = await openHost(browser, `${BASE}/?role=host&lite=1`);
   const liteUi = await lite.evaluate(`({
     pillHidden: document.getElementById('host-lite-pill')?.hidden,
@@ -96,17 +98,20 @@ try {
   if (liteUi.pillHidden !== false) errors.push('lite host: lite pill hidden');
   if (!liteUi.isLite) errors.push('lite host: #host-screen missing .is-lite');
   const liteInstFx = await hostFx(lite, 'pad');
-  if (liteInstFx.length !== 0) {
+  if (liteInstFx.fx.length !== 0) {
     errors.push(`lite host: expected no instrument fx sliders, got ${JSON.stringify(liteInstFx)}`);
+  }
+  if (liteInstFx.sliders !== 2) {
+    errors.push(`lite host: expected volume+octave sliders in the sheet, got ${liteInstFx.sliders}`);
   }
   if (liteUi.drumFx !== 0) {
     errors.push(`lite host: expected no drum fx sliders, got ${liteUi.drumFx}`);
   }
-  if (liteUi.moreVisible !== 0) errors.push('lite host: MORE buttons must hide in lite mode');
+  if (liteUi.moreVisible !== 5) errors.push(`lite host: MORE buttons must stay for volume/octave, got ${liteUi.moreVisible}`);
   // Kalimba must lose the ScriptProcessor reverse entirely.
   const kalimbaFx = await hostFx(lite, 'kalimba');
   console.log('lite kalimba fx sliders:', JSON.stringify(kalimbaFx));
-  if (kalimbaFx.includes('reverse')) errors.push('lite host: kalimba still shows reverse');
+  if (kalimbaFx.fx.includes('reverse')) errors.push('lite host: kalimba still shows reverse');
 
   // The deeper cuts: 24 kHz context, wide lookAhead. The drums are the
   // tradeoff — lite loads the full 808 kit just like the full rig.
@@ -125,7 +130,7 @@ try {
   if (liteAudio.kick !== 'sample') errors.push('lite host: kick should play the 808 sample');
 
   // Guest on the lite host sees no FX sliders either — lite exposes no FX
-  // controls at all.
+  // controls, but MORE still opens the volume/octave sheet.
   const code = await lite.evaluate(`document.getElementById('host-code').textContent`);
   const guest = await browser.newPage();
   guest.on('pageerror', (e) => errors.push(`guest pageerror: ${e.message}`));
@@ -137,9 +142,11 @@ try {
     document.querySelector('#controller-instruments [data-more="pad"]')?.click();
     await new Promise((r) => setTimeout(r, 60));
     const fx = [...document.querySelectorAll('#controller-fx-sliders [data-fx]')].map((i) => i.dataset.fx);
+    const sliders = document.querySelectorAll('#controller-fx-sliders .fx-slider').length;
     document.getElementById('controller-fx-sheet').hidden = true;
     return {
       fx,
+      sliders,
       isLite: document.getElementById('controller-screen')?.classList.contains('is-lite'),
       moreVisible: [...document.querySelectorAll('#controller-instruments .inst-card__more')]
         .filter((b) => getComputedStyle(b).display !== 'none').length,
@@ -149,8 +156,11 @@ try {
   if (guestFx.fx.length !== 0) {
     errors.push(`guest on lite host: expected no fx sliders, got ${JSON.stringify(guestFx.fx)}`);
   }
+  if (guestFx.sliders !== 2) {
+    errors.push(`guest on lite host: expected volume+octave sliders in the sheet, got ${guestFx.sliders}`);
+  }
   if (guestFx.isLite !== true) errors.push('guest on lite host: missing .is-lite');
-  if (guestFx.moreVisible !== 0) errors.push('guest on lite host: MORE buttons must hide');
+  if (guestFx.moreVisible !== 5) errors.push(`guest on lite host: MORE buttons must stay for volume/octave, got ${guestFx.moreVisible}`);
   await guest.close();
   await lite.close();
 } finally {

@@ -38,6 +38,7 @@ await host.evaluate(() => {
   const origTrigger = audio.sampler.trigger.bind(audio.sampler);
   audio.sampler.trigger = (id, opts) => {
     globalThis.__spy.triggers.push(id);
+    globalThis.__spy.lastOpts = opts;
     return origTrigger(id, opts);
   };
   const origParams = audio.sampler.setParams.bind(audio.sampler);
@@ -60,6 +61,12 @@ await host.evaluate(() => {
     globalThis.__spy.samplerAudible = on;
     return origAud(on);
   };
+  globalThis.__spy.releases = 0;
+  const origRel = audio.sampler.releasePad.bind(audio.sampler);
+  audio.sampler.releasePad = (id, t) => {
+    globalThis.__spy.releases += 1;
+    return origRel(id, t);
+  };
 });
 
 // --- Host: switch to sampler, pads appear, tap fires a one-shot. ---
@@ -74,7 +81,7 @@ const hostMode = await host.evaluate(() => ({
   loaded: globalThis.__jam.audio.sampler.loaded,
 }));
 check('host: sampler mode shows grid', hostMode.chip === 'sampler' && hostMode.gridVisible, JSON.stringify(hostMode));
-check('host: 12 cells, 9 sample pads, Tune visible', hostMode.pads === 12 && hostMode.samples === 9 && hostMode.tuneBtn);
+check('host: 12 cells, 11 sample pads, Tune visible', hostMode.pads === 12 && hostMode.samples === 11 && hostMode.tuneBtn);
 check('host: buffers loaded', hostMode.loaded);
 
 const padBox = async (page, sel) => (await page.$(sel)).boundingBox();
@@ -201,25 +208,51 @@ check('host: instrument pick returns to notes+single', afterPick.padMode === 'no
 await host.click('#host-pad-mode [data-padmode="sampler"]');
 await new Promise((r) => setTimeout(r, 150));
 
-// --- Tune drag: hold a pad, drag up → pitch rises; right → stretch grows. ---
+// --- Edit panel: a tap picks the pad, sliders retune pitch/stretch/volume. ---
 await host.click('#host-sample-edit');
 await new Promise((r) => setTimeout(r, 150));
 const recDim = await host.evaluate(() => document.getElementById('btn-loop')?.classList.contains('is-off'));
 check('host: Rec dims while tuning (no recording)', recDim === true);
-const brahBox = await padBox(host, brahSel);
-await host.mouse.move(brahBox.x + brahBox.width / 2, brahBox.y + brahBox.height / 2);
-await host.mouse.down();
-await host.mouse.move(brahBox.x + brahBox.width / 2 + 80, brahBox.y + brahBox.height / 2 - 64, { steps: 6 });
+const panelUp = await host.evaluate(() => ({
+  panel: !document.querySelector('.sampler-editor')?.hidden,
+  sliders: document.querySelectorAll('.sampler-editor input[type="range"]').length,
+}));
+check('host: edit mode opens the slider panel', panelUp.panel && panelUp.sliders === 3, JSON.stringify(panelUp));
+await host.click(brahSel); // tap selects brah (and auditions it)
 await new Promise((r) => setTimeout(r, 150));
-await host.mouse.up();
-await new Promise((r) => setTimeout(r, 120));
+const picked = await host.evaluate(() => ({
+  name: document.querySelector('.sampler-editor__name')?.textContent?.trim(),
+  armed: document.querySelector('#host-sampler .sampler-pad[data-sample="brah"]')?.classList.contains('is-editing'),
+  triggers: globalThis.__spy.triggers.slice(-1),
+}));
+check('host: pad tap selects it in the panel + auditions', picked.armed === true && /bruh/i.test(picked.name || '') && picked.triggers[0] === 'brah', JSON.stringify(picked));
+// Drive the sliders like a finger would: write + input, release commits.
+const setSlider = (page, aria, value) =>
+  page.evaluate(
+    (label, v) => {
+      const input = [...document.querySelectorAll('.sampler-editor input[type="range"]')].find(
+        (el) => el.getAttribute('aria-label') === label,
+      );
+      input.value = String(v);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+    aria,
+    value,
+  );
+const trigBefore = await host.evaluate(() => globalThis.__spy.triggers.length);
+await setSlider(host, 'Pitch', 4);
+await setSlider(host, 'Stretch', 66); // pos 66 → ×2^0.32 ≈ 1.25
+await setSlider(host, 'Volume', 140);
+await new Promise((r) => setTimeout(r, 150));
+const trigAfter = await host.evaluate(() => globalThis.__spy.triggers.length);
+check('host: slider moves never trigger playback', trigAfter === trigBefore, `${trigBefore} → ${trigAfter}`);
 const tuned = await host.evaluate(() => globalThis.__spy.params.brah);
-// 64px up / 80px right at the fine-control scale: pitch ≈2, stretch ≈1.26 —
-// a pinned ±12 or ×2+ would mean the start-value drift regression is back.
-check('host: vertical drag raised pitch', tuned && tuned.pitch > 0 && tuned.pitch <= 6, JSON.stringify(tuned));
-check('host: horizontal drag raised stretch', tuned && tuned.stretch > 1 && tuned.stretch < 1.8, JSON.stringify(tuned));
+check('host: pitch slider retunes', tuned && tuned.pitch === 4, JSON.stringify(tuned));
+check('host: stretch slider retunes', tuned && tuned.stretch > 1.1 && tuned.stretch < 1.5, JSON.stringify(tuned));
+check('host: volume slider retunes', tuned && Math.abs(tuned.volume - 1.4) < 0.02, JSON.stringify(tuned));
 const tunedBadge = await host.evaluate(() => document.querySelector('#host-sampler .sampler-pad[data-sample="brah"] .sampler-pad__badge').textContent);
-check('host: badge shows tuning', tunedBadge.includes('+') && tunedBadge.includes('×'), tunedBadge);
+check('host: badge shows tuning', tunedBadge.includes('+4') && tunedBadge.includes('×') && tunedBadge.includes('140%'), tunedBadge);
 
 // --- Note editor: cycle to Samples → lane rows, no pitch grid. ---
 await host.click('#host-sample-edit'); // leave tune mode
@@ -238,7 +271,7 @@ const rollState = await host.evaluate(() => ({
   sharpRows: document.querySelectorAll('#host-note-tape .roll__row.is-blocked').length,
 }));
 check('host: roll shows Samples view', /samples/i.test(rollState.name || ''), rollState.name);
-check('host: lane rows for each bank pad', rollState.laneKeys === 9, `lanes=${rollState.laneKeys}`);
+check('host: lane rows for each bank pad', rollState.laneKeys === 11, `lanes=${rollState.laneKeys}`);
 check('host: recorded hits on lanes', rollState.strips.filter((s) => s === 'sampler').length === 2, JSON.stringify(rollState.strips));
 check('host: no pitch grid rows', rollState.sharpRows === 0);
 await host.click('#host-notes-close');
@@ -259,7 +292,7 @@ const eraseUi = await host.evaluate(() => ({
   scratchCross: getComputedStyle(document.querySelector('#host-sampler .sampler-pad[data-sample="scratch105"] .sampler-pad__x')).display,
   recOff: document.getElementById('btn-loop')?.classList.contains('is-off'),
 }));
-check('host: Edit click arms tune+erase layer', eraseUi.editing === true && eraseUi.btnOn === true && eraseUi.crosses === 9 && eraseUi.withHits === 2 && eraseUi.crossVisible && eraseUi.scratchCross === 'none' && eraseUi.recOff === true, JSON.stringify(eraseUi));
+check('host: Edit click arms tune+erase layer', eraseUi.editing === true && eraseUi.btnOn === true && eraseUi.crosses === 11 && eraseUi.withHits === 2 && eraseUi.crossVisible && eraseUi.scratchCross === 'none' && eraseUi.recOff === true, JSON.stringify(eraseUi));
 await host.click('#host-sampler .sampler-pad[data-sample="brah"] .sampler-pad__x');
 await new Promise((r) => setTimeout(r, 250));
 const afterErase = await host.evaluate(() => ({
@@ -271,34 +304,28 @@ check('host: ✕ hides once the pad has no hits', afterErase.brahCross === 'none
 await host.click('#host-sample-edit'); // edit → off
 await new Promise((r) => setTimeout(r, 120));
 
-// --- Armed pad: a tap arms it, then empty grid space is the drag handle. ---
+// --- The panel carousel re-aims the editor without touching the grid. ---
 await host.click('#host-sample-edit'); // → edit
 await new Promise((r) => setTimeout(r, 120));
-await host.click(fahSel); // tap arms fah (no drag = no retune)
+await host.click(fahSel); // tap selects fah
 await new Promise((r) => setTimeout(r, 150));
 const armed = await host.evaluate(() =>
   document.querySelector('#host-sampler .sampler-pad[data-sample="fah"]')?.classList.contains('is-editing'),
 );
-check('host: tap arms the pad for tuning', armed === true);
-const emptyBox = await padBox(host, '#host-sampler .sampler-pad--empty');
-await host.mouse.move(emptyBox.x + emptyBox.width / 2, emptyBox.y + emptyBox.height / 2);
-await host.mouse.down();
-await host.mouse.move(emptyBox.x + emptyBox.width / 2, emptyBox.y + emptyBox.height / 2 - 64, { steps: 4 });
-await host.mouse.up();
-await new Promise((r) => setTimeout(r, 150));
+check('host: tap selects the pad for editing', armed === true);
+await host.click('.sampler-editor__arrow[aria-label="Next sample"]'); // fah → peanut (grid order)
+await new Promise((r) => setTimeout(r, 120));
+const cycled = await host.evaluate(() => ({
+  name: document.querySelector('.sampler-editor__name')?.textContent?.trim(),
+  armedPad: document.querySelector('#host-sampler .sampler-pad.is-editing')?.dataset.sample,
+}));
+check('host: carousel next selects the next sample', /peanut/i.test(cycled.name || '') && cycled.armedPad === 'peanut', JSON.stringify(cycled));
+await host.click('.sampler-editor__arrow[aria-label="Previous sample"]'); // back to fah
+await new Promise((r) => setTimeout(r, 120));
+await setSlider(host, 'Pitch', -3);
+await new Promise((r) => setTimeout(r, 120));
 const armedParams = await host.evaluate(() => globalThis.__spy.params.fah);
-check('host: empty-space drag retunes the armed pad', armedParams && armedParams.pitch > 0 && armedParams.pitch <= 6, JSON.stringify(armedParams));
-// A ✕ press that lands mid-gesture must be ignored — tuning can't erase.
-await host.mouse.down();
-await host.mouse.move(emptyBox.x + emptyBox.width / 2, emptyBox.y + emptyBox.height / 2 - 40, { steps: 3 });
-const midBox = await padBox(host, '#host-sampler .sampler-pad[data-sample="fah"] .sampler-pad__x');
-await host.mouse.move(midBox.x + midBox.width / 2, midBox.y + midBox.height / 2, { steps: 2 });
-await host.mouse.up(); // gesture ends over the ✕ — no second pointerdown fires
-await new Promise((r) => setTimeout(r, 200));
-const stillFah = await host.evaluate(() =>
-  globalThis.__jam.loopFor('host').notes().some((n) => n.instrument === 'sampler' && n.sample === 'fah'),
-);
-check('host: dragging across the ✕ keeps fah hits', stillFah === true);
+check('host: panel slider retunes the carousel-picked pad', armedParams && armedParams.pitch === -3, JSON.stringify(armedParams));
 await host.click('#host-sample-edit'); // edit → off
 await new Promise((r) => setTimeout(r, 120));
 
@@ -312,30 +339,157 @@ check('host: SCR 105 stretch fits the session bpm', lockedParams.s105 && Math.ab
 
 await host.click('#host-sample-edit'); // → edit
 await new Promise((r) => setTimeout(r, 120));
-const scrBox = await padBox(host, '#host-sampler .sampler-pad[data-sample="scratch105"]');
-await host.mouse.move(scrBox.x + scrBox.width / 2, scrBox.y + scrBox.height / 2);
-await host.mouse.down();
-await host.mouse.move(scrBox.x + scrBox.width / 2 + 120, scrBox.y + scrBox.height / 2 - 80, { steps: 5 });
-await host.mouse.up();
+await host.click('#host-sampler .sampler-pad[data-sample="scratch105"]');
+await new Promise((r) => setTimeout(r, 120));
+const scrUi = await host.evaluate(() => ({
+  name: document.querySelector('.sampler-editor__name')?.textContent?.trim(),
+  stretchDisabled: [...document.querySelectorAll('.sampler-editor input[type="range"]')].find(
+    (el) => el.getAttribute('aria-label') === 'Stretch',
+  )?.disabled,
+}));
+check('host: scratch stretch slider is locked (bpm)', /scr 105/i.test(scrUi.name || '') && scrUi.stretchDisabled === true, JSON.stringify(scrUi));
+await setSlider(host, 'Pitch', 2);
+await setSlider(host, 'Volume', 60);
 await new Promise((r) => setTimeout(r, 150));
 const scrTuned = await host.evaluate(() => ({
   sent: globalThis.__spy.params.scratch105,
   live: globalThis.__jam.audio.sampler.paramsOf('scratch105'),
 }));
-check('host: scratch drag cannot move the locked stretch', scrTuned.sent && scrTuned.sent.stretch === undefined && Math.abs(scrTuned.live.stretch - fit(105)) < 0.01, JSON.stringify(scrTuned));
-check('host: scratch drag still tunes pitch', scrTuned.live.pitch > 0, JSON.stringify(scrTuned.live));
+check('host: locked scratch keeps the bpm-fitted stretch', Math.abs(scrTuned.live.stretch - fit(105)) < 0.01, JSON.stringify(scrTuned));
+check('host: scratch panel still tunes pitch + volume', scrTuned.live.pitch === 2 && Math.abs(scrTuned.live.volume - 0.6) < 0.02, JSON.stringify(scrTuned.live));
+await host.click('.sampler-editor__done'); // Done → edit off, params keep
+await new Promise((r) => setTimeout(r, 150));
+const afterDone = await host.evaluate(() => ({
+  panel: document.querySelector('.sampler-editor')?.hidden,
+  editing: document.getElementById('host-sampler')?.classList.contains('is-editing'),
+  btnOn: document.getElementById('host-sample-edit')?.classList.contains('is-on'),
+  kept: globalThis.__jam.audio.sampler.paramsOf('scratch105')?.pitch,
+}));
+check('host: Done closes the panel, keeps the tuning', afterDone.panel === true && afterDone.editing === false && afterDone.btnOn === false && afterDone.kept === 2, JSON.stringify(afterDone));
+
+// --- BEAT: 4-bar 90bpm loop pad — gate mode, bpm-locked stretch, and its
+// voice loops only the session-cycle slice of the source, phase-shifted so
+// a mid-bar tap continues the beat mid-bar instead of restarting it. ---
+await host.evaluate(() => globalThis.__jam.loopFor('host').clear()); // leftover hits would keep replaying
+const beat = await host.evaluate(() => {
+  const s = globalThis.__jam.audio.sampler;
+  const one = s.trigger('boombap', { id: 'probe:beat1', phase: 0, cycle: 2 });
+  const sync1 = s.syncOf('boombap');
+  const params = s.paramsOf('boombap');
+  return { one, sync1, stretch: params?.stretch };
+});
+// Session 120bpm → stretch 90/120 = 0.75 → a 2s session bar covers 2.667s
+// of source = exactly one bar of the beat.
+const beatBar = 4 * (60 / 90);
+check('host: BEAT loops one source bar for a 1-bar session', beat.one === true && Math.abs(beat.sync1.loopEnd - beat.sync1.loopStart - beatBar) < 0.02 && beat.sync1.offset === beat.sync1.loopStart && Math.abs(beat.sync1.pos - beat.sync1.offset) < 0.1, JSON.stringify(beat));
+const beatPhase = await host.evaluate(() => {
+  const s = globalThis.__jam.audio.sampler;
+  // Read immediately — the clock is microseconds past the start, so `pos` is
+  // the real buffer offset the player entered at, not the computed one.
+  s.trigger('boombap', { id: 'probe:beat2', phase: 1, cycle: 2 });
+  return s.syncOf('boombap');
+});
+// phase 1s into a 2s cycle = halfway → half a beat-bar into the source. `pos`
+// must equal `offset` — GrainPlayer.start takes playback-seconds, not buffer
+// seconds, so a raw offset would land ×playbackRate too far.
+check('host: BEAT enters mid-loop at the session phase', Math.abs(beatPhase.offset - beatPhase.loopStart - beatBar / 2) < 0.05 && Math.abs(beatPhase.pos - beatPhase.offset) < 0.05, JSON.stringify(beatPhase));
+const beatHeld = await host.evaluate(() => globalThis.__jam.audio.sampler.soundingIds.includes('boombap'));
+await host.evaluate(() => globalThis.__jam.audio.sampler.releasePad('boombap'));
+await new Promise((r) => setTimeout(r, 200));
+const beatOff = await host.evaluate(() => globalThis.__jam.audio.sampler.soundingIds);
+check('host: BEAT is a gate pad — sounds while held, release cuts it', beatHeld === true && !beatOff.includes('boombap'), `${beatHeld} → ${JSON.stringify(beatOff)}`);
+
+// A playing beat replaces the drum machine — the kit ducks under it.
+await host.evaluate(() => { globalThis.__spy.drumsAudible = null; });
+await host.evaluate(() => globalThis.__jam.audio.sampler.trigger('boombap', { id: 'probe:duck', phase: 0, cycle: 2 }));
+await new Promise((r) => setTimeout(r, 200));
+const ducked = await host.evaluate(() => globalThis.__spy.drumsAudible);
+await host.evaluate(() => globalThis.__jam.audio.sampler.releasePad('boombap'));
+await new Promise((r) => setTimeout(r, 250));
+const unducked = await host.evaluate(() => globalThis.__spy.drumsAudible);
+check('host: BEAT mutes the drum machine while it sounds', ducked === false && unducked === true, `${ducked} → ${unducked}`);
+
+// A live pad tap hands the trigger the transport position — the beat joins
+// the running loop mid-bar instead of restarting.
+await host.evaluate(() => { globalThis.__spy.lastOpts = null; });
+await host.click('#host-pad-mode [data-padmode="sampler"]');
+await new Promise((r) => setTimeout(r, 150));
+const beatBox = await padBox(host, '#host-sampler .sampler-pad[data-sample="boombap"]');
+await host.mouse.move(beatBox.x + beatBox.width / 2, beatBox.y + beatBox.height / 2);
+await host.mouse.down();
+await new Promise((r) => setTimeout(r, 150));
+const liveSync = await host.evaluate(() => globalThis.__spy.lastOpts);
+await host.mouse.up();
+check('host: live BEAT hit carries the loop phase', liveSync && Number.isFinite(liveSync.phase) && Number.isFinite(liveSync.cycle) && liveSync.phase >= 0 && liveSync.phase < liveSync.cycle, JSON.stringify(liveSync));
+
+// Landscape/desktop: the editor docks into the tools column — the pad must
+// keep its full size while editing (the old fixed rail shrank it).
+const padBefore = await host.evaluate(() => document.getElementById('host-pad').getBoundingClientRect().height);
+await host.click('#host-sample-edit');
+await new Promise((r) => setTimeout(r, 200));
+const wideLayout = await host.evaluate(() => ({
+  inTools: Boolean(document.querySelector('.sampler-editor')?.closest('.host-tools')),
+  padHeight: document.getElementById('host-pad').getBoundingClientRect().height,
+}));
+await host.click('#host-sample-edit');
+await new Promise((r) => setTimeout(r, 150));
+check('host: wide layout docks the panel in the tools column, pad keeps its height', wideLayout.inTools === true && Math.abs(wideLayout.padHeight - padBefore) < 2, JSON.stringify(wideLayout));
+
+// --- Edit mode + gate pads: a press selects AND auditions gate-style —
+// sounding only while held, never a whole-buffer one-shot, and the pad
+// unlits once the voice actually ends (the stale-onstop bug used to leave
+// it lit forever). ---
+await host.click('#host-sample-edit'); // → edit
+await new Promise((r) => setTimeout(r, 150));
+const omgBox = await padBox(host, '#host-sampler .sampler-pad[data-sample="omg"]');
+await host.mouse.move(omgBox.x + omgBox.width / 2, omgBox.y + omgBox.height / 2);
+await host.mouse.down();
+await new Promise((r) => setTimeout(r, 250));
+const editGateHeld = await host.evaluate(() => ({
+  lit: document.querySelector('#host-sampler .sampler-pad[data-sample="omg"]').classList.contains('is-lit'),
+  picked: document.querySelector('#host-sampler .sampler-pad[data-sample="omg"]').classList.contains('is-editing'),
+  sounding: globalThis.__jam.audio.sampler.sounding,
+  releases: globalThis.__spy.releases,
+}));
+await host.mouse.up();
+await new Promise((r) => setTimeout(r, 250));
+const editGateUp = await host.evaluate(() => ({
+  lit: document.querySelector('#host-sampler .sampler-pad[data-sample="omg"]').classList.contains('is-lit'),
+  releases: globalThis.__spy.releases,
+}));
+check(
+  'host: edit-mode gate pad auditions only while held',
+  editGateHeld.lit === true && editGateHeld.picked === true && editGateHeld.sounding === true && editGateUp.lit === false && editGateUp.releases > editGateHeld.releases,
+  JSON.stringify({ editGateHeld, editGateUp }),
+);
 await host.click('#host-sample-edit'); // edit → off
+
+// A gate voice that rings out on its own must clear its sounding flag —
+// the pad follows onVoice, so a stuck flag kept it lit after the buffer
+// ended (Tone reports state 'started' inside the natural-end onstop, which
+// the restart guard used to swallow).
+await host.evaluate(() => { globalThis.__jam.audio.sampler.trigger('scratch105', { id: 'probe:ring' }); });
 await new Promise((r) => setTimeout(r, 120));
+const ringing = await host.evaluate(() => ({
+  sounding: globalThis.__jam.audio.sampler.sounding,
+  lit: document.querySelector('#host-sampler .sampler-pad[data-sample="scratch105"]').classList.contains('is-lit'),
+}));
+const ringDone = await host
+  .waitForFunction(() => globalThis.__jam.audio.sampler.sounding === false, { timeout: 20000 })
+  .then(() =>
+    host.evaluate(() => ({
+      sounding: globalThis.__jam.audio.sampler.sounding,
+      lit: document.querySelector('#host-sampler .sampler-pad[data-sample="scratch105"]').classList.contains('is-lit'),
+    })),
+  )
+  .catch(() => ({ sounding: true, lit: true, timeout: true }));
+check('host: gate voice unlits after the buffer rings out', ringing.sounding === true && ringing.lit === true && ringDone.sounding === false && ringDone.lit === false, JSON.stringify({ ringing, ringDone }));
 
 // --- Gate recording: quantized start, unquantized real hold length. ---
 // (The loop keeps replaying recorded one-shots — `sounding` can't prove a
-// live gate cut, so spy on releasePad instead.)
-await host.evaluate(() => {
-  const s = globalThis.__jam.audio.sampler;
-  globalThis.__spy.releases = 0;
-  const orig = s.releasePad.bind(s);
-  s.releasePad = (id, t) => { globalThis.__spy.releases += 1; return orig(id, t); };
-});
+// live gate cut, so spy on releasePad instead. The spy was installed at
+// startup; just zero the counter.)
+await host.evaluate(() => { globalThis.__spy.releases = 0; });
 await host.click('#btn-loop');
 await new Promise((r) => setTimeout(r, 250));
 const scrHit = await padBox(host, '#host-sampler .sampler-pad[data-sample="scratch105"]');
@@ -378,6 +532,29 @@ await new Promise((r) => setTimeout(r, 120));
 const voices = await host.evaluate(() => globalThis.__spy.voices);
 check('host: gate voice reports sounding on→off (pad stays lit)', voices.some((v) => v[0] === 'scratch105' && v[1] === true) && voices.some((v) => v[0] === 'scratch105' && v[1] === false), JSON.stringify(voices));
 
+// --- Regression: a slot restarted while its old source still plays must not
+// orphan the new voice. 4 rapid omg hits cycle slot 0 while press 1's buffer
+// still runs; the stale onstop used to wipe the fresh voice's flags, so
+// releasePad missed it and the pad rang to the buffer's end. Probe the real
+// output level — a released pad must actually go silent. ---
+const leakProbe = await host.evaluate(async () => {
+  const s = globalThis.__jam.audio.sampler;
+  globalThis.__jam.loopFor('host').clear(); // recorded hits would keep replaying
+  const analyser = new globalThis.Tone.Analyser('waveform', 256);
+  s.output.connect(analyser);
+  const level = () => Math.max(...[...analyser.getValue()].map(Math.abs));
+  for (let i = 0; i < 4; i += 1) s.trigger('omg', { id: `leak:${i}` });
+  await new Promise((r) => setTimeout(r, 300)); // let any stale onstop land
+  const before = { level: level(), sounding: s.sounding };
+  s.releasePad('omg');
+  await new Promise((r) => setTimeout(r, 400)); // release ramp + margin
+  const after = { level: level(), sounding: s.sounding };
+  analyser.disconnect();
+  analyser.dispose();
+  return { before, after };
+});
+check('host: releasePad silences rapid-retriggered gate voices', leakProbe.after.level < 0.01, JSON.stringify(leakProbe));
+
 // --- Guest: joins, switches to SMP, taps reach the host. ---
 const guest = await browser.newPage();
 guest.on('pageerror', (e) => console.log('[guest pageerror]', e.message));
@@ -394,7 +571,7 @@ const guestMode = await guest.evaluate(() => ({
   gridVisible: !document.getElementById('controller-sampler')?.hidden,
   pads: document.querySelectorAll('#controller-sampler .sampler-pad--sample').length,
 }));
-check('guest: sampler mode shows grid', guestMode.chip === 'sampler' && guestMode.gridVisible && guestMode.pads === 9, JSON.stringify(guestMode));
+check('guest: sampler mode shows grid', guestMode.chip === 'sampler' && guestMode.gridVisible && guestMode.pads === 11, JSON.stringify(guestMode));
 
 await guest.click('#controller-sampler .sampler-pad[data-sample="fah"]');
 await new Promise((r) => setTimeout(r, 250));
@@ -415,6 +592,27 @@ const gSoloMix = await host.evaluate(() => ({
 check('guest: SOLO mutes host buses', gSoloMix.bus && Object.values(gSoloMix.bus).every((v) => v === false) && gSoloMix.drums === false, JSON.stringify(gSoloMix));
 check('guest: SOLO glows on the host grid too', gSoloMix.remote === true);
 await guest.mouse.up();
+
+// Portrait phone: the panel must sit in the page flow below the pad — no
+// cell is covered and the page still scrolls.
+await guest.click('#controller-sample-edit');
+await new Promise((r) => setTimeout(r, 250));
+const guestPanel = await guest.evaluate(() => {
+  const editor = document.querySelector('.sampler-editor');
+  const pad = document.querySelector('#controller-sampler .sampler-pad[data-sample="peanut"]');
+  if (!editor || editor.hidden || !pad) return { ok: false };
+  const e = editor.getBoundingClientRect();
+  const p = pad.getBoundingClientRect();
+  const wrap = document.querySelector('.pad-wrap').getBoundingClientRect();
+  return {
+    ok: true,
+    inFlow: getComputedStyle(editor).position !== 'fixed',
+    belowPad: e.top >= wrap.bottom - 2,
+    padVisible: p.bottom <= e.top + 2,
+  };
+});
+check('guest: portrait edit panel sits below the pad, pads uncovered', guestPanel.inFlow === true && guestPanel.belowPad === true && guestPanel.padVisible === true, JSON.stringify(guestPanel));
+await guest.click('#controller-sample-edit');
 
 await host.screenshot({ path: `${OUT}/sampler-host.png` });
 await guest.screenshot({ path: `${OUT}/sampler-guest.png` });

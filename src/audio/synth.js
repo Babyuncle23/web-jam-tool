@@ -1830,7 +1830,15 @@ export class PerformanceRecorder {
       // 'up' with a frac cuts inside the step — gate hits keep their real
       // recorded length; only the start was quantized.
       if (event.type === 'up') this.#sampler?.release(id, time + (event.frac || 0) * this.stepSeconds);
-      else this.#sampler?.trigger(event.sample, { time, id });
+      // Beat-locked pads replay at the hit's own loop position — a bar-3
+      // trigger continues the loop's third bar, wherever it was tapped.
+      else
+        this.#sampler?.trigger(event.sample, {
+          time,
+          id,
+          phase: event.step * this.stepSeconds,
+          cycle: this.#loopSteps * this.stepSeconds,
+        });
       return;
     }
     if (event.type === 'up') {

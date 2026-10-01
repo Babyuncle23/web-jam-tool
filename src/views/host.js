@@ -35,6 +35,7 @@ import {
   PadSampler,
   clampSamplePitch,
   clampSampleStretch,
+  clampSampleVolume,
   defaultSampleParams,
   sampleLabel,
 } from '../audio/sampler.js';
@@ -393,7 +394,7 @@ export async function createHostView({ lite } = {}) {
     if (!el.hint) return;
     if (samplerMode) {
       el.hint.textContent = state.samplerEdit
-        ? 'Drag pads — ↕ pitch, → stretch / ← squeeze. Tap ✕ to wipe a sample’s hits. Double-tap resets. Rec is off.'
+        ? 'Tap a pad to edit it — the panel sliders set pitch, stretch, volume. ✕ wipes a sample’s hits. Rec is off.'
         : 'Tap pads to play. SOLO mutes everything else while held.';
     } else if (fxMode) {
       el.hint.textContent = '— filters only. 1/4 → 1/32 holds stutter. Up cuts lows, down cuts highs.';
@@ -983,7 +984,9 @@ export async function createHostView({ lite } = {}) {
     const sampleSolo = soloHolders.size > 0;
     const anySolo = !sampleSolo && MIX_VOICES.some((id) => state.solo[id]);
     for (const id of MIX_VOICES) {
-      const heard = !sampleSolo && !state.mute[id] && (!anySolo || state.solo[id]);
+      let heard = !sampleSolo && !state.mute[id] && (!anySolo || state.solo[id]);
+      // A playing beat loop already carries the drums — the kit ducks under it.
+      if (id === 'drums' && beatDucking.size) heard = false;
       if (id === 'drums') audio.drumsFx.setAudible(heard);
       else audio.bus.setAudible(id, heard);
     }
@@ -1328,6 +1331,9 @@ export async function createHostView({ lite } = {}) {
 
   /** Peers currently holding SOLO — 'host' or guest peerIds. */
   const soloHolders = new Set();
+  /** Beat-locked pads (spec.sync) currently sounding — the drum machine is
+      muted while any plays, so the beat never fights the kit. */
+  const beatDucking = new Set();
   let liveHitSeq = 0;
 
   /**
@@ -1363,6 +1369,23 @@ export async function createHostView({ lite } = {}) {
   }
 
   /**
+   * Seconds inside the session loop right now — the beat-locked pad enters
+   * at this phase, so a mid-bar tap continues the loop's bar instead of
+   * restarting it. Null before the audio engine exists.
+   */
+  function sampleLoopClock() {
+    const transport = audio?.engine.tone.getTransport();
+    if (!transport) return {};
+    const steps = Math.max(1, Math.round(state.noteSteps || 16));
+    const stepSeconds = 15 / (transport.bpm.value || state.bpm || 120);
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    let pos = transport.getTicksAtTime(audio.engine.tone.now()) / ticksPerStep;
+    if (!Number.isFinite(pos) || pos < 0) pos = 0;
+    pos %= steps;
+    return { phase: pos * stepSeconds, cycle: steps * stepSeconds };
+  }
+
+  /**
    * One pad tap: trigger the engine hit and capture it when the player is
    * recording. Auditions (edit-mode release, roll taps) pass record=false so
    * they never land in history.
@@ -1370,7 +1393,7 @@ export async function createHostView({ lite } = {}) {
   function fireSample(peerId, sampleId, { record = true } = {}) {
     if (!audio || !SAMPLE_BANK.some((sample) => sample.id === sampleId)) return false;
     knockFxHold();
-    audio.sampler.trigger(sampleId, { id: `smp:${peerId}:${liveHitSeq++}` });
+    audio.sampler.trigger(sampleId, { id: `smp:${peerId}:${liveHitSeq++}`, ...sampleLoopClock() });
     const wrote = record && recorderFor(peerId)?.captureHit(sampleId);
     if (wrote) refreshLoops(true);
     return true;
@@ -1411,27 +1434,27 @@ export async function createHostView({ lite } = {}) {
     }
   }
 
-  /** Edit-mode drag: store the new params, repaint the pad, push to guests. */
+  /** Editor-panel move: store the new params, repaint the pad, push to guests. */
   function applySampleTune(peerId, sampleId, next, phase = 'move') {
     const params = state.sampleParams[sampleId];
     if (!params || !next) return;
     const spec = SAMPLE_BANK.find((item) => item.id === sampleId);
+    params.pitch = clampSamplePitch(next.pitch);
+    params.volume = clampSampleVolume(next.volume ?? params.volume);
     if (spec?.bpm) {
-      // Tempo-locked: the sampler owns `stretch` (bpm-fitted); edit gestures
-      // move pitch only. Keep the synced value in state so badges and
-      // guests show the truth.
-      params.pitch = clampSamplePitch(next.pitch);
+      // Tempo-locked: the sampler owns `stretch` (bpm-fitted); the panel
+      // moves pitch and volume only. Keep the synced value in state so
+      // badges and guests show the truth.
       const cur = audio?.sampler.paramsOf(sampleId);
       if (cur) params.stretch = cur.stretch;
-      audio?.sampler.setParams(sampleId, { pitch: params.pitch });
+      audio?.sampler.setParams(sampleId, { pitch: params.pitch, volume: params.volume });
     } else {
-      params.pitch = clampSamplePitch(next.pitch);
-      params.stretch = clampSampleStretch(next.stretch);
+      params.stretch = clampSampleStretch(next.stretch ?? params.stretch);
       audio?.sampler.setParams(sampleId, params);
     }
     samplerUi.updateParam(sampleId);
-    // A released finger auditions the retuned pad; silent commits ('set',
-    // e.g. wheel steps or the double-tap reset) don't.
+    // 'end' auditions the retuned pad; slider commits arrive as 'set' and
+    // stay silent — playback is triggered by the pad/name tap, not the knobs.
     if (phase === 'end') fireSample(peerId, sampleId, { record: false });
     queueHarmony();
   }
@@ -1481,7 +1504,17 @@ export async function createHostView({ lite } = {}) {
     onSolo: (held) => setSampleSolo('host', held),
     onTune: (id, next, phase) => applySampleTune('host', id, next, phase),
     onErase: (id) => eraseSampleHits('host', id),
+    // Picking a sample for the panel plays it once — the tap doubles as an
+    // audition so the edited sound is always heard.
+    onSelect: (id) => fireSample('host', id, { record: false }),
+    // Done keeps the committed params and leaves the edit layer.
+    onDone: () => {
+      state.samplerEdit = '';
+      samplerUi.releaseAll();
+      syncModeChrome();
+    },
     hasHits: (id) => sampleHasHits(id),
+    panelHost: el.hostScreen,
   });
 
   /* ---------- Harmony, tempo, instruments, loop ---------- */
@@ -2375,7 +2408,16 @@ export async function createHostView({ lite } = {}) {
       partial.sampler.onFire = (id) => samplerUi.flash(id);
       // Gate pads stay lit for their real sounding length — live hold,
       // audition and loop playback alike.
-      partial.sampler.onVoice = (id, on) => samplerUi.setPlaying(id, on);
+      partial.sampler.onVoice = (id, on) => {
+        samplerUi.setPlaying(id, on);
+        // A beat-locked pad replaces the drum machine while it sounds.
+        if (SAMPLE_BANK.some((spec) => spec.id === id && spec.sync)) {
+          const was = beatDucking.size > 0;
+          if (on) beatDucking.add(id);
+          else beatDucking.delete(id);
+          if ((beatDucking.size > 0) !== was) applyMix();
+        }
+      };
       // Tempo-synced pads start stretched to the session bpm; the params the
       // grid badges show must carry that fit from the start.
       for (const id of partial.sampler.setBpm(state.bpm)) {
@@ -2791,12 +2833,22 @@ export async function createHostView({ lite } = {}) {
     if (data.sampleClear) eraseSampleHits(data.peerId, String(data.sampleClear));
     if (data.sampleTune) {
       const tune = data.sampleTune;
-      applySampleTune(data.peerId, String(tune.sample), { pitch: tune.pitch, stretch: tune.stretch }, 'move');
+      applySampleTune(
+        data.peerId,
+        String(tune.sample),
+        { pitch: tune.pitch, stretch: tune.stretch, volume: tune.volume },
+        'move',
+      );
     }
     if (data.sampleTuneDone) {
       const tune = data.sampleTuneDone;
-      // 'quiet' commits (wheel steps, double-tap reset) skip the audition.
-      applySampleTune(data.peerId, String(tune.sample), { pitch: tune.pitch, stretch: tune.stretch }, tune.quiet ? 'set' : 'end');
+      // 'quiet' commits (e.g. a guest reset) skip the audition.
+      applySampleTune(
+        data.peerId,
+        String(tune.sample),
+        { pitch: tune.pitch, stretch: tune.stretch, volume: tune.volume },
+        tune.quiet ? 'set' : 'end',
+      );
     }
     if (data.preview) {
       previewRoll(Boolean(data.preview.down), data.preview.midi, data.preview.pointerId, data.peerId || 'guest', data.preview.instrument);
