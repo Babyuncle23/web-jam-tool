@@ -442,7 +442,9 @@ export async function createControllerView({ code, name } = {}) {
             instrument: state.instrument,
             mode: 'single',
             degree: choice.degree,
-            midi,
+            // In-scale stays degree-relative — octave changes reach the note;
+            // exact midi is only for a pitch no scale degree expresses.
+            midi: choice.distance === 0 ? null : midi,
           },
         });
       },
@@ -1270,6 +1272,7 @@ export async function createControllerView({ code, name } = {}) {
         state.recording = mine.recording;
         el.loop.classList.toggle('is-on', state.recording);
         el.loop.setAttribute('aria-pressed', state.recording ? 'true' : 'false');
+        el.pad?.classList.toggle('is-recording', state.recording);
       }
       syncGuestHistory();
       // `v` bumps on the host only when the loop really changed, so an
@@ -1325,11 +1328,16 @@ export async function createControllerView({ code, name } = {}) {
     }).label;
   }
 
+  /** Pointer id → instrument the finger came down on: an instrument switch
+      mid-hold must not re-voice the held finger or write chord notes on the
+      new pick. */
+  const fingerInstruments = new Map();
+
   function touchPayload(point) {
     return {
       ...point,
       mode: state.mode,
-      instrument: state.instrument,
+      instrument: fingerInstruments.get(point.id) ?? state.instrument,
     };
   }
 
@@ -1342,6 +1350,7 @@ export async function createControllerView({ code, name } = {}) {
         return;
       }
       if (!state.audioReady) return;
+      fingerInstruments.set(point.id, state.instrument);
       socket.sendTouch(touchPayload(point));
       el.pad.classList.add('is-active');
       renderer.update(point.id, point);
@@ -1372,8 +1381,12 @@ export async function createControllerView({ code, name } = {}) {
         setLabel('—');
         paintZone(null);
       }
-      if (!state.audioReady) return;
+      if (!state.audioReady) {
+        fingerInstruments.delete(point.id);
+        return;
+      }
       socket.sendTouch(touchPayload(point));
+      fingerInstruments.delete(point.id);
     },
   });
 
@@ -1391,13 +1404,9 @@ export async function createControllerView({ code, name } = {}) {
 
   /** Same instrument switch as the main chips, plus the open roll follows. */
   function pickGuestInstrument(instrument) {
-    // An open take belonged to the instrument it was played on — switching
-    // ends it rather than writing the new instrument into the same pass.
-    if (state.recording) setRecording(false);
-    // Picking an instrument is a play intent: back to the notes pad, single
-    // notes — even if chords or the sampler/FX pad were up before.
-    if (state.padMode !== 'notes') setPadMode('notes');
-    state.mode = 'single';
+    // A switch never interrupts an open take: recording keeps rolling, held
+    // fingers stay on the instrument they started on (fingerInstruments pins
+    // it), and the mode/pad selection stays where the user left it.
     state.instrument = normalizeInstrument(instrument);
     // The More sheet follows the playing instrument until a card reopens it.
     state.fxFor = state.instrument;
@@ -1485,6 +1494,8 @@ export async function createControllerView({ code, name } = {}) {
     state.recording = next;
     el.loop.classList.toggle('is-on', next);
     el.loop.setAttribute('aria-pressed', next ? 'true' : 'false');
+    // Red-pink heart glow on the pad while a take is open.
+    el.pad?.classList.toggle('is-recording', next);
     socket.sendControl({ loop: next ? 'record' : 'stop' });
   }
 

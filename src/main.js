@@ -179,8 +179,60 @@ joinForm.addEventListener('submit', async (event) => {
 });
 
 // Delegated: the back buttons live inside screens that resetScreen replaces.
+// Leaving kills the host's room (or drops the guest), so a bare tap can't do
+// it — hold the button (same 'is-arming' fill as clear-all) or tap it twice.
+let backHold = null;
+let backTarget = null;
+let backArmTimer = 0;
+let backArmedButton = null;
+
+function disarmBackHold() {
+  if (backHold) {
+    clearTimeout(backHold);
+    backHold = null;
+  }
+  // The click-armed highlight is a separate state — only the hold's own
+  // target gets cleared here.
+  if (backTarget && backTarget !== backArmedButton) backTarget.classList.remove('is-arming');
+  backTarget = null;
+}
+
+document.addEventListener('pointerdown', (event) => {
+  const button = event.target.closest('[data-action="back"]');
+  if (!button || backHold) return;
+  backTarget = button;
+  button.classList.add('is-arming');
+  backHold = setTimeout(() => {
+    backHold = null;
+    disarmBackHold();
+    backToRolePicker();
+  }, 700);
+});
+for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, disarmBackHold);
+// Sliding the finger off the button aborts the hold, like the clear button.
+document.addEventListener('pointerout', (event) => {
+  if (backTarget && event.target === backTarget) disarmBackHold();
+});
 document.addEventListener('click', (event) => {
-  if (event.target.closest('[data-action="back"]')) backToRolePicker();
+  const button = event.target.closest('[data-action="back"]');
+  if (!button) return;
+  // A tap while the button is still lit confirms the leave — covers taps,
+  // quiet-touch synthesized clicks and keyboard presses alike.
+  if (backArmedButton === button) {
+    clearTimeout(backArmTimer);
+    backArmedButton = null;
+    button.classList.remove('is-arming');
+    backToRolePicker();
+    return;
+  }
+  backArmedButton?.classList.remove('is-arming');
+  backArmedButton = button;
+  button.classList.add('is-arming');
+  clearTimeout(backArmTimer);
+  backArmTimer = setTimeout(() => {
+    if (backArmedButton === button) backArmedButton = null;
+    button.classList.remove('is-arming');
+  }, 1800);
 });
 
 document.addEventListener('gesturestart', (event) => event.preventDefault());

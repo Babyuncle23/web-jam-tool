@@ -461,6 +461,8 @@ export async function createHostView({ lite } = {}) {
     const on = Boolean(audio?.loops.get('host')?.isRecording);
     el.loop.classList.toggle('is-on', on);
     el.loop.setAttribute('aria-pressed', on ? 'true' : 'false');
+    // Red-pink heart glow on the pad while a take is open.
+    el.pad?.classList.toggle('is-recording', on);
   }
 
   function restoreTargets(targets) {
@@ -1337,38 +1339,6 @@ export async function createHostView({ lite } = {}) {
   let liveHitSeq = 0;
 
   /**
-   * A live pad hit or a grabbed SOLO kicks the FX pad's held gesture off —
-   * the momentary stutter/filter belongs to whoever touched last. Loop
-   * playback of recorded hits never reaches this.
-   */
-  function knockFxHold() {
-    let changed = false;
-    if (fxFingers.size) {
-      for (const id of fxFingers.keys()) paintTouch(`host:${id}`, null);
-      fxFingers.clear();
-      changed = true;
-    }
-    if (audio?.engine.masterFx?.holding?.()) audio.engine.masterFx.setHold(false);
-    if (state.masterFx.hold) {
-      state.masterFx.hold = false;
-      changed = true;
-    }
-    if (masterHolder || filterHolder) {
-      masterHolder = null;
-      filterHolder = null;
-      changed = true;
-    }
-    if (state.masterFx.cutoff || state.masterFx.hipass) {
-      state.masterFx.cutoff = 0;
-      state.masterFx.hipass = 0;
-      audio?.engine.masterFx?.setCutoff(0);
-      audio?.engine.masterFx?.setHipass(0);
-      changed = true;
-    }
-    if (changed) queueHarmony();
-  }
-
-  /**
    * Seconds inside the session loop right now — the beat-locked pad enters
    * at this phase, so a mid-bar tap continues the loop's bar instead of
    * restarting it. Null before the audio engine exists.
@@ -1392,7 +1362,8 @@ export async function createHostView({ lite } = {}) {
    */
   function fireSample(peerId, sampleId, { record = true } = {}) {
     if (!audio || !SAMPLE_BANK.some((sample) => sample.id === sampleId)) return false;
-    knockFxHold();
+    // A hit never knocks a held FX gesture off: the pad modes are exclusive,
+    // so the holder can only be another peer whose finger is still down.
     audio.sampler.trigger(sampleId, { id: `smp:${peerId}:${liveHitSeq++}`, ...sampleLoopClock() });
     const wrote = record && recorderFor(peerId)?.captureHit(sampleId);
     if (wrote) refreshLoops(true);
@@ -1407,7 +1378,6 @@ export async function createHostView({ lite } = {}) {
     const was = soloHolders.size > 0;
     if (held) {
       soloHolders.add(peerId);
-      knockFxHold();
     } else {
       soloHolders.delete(peerId);
     }
@@ -1596,16 +1566,9 @@ export async function createHostView({ lite } = {}) {
   }
 
   function pickInstrument(instrument) {
-    // An open take belonged to the instrument it was played on — switching
-    // ends it rather than writing the new instrument into the same pass.
-    if (audio?.loops.get('host')?.isRecording) setHostRecording(false);
-    // Picking an instrument is a play intent: back to the notes pad, single
-    // notes — even if chords or the sampler/FX pad were up before.
-    if (state.padMode !== 'notes') setPadMode('notes');
-    if (state.mode !== 'single') {
-      state.mode = 'single';
-      audio?.synth.setMode('single');
-    }
+    // A switch never interrupts an open take: recording keeps rolling, held
+    // fingers stay on the instrument they started on (padFingers pins it),
+    // and the mode/pad selection stays where the user left it.
     state.instrument = normalizeInstrument(instrument);
     state.fxFor = state.instrument;
     paintInstruments(el.instruments, state.instrument);
@@ -1922,7 +1885,10 @@ export async function createHostView({ lite } = {}) {
         step: change.step,
         x: choice.x,
         degree: choice.degree,
-        midi: change.midi,
+        // An in-scale landing stays scale-relative like a recorded take —
+        // octave/key changes still reach it, a chord strip stays a chord.
+        // An exact midi is kept only for a pitch no scale degree expresses.
+        midi: choice.distance === 0 ? null : change.midi,
       });
     }
     refreshLoops();
@@ -2023,7 +1989,16 @@ export async function createHostView({ lite } = {}) {
         const draft = { x: 0.5, y: 0.55, mode: 'single', instrument };
         const choice = choiceFor(midi, draft);
         rememberEdit('host', ['host']);
-        writePlacedNotes(recorderFor('host'), { step, instrument, x: choice.x, y: 0.55, degree: choice.degree, midi });
+        // Keep an exact midi only for a pitch the scale can't express — an
+        // in-scale note stays degree-relative and follows octave changes.
+        writePlacedNotes(recorderFor('host'), {
+          step,
+          instrument,
+          x: choice.x,
+          y: 0.55,
+          degree: choice.degree,
+          midi: choice.distance === 0 ? null : midi,
+        });
         ensureTransport();
         refreshLoops();
       },
@@ -2682,7 +2657,10 @@ export async function createHostView({ lite } = {}) {
         fxPadMove(point);
         return;
       }
-      soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
+      // A finger keeps the instrument it came down on — an instrument switch
+      // mid-hold must not re-voice it or write chord notes under the new pick.
+      const held = padFingers.get(`host:${point.id}`);
+      soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: held?.instrument ?? state.instrument, mode: state.mode });
     },
     onEnd: (point) => {
       if (state.padMode === 'sampler') return;
@@ -2690,7 +2668,8 @@ export async function createHostView({ lite } = {}) {
         fxPadUp(point);
         return;
       }
-      soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: state.instrument, mode: state.mode });
+      const held = padFingers.get(`host:${point.id}`);
+      soundTouch({ ...point, id: `host:${point.id}`, name: 'host', instrument: held?.instrument ?? state.instrument, mode: state.mode });
     },
   });
 

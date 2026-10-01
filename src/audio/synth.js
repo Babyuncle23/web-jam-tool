@@ -1321,6 +1321,10 @@ export class PerformanceRecorder {
       const upStep = ((Math.floor(absUp) % this.#loopSteps) + this.#loopSteps) % this.#loopSteps;
       const frac = absUp - Math.floor(absUp);
       this.#put({ ...hit.on, step: upStep, type: 'up', frac });
+      // The take's loop voice dies with the finger — same rule as
+      // #silenceTake for notes; waiting for the recorded 'up' step would
+      // leave a gate pad ringing (and lit) almost a whole extra cycle.
+      this.#sampler?.release(`loop:${this.#playerId}:${hit.voiceId}`);
     }
     return 'note';
   }

@@ -1,6 +1,7 @@
 /**
  * Smoke: Rec pip turns red while recording; pad defaults to chords at entry;
- * instrument switch or SMP pad stops an open take. Temporary check.
+ * an instrument switch keeps the take rolling and the mode pick, while the
+ * SMP pad still stops an open take.
  */
 import puppeteer from 'puppeteer-core';
 
@@ -66,15 +67,19 @@ try {
   await clickSelector(host, '#btn-loop');
   await pollExpr(host, `({ ok: document.getElementById('btn-loop').classList.contains('is-on') })`);
   const hostDot = await host.evaluate(`getComputedStyle(document.querySelector('#btn-loop .rec-dot')).fill`);
-  check(`host rec pip red while recording (${hostDot})`, hostDot === 'rgb(196, 71, 58)');
+  check(`host rec pip is --danger while recording (${hostDot})`, hostDot === await host.evaluate(
+    `getComputedStyle(document.body.appendChild(Object.assign(document.createElement('i'), { style: 'color:var(--danger)' }))).color`));
 
-  // Instrument switch stops recording on host
+  // Instrument switch keeps the take rolling on host — and the
+  // Notes/Chords pick stays where the user left it.
   await clickSelector(host, '#instrument-row [data-instrument="organ"]');
   await sleep(300);
-  check('host instrument switch stops recording', await host.evaluate(
-    `!document.getElementById('btn-loop').classList.contains('is-on')`));
-  check('host instrument switch resets to notes', await host.evaluate(
-    `document.querySelector('#mode-row [data-mode="single"]')?.classList.contains('is-on')`));
+  check('host instrument switch keeps recording', await host.evaluate(
+    `document.getElementById('btn-loop').classList.contains('is-on')`));
+  check('host instrument switch keeps the mode pick', await host.evaluate(
+    `document.querySelector('#mode-row [data-mode="chords"]')?.classList.contains('is-on')`));
+  await clickSelector(host, '#btn-loop'); // rec off for the SMP check
+  await pollExpr(host, `({ ok: !document.getElementById('btn-loop').classList.contains('is-on') })`);
 
   // SMP pad stops recording on host
   await clickSelector(host, '#instrument-row [data-instrument="pad"]');
@@ -101,23 +106,23 @@ try {
   await clickSelector(guest, '#controller-loop');
   await pollExpr(guest, `({ ok: document.getElementById('controller-loop').classList.contains('is-on') })`);
   const guestDot = await guest.evaluate(`getComputedStyle(document.querySelector('#controller-loop .rec-dot')).fill`);
-  check(`guest rec pip red while recording (${guestDot})`, guestDot === 'rgb(196, 71, 58)');
+  check(`guest rec pip is --danger while recording (${guestDot})`, guestDot === await guest.evaluate(
+    `getComputedStyle(document.body.appendChild(Object.assign(document.createElement('i'), { style: 'color:var(--danger)' }))).color`));
 
   await clickSelector(guest, '#controller-instruments [data-instrument="organ"]');
   await sleep(300);
-  check('guest instrument switch stops recording', await guest.evaluate(
-    `!document.getElementById('controller-loop').classList.contains('is-on')`));
-  check('guest instrument switch resets to notes', await guest.evaluate(
-    `document.querySelector('#controller-screen [data-mode="single"]')?.classList.contains('is-on')`));
+  check('guest instrument switch keeps recording', await guest.evaluate(
+    `document.getElementById('controller-loop').classList.contains('is-on')`));
+  check('guest instrument switch keeps the mode pick', await guest.evaluate(
+    `document.querySelector('#controller-screen [data-mode="chords"]')?.classList.contains('is-on')`));
 
-  // Returning to pad keeps single notes (per spec)
+  // Switching back to pad keeps the same mode too
   await clickSelector(guest, '#controller-instruments [data-instrument="pad"]');
   await sleep(200);
-  check('guest back on pad stays notes', await guest.evaluate(
-    `document.querySelector('#controller-screen [data-mode="single"]')?.classList.contains('is-on')`));
+  check('guest back on pad keeps chords', await guest.evaluate(
+    `document.querySelector('#controller-screen [data-mode="chords"]')?.classList.contains('is-on')`));
 
-  await clickSelector(guest, '#controller-loop');
-  await pollExpr(guest, `({ ok: document.getElementById('controller-loop').classList.contains('is-on') })`);
+  // The take is still rolling — the SMP pad stops it.
   await clickSelector(guest, '#controller-pad-mode [data-padmode="sampler"]');
   await sleep(300);
   check('guest SMP pad stops recording', await guest.evaluate(

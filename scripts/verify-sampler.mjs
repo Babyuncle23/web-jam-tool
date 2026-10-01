@@ -193,7 +193,7 @@ const ringOut = await host.evaluate(() => ({
 check('host: hit was sounding before the flip', ringing0 === true);
 check('host: leaving SMP keeps the hit ringing', ringOut.sounding === true && ringOut.stopAlls === 0, JSON.stringify(ringOut));
 
-// --- Picking an instrument snaps back to the notes pad, single mode. ---
+// --- Picking an instrument keeps the pad/mode selection where the user left it. ---
 await host.click('#mode-row [data-mode="chords"]');
 await new Promise((r) => setTimeout(r, 80));
 await host.click('#host-pad-mode [data-padmode="sampler"]');
@@ -204,7 +204,7 @@ const afterPick = await host.evaluate(() => ({
   padMode: document.querySelector('#host-pad-mode .chip.is-on')?.dataset.padmode,
   mode: document.querySelector('#mode-row .chip.is-on')?.dataset.mode,
 }));
-check('host: instrument pick returns to notes+single', afterPick.padMode === 'notes' && afterPick.mode === 'single', JSON.stringify(afterPick));
+check('host: instrument pick keeps pad+mode selection', afterPick.padMode === 'sampler' && afterPick.mode === 'chords', JSON.stringify(afterPick));
 await host.click('#host-pad-mode [data-padmode="sampler"]');
 await new Promise((r) => setTimeout(r, 150));
 

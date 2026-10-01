@@ -72,6 +72,9 @@ await page.waitForFunction(() => document.getElementById('host-audio-status').da
   timeout: 20000,
 });
 
+// Picking an instrument no longer resets Notes/Chords — ask for single notes
+// explicitly so one finger holds exactly one voice.
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]')?.click());
 await page.evaluate(() => document.querySelector('#instrument-row [data-instrument="organ"]')?.click());
 await page.evaluate(() => document.getElementById('btn-loop').click()); // rec on
 await sleep(200);

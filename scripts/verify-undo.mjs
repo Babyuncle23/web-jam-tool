@@ -72,6 +72,8 @@ await page.evaluate(() => document.getElementById('splash-start').click());
 await page.waitForFunction(() => document.getElementById('host-audio-status').dataset.state === 'online', {
   timeout: 20000,
 });
+// Single notes: each tap is a one-row take, so row counts track takes 1:1.
+await page.evaluate(() => document.querySelector('#mode-row [data-mode="single"]')?.click());
 
 const results = [];
 const check = (name, actual, want) => {

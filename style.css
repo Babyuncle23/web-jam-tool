@@ -1932,6 +1932,17 @@ input[type='range'] {
   animation-delay: var(--pulse-delay, 0s);
 }
 
+/* While a take is open the pad heart burns red-pink instead of sun —
+   the same beat-locked pulse, so recording reads at a glance. */
+.pad.is-recording .pad__pulse {
+  background: radial-gradient(circle, rgba(255, 105, 152, 0.6) 0%, rgba(255, 64, 118, 0.3) 46%, rgba(255, 64, 118, 0) 76%);
+  animation-name: pad-beat;
+  animation-duration: calc(var(--beat-seconds, 0.625s) * 4);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-delay: var(--pulse-delay, 0s);
+}
+
 @keyframes pad-beat {
   0% { opacity: 0.94; transform: translate(-50%, -50%) scale(0.9); }
   9% { opacity: 0.28; transform: translate(-50%, -50%) scale(1.06); }
