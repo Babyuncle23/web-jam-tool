@@ -440,6 +440,14 @@ export function createSampleGrid(
       });
       cross.addEventListener('click', (event) => event.stopPropagation());
       pad.append(label, badge, cross);
+      // Gate pads sound only while held — a bottom pill spells out the gesture.
+      if (sampleMode(cell.sample) === 'gate') {
+        const hold = document.createElement('span');
+        hold.className = 'sampler-pad__hold';
+        hold.textContent = 'HOLD';
+        hold.setAttribute('aria-hidden', 'true');
+        pad.append(hold);
+      }
     } else if (cell.action === SOLO_ACTION) {
       pad.dataset.action = SOLO_ACTION;
       pad.classList.add('sampler-pad--solo');
