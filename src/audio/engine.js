@@ -16,10 +16,27 @@ export const DEFAULT_MASTER_GAIN = 0.78;
  */
 const LITE_SAMPLE_RATE = 24000;
 let liteContext = null;
+/** Tone's Context wrapper around liteContext — reused on every lite entry so
+ * swaps do not stack Transport/Destination singletons on the raw context. */
+let liteToneContext = null;
 /** Device-rate context a full session gets after a lite swap. Created lazily:
  * a lite-only page never pays for a second AudioContext. */
 let nativeContext = null;
+/** Tone's own Context wrapper for nativeContext — captured before the first
+ * swap so re-entry restores the original graph, not a fresh wrapper. */
+let nativeToneContext = null;
 let onLiteContext = false;
+
+/** Park the context being left: stops any stranded node from bleeding audio
+ * into the next session and frees its render thread. Closing is not an
+ * option — the context is kept for re-entry (Chrome caps live contexts). */
+function parkContext(raw) {
+  try {
+    raw?.suspend?.()?.catch?.(() => {});
+  } catch {
+    // A closing or already-suspended context does not matter here.
+  }
+}
 
 export class AudioEngine {
   #tone;
@@ -28,6 +45,9 @@ export class AudioEngine {
   #compressor = null;
   #limiter = null;
   #masterFx = null;
+  /** Raw context this engine was built on — dispose parks exactly this one,
+   * never whatever context a later session may have swapped in. */
+  #usedRawContext = null;
   #started = false;
   #bpm = DEFAULT_BPM;
   /** idle → starting → ready, or error if start() rejected. */
@@ -96,27 +116,36 @@ export class AudioEngine {
     try {
       if (this.#lite?.lowSampleRate) {
         if (!onLiteContext) {
-          // Capture the context Tone is leaving so a later full session swaps
-          // back to it instead of spawning a third AudioContext. rawContext is
-          // Tone's standardized-audio-context facade — setContext takes it back.
-          const current = this.#tone.getContext()?.rawContext;
-          if (current && current.sampleRate !== LITE_SAMPLE_RATE) nativeContext ??= current;
+          // Capture the context Tone is leaving — both the raw context (to
+          // park it) and its Tone wrapper (to restore it wholesale later).
+          const currentTone = this.#tone.getContext();
+          const current = currentTone?.rawContext;
+          if (current && current.sampleRate !== LITE_SAMPLE_RATE) {
+            nativeContext ??= current;
+            nativeToneContext ??= currentTone;
+          }
           if (!liteContext) liteContext = new Ctor({ sampleRate: LITE_SAMPLE_RATE });
-          this.#tone.setContext(liteContext);
+          liteToneContext ??= new this.#tone.Context(liteContext);
+          this.#tone.setContext(liteToneContext);
           onLiteContext = true;
+          // Park only a context we actually left — never the lite one itself.
+          if (current && current !== liteContext) parkContext(current);
         }
         return;
       }
       if (onLiteContext) {
-        if (!nativeContext) nativeContext = new Ctor();
-        this.#tone.setContext(nativeContext);
+        if (!nativeToneContext) {
+          if (!nativeContext) nativeContext = new Ctor();
+          nativeToneContext = new this.#tone.Context(nativeContext);
+        }
+        this.#tone.setContext(nativeToneContext);
         onLiteContext = false;
+        parkContext(liteContext);
       }
     } catch {
       // Context creation can fail at the browser's AudioContext cap — keep
       // whatever context Tone already has rather than break audio start.
       // onLiteContext is left as it was: a failed swap-back retries next time.
-      liteContext = null;
     }
   }
 
@@ -127,6 +156,7 @@ export class AudioEngine {
     this.#error = null;
     try {
       this.#pickContext();
+      this.#usedRawContext = this.#tone.getContext()?.rawContext ?? null;
       await this.#tone.start();
       this.#limiter = new this.#tone.Limiter(-2).toDestination();
       this.#compressor = new this.#tone.Compressor({
@@ -225,6 +255,9 @@ export class AudioEngine {
 
   dispose() {
     this.stopTransport();
+    // Park the context this engine used — any node that survived the dispose
+    // pass goes silent here instead of bleeding into the next session.
+    parkContext(this.#usedRawContext);
     this.#master?.dispose();
     this.#compressor?.dispose();
     this.#masterFx?.dispose();

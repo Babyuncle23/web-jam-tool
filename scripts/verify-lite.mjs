@@ -83,8 +83,8 @@ try {
   })()`);
   console.log('full host:', JSON.stringify({ ...fullUi, instFx: fullInstFx, masterSliders: fullMaster }));
   if (fullUi.pillHidden !== true) errors.push('full host: lite pill visible');
-  if (fullInstFx.fx.length !== 3) errors.push(`full host: expected 3 pad fx sliders, got ${JSON.stringify(fullInstFx)}`);
-  if (fullUi.drumFx !== 3) errors.push(`full host: expected 3 drum fx sliders, got ${fullUi.drumFx}`);
+  if (fullInstFx.fx.length !== 2) errors.push(`full host: expected 2 pad fx sliders, got ${JSON.stringify(fullInstFx)}`);
+  if (fullUi.drumFx !== 2) errors.push(`full host: expected 2 drum fx sliders, got ${fullUi.drumFx}`);
   if (fullMaster !== 3) errors.push(`full host: expected 3 master sliders, got ${fullMaster}`);
   if (!fullUi.qr) errors.push('full host: QR image was never painted');
   if (!/^[A-Z2-9]{4}$/.test(fullUi.code || '')) errors.push(`full host: bad session code "${fullUi.code}"`);

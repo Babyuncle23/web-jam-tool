@@ -5,37 +5,32 @@
  * metadata (chips, labels, colors) the UI reads on host and controller.
  */
 
-/** Three effects per instrument. Level 0 is off, 1 is mild, 2 is strong. */
+/** Two effects per instrument — the third slot was the most expendable node
+ * on each chain. Level 0 is off, 1 is mild, 2 is strong. */
 export const INSTRUMENT_FX = {
   pad: [
     { id: 'reverb', label: 'Rev' },
-    { id: 'delay', label: 'Delay' },
     { id: 'chorus', label: 'Chor' },
   ],
   bass: [
     { id: 'drive', label: 'Dist' },
     { id: 'cutoff', label: 'Cut' },
-    { id: 'slap', label: 'Slap' },
   ],
   organ: [
     { id: 'chorus', label: 'Chor' },
-    { id: 'vibrato', label: 'Vib' },
     { id: 'room', label: 'Room' },
   ],
   kalimba: [
     { id: 'delay', label: 'Delay' },
     { id: 'reverb', label: 'Rev' },
-    { id: 'reverse', label: 'Rvs' },
   ],
   synth: [
     { id: 'room', label: 'Room' },
-    { id: 'delay', label: 'Delay' },
     { id: 'chorus', label: 'Chor' },
   ],
 };
 
 export const DRUM_FX = [
-  { id: 'drive', label: 'Dist' },
   { id: 'cutoff', label: 'Cut' },
   { id: 'room', label: 'Room' },
 ];
@@ -88,253 +83,18 @@ export const FX_LEVELS = ['Off', 'Low', 'High'];
 
 export function defaultFxState() {
   return {
-    pad: { reverb: 0.5, delay: 0.5, chorus: 0.5 },
-    bass: { drive: 0, cutoff: 0.62, slap: 0 },
-    organ: { chorus: 0, vibrato: 0, room: 1 },
-    kalimba: { delay: 0, reverb: 0.5, reverse: 0 },
-    synth: { room: 0.5, delay: 0.5, chorus: 0 },
-    drums: { drive: 0.5, cutoff: 0, room: 0.5 },
+    pad: { reverb: 0.35, chorus: 0.3 },
+    bass: { drive: 0, cutoff: 0.62 },
+    organ: { chorus: 0, room: 1 },
+    kalimba: { delay: 0, reverb: 0.5 },
+    synth: { room: 0.5, chorus: 0 },
+    drums: { cutoff: 0, room: 0.5 },
   };
 }
 
 /** Live instrument loudness, 0..1. Not stored in the loop. */
 export function defaultLevels() {
   return { pad: 0.8, bass: 0.8, organ: 0.8, kalimba: 0.8, synth: 0.8 };
-}
-
-/**
- * Reverse without AudioWorklet. A ScriptProcessor only captures the tail.
- * Playback is a normal AudioBuffer, reversed, through a BufferSource.
- * Chrome allows this on http://LAN. The forward note is ducked, so what you
- * hear is the hit backwards, not a second copy of the delay.
- */
-function nativeAudioContext(tone) {
-  const raw = tone.getContext().rawContext;
-  if (typeof raw?.createScriptProcessor === 'function' && typeof raw?.createBuffer === 'function') return raw;
-  const native = raw?._nativeAudioContext;
-  if (typeof native?.createScriptProcessor === 'function' && typeof native?.createBuffer === 'function') return native;
-  throw new Error('Reverse needs AudioBuffer playback, and this context does not expose it');
-}
-
-function connectInto(sources, destination) {
-  let lastError = null;
-  for (const node of sources) {
-    if (!node || typeof node.connect !== 'function') continue;
-    try {
-      node.connect(destination);
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error('Reverse could not connect');
-}
-
-function createTailReverse(tone) {
-  const input = new tone.Gain(1);
-  const output = new tone.Gain(1);
-  const dry = new tone.Gain(1);
-  const wet = new tone.Gain(0);
-  input.connect(dry);
-  dry.connect(output);
-  wet.connect(output);
-
-  let processor = null;
-  let sink = null;
-  let raw = null;
-  let mix = 0;
-  const sources = new Set();
-
-  function playReversed(samples) {
-    const buffer = raw.createBuffer(1, samples.length, raw.sampleRate);
-    const channel = buffer.getChannelData(0);
-    const last = samples.length - 1;
-    for (let i = 0; i < samples.length; i += 1) channel[i] = (samples[last - i] || 0) * 1.35;
-    const fade = Math.min(128, samples.length >> 4);
-    for (let i = 0; i < fade; i += 1) {
-      const gain = i / fade;
-      channel[i] *= gain;
-      channel[last - i] *= gain;
-    }
-    const source = raw.createBufferSource();
-    source.buffer = buffer;
-    const amp = raw.createGain();
-    amp.gain.value = Math.max(mix, 0.001);
-    source.connect(amp);
-    const outNode = output.output?._nativeAudioNode || output.input?._nativeAudioNode || output._nativeAudioNode;
-    if (!outNode) throw new Error('Reverse output has no native node');
-    amp.connect(outNode);
-    source.onended = () => {
-      sources.delete(source);
-      try {
-        source.disconnect();
-        amp.disconnect();
-      } catch {
-        // already gone
-      }
-    };
-    sources.add(source);
-    source.start();
-  }
-
-  function ensureCapture() {
-    if (processor) return;
-    const contexts = [];
-    try {
-      contexts.push(nativeAudioContext(tone));
-    } catch {
-      // The wrapper context is tried below.
-    }
-    const wrapped = tone.getContext().rawContext;
-    if (wrapped && !contexts.includes(wrapped)) contexts.push(wrapped);
-    const taps = [input.output?._nativeAudioNode, input._nativeAudioNode, input.output, input].filter(Boolean);
-    const errors = [];
-    for (const context of contexts) {
-      if (typeof context.createScriptProcessor !== 'function' || typeof context.createBuffer !== 'function') continue;
-      for (const channels of [1, 2]) {
-        let created = null;
-        try {
-          const length = Math.max(256, Math.floor(context.sampleRate * 0.46));
-          const record = new Float32Array(length);
-          let captured = 0;
-          let quiet = 0;
-          let tailQuiet = 0;
-          let armed = false;
-          const quietNeeded = Math.floor(context.sampleRate * 0.02);
-          const minCapture = Math.floor(context.sampleRate * 0.12);
-          const tailNeeded = Math.floor(context.sampleRate * 0.045);
-          created = context.createScriptProcessor(2048, channels, 1);
-          created.onaudioprocess = (event) => {
-            const left = event.inputBuffer.getChannelData(0);
-            const right = event.inputBuffer.numberOfChannels > 1 ? event.inputBuffer.getChannelData(1) : left;
-            event.outputBuffer.getChannelData(0).fill(0);
-            if (mix < 0.001) {
-              armed = false;
-              captured = 0;
-              quiet = 0;
-              tailQuiet = 0;
-              return;
-            }
-            for (let i = 0; i < left.length; i += 1) {
-              const sample = ((left[i] || 0) + (right[i] || 0)) * 0.5;
-              const level = Math.abs(sample);
-              if (!armed) {
-                if (level < 0.02) quiet += 1;
-                else if (quiet >= quietNeeded) {
-                  armed = true;
-                  captured = 0;
-                  tailQuiet = 0;
-                  record[captured] = sample;
-                  captured += 1;
-                  quiet = 0;
-                }
-                continue;
-              }
-              record[captured] = sample;
-              captured += 1;
-              if (level < 0.02) tailQuiet += 1;
-              else tailQuiet = 0;
-              const done = captured >= length || (captured >= minCapture && tailQuiet >= tailNeeded);
-              if (!done) continue;
-              const taken = captured;
-              armed = false;
-              captured = 0;
-              tailQuiet = 0;
-              quiet = 0;
-              try {
-                playReversed(record.slice(0, taken));
-              } catch {
-                // A bad playback connection must not stop the next hit.
-              }
-            }
-          };
-          let tapped = false;
-          for (const tap of taps) {
-            try {
-              tap.connect(created);
-              tapped = true;
-              break;
-            } catch (error) {
-              errors.push(error?.message || String(error));
-            }
-          }
-          if (!tapped) throw new Error('tail tap failed');
-          const silent = context.createGain();
-          silent.gain.value = 0;
-          created.connect(silent);
-          silent.connect(context.destination);
-          raw = context;
-          processor = created;
-          sink = silent;
-          return;
-        } catch (error) {
-          errors.push(error?.message || String(error));
-          if (created) {
-            created.onaudioprocess = null;
-            try {
-              created.disconnect();
-            } catch {
-              // not connected
-            }
-          }
-        }
-      }
-    }
-    throw new Error(errors.filter(Boolean).join(' | ') || 'reverse capture failed');
-  }
-
-  return {
-    input,
-    output,
-    setWet(amount) {
-      const next = clampFx(amount);
-      if (next > 0.001 && !processor) {
-        try {
-          ensureCapture();
-        } catch {
-          dry.gain.rampTo(1, 0.03);
-          wet.gain.rampTo(0, 0.03);
-          mix = 0;
-          return 0;
-        }
-      }
-      mix = next;
-      dry.gain.value = 1 - next;
-      wet.gain.value = next;
-      dry.gain.rampTo(1 - next, 0.03);
-      wet.gain.rampTo(next, 0.03);
-      return next;
-    },
-    dispose() {
-      mix = 0;
-      if (processor) {
-        processor.onaudioprocess = null;
-        try {
-          processor.disconnect();
-        } catch {
-          // already disconnected
-        }
-      }
-      try {
-        sink?.disconnect();
-      } catch {
-        // already disconnected
-      }
-      for (const source of sources) {
-        try {
-          source.stop();
-          source.disconnect();
-        } catch {
-          // already stopped
-        }
-      }
-      sources.clear();
-      wet.dispose();
-      dry.dispose();
-      input.dispose();
-      output.dispose();
-    },
-  };
 }
 
 export function clampFx(value) {
@@ -429,10 +189,10 @@ export function createInstrumentBus(tone, lite) {
     nodes.push(node);
     return node;
   };
-  const finish = (instrument, node, { darken = false } = {}) => {
+  const finish = (instrument, node, { darkenDb = 0 } = {}) => {
     let last = node;
-    if (darken) {
-      const shelf = keep(new tone.Filter({ type: 'highshelf', frequency: 2200, gain: -8, Q: 0.7 }));
+    if (darkenDb) {
+      const shelf = keep(new tone.Filter({ type: 'highshelf', frequency: 2200, gain: darkenDb, Q: 0.7 }));
       last.connect(shelf);
       last = shelf;
     }
@@ -441,23 +201,25 @@ export function createInstrumentBus(tone, lite) {
     last.connect(audible);
     audible.connect(mix);
   };
+  /** The pad keeps a lighter veil than the rest — a cleaner, more open top. */
+  const DARKEN_DB = { pad: -4.5, organ: -8, kalimba: -8, synth: -8 };
   const chain = (instrument, input, ...rest) => {
     let previous = input;
     for (const node of rest) {
       previous.connect(node);
       previous = node;
     }
-    finish(instrument, previous, { darken: instrument !== 'bass' });
+    finish(instrument, previous, { darkenDb: DARKEN_DB[instrument] ?? 0 });
   };
 
   /** Series effects only. Reverbs moved to sends: a send never ducks the
    * dry path, so reverb/room amounts are not part of the makeup model. */
   const wetNow = {
-    pad: { delay: 0, chorus: 0 },
-    bass: { drive: 0, slap: 0 },
-    organ: { chorus: 0, vibrato: 0 },
-    kalimba: { delay: 0, reverse: 0 },
-    synth: { delay: 0, chorus: 0 },
+    pad: { chorus: 0 },
+    bass: { drive: 0 },
+    organ: { chorus: 0 },
+    kalimba: { delay: 0 },
+    synth: { chorus: 0 },
   };
   const makeup = {};
   const punch = (instrument) => {
@@ -483,48 +245,31 @@ export function createInstrumentBus(tone, lite) {
 
   const padIn = keep(new tone.Gain(1));
   /** Null in lite: instruments run dry — only the bass cutoff survives. */
-  const padDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.28, wet: 0 }));
   const padChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 0.35, delayTime: 3.2, depth: 0.45, wet: 0 }));
   if (typeof padChorus?.start === 'function') padChorus.start();
-  chain('pad', padIn, ...[padDelay, padChorus].filter(Boolean), makeUp('pad'));
+  chain('pad', padIn, ...[padChorus].filter(Boolean), makeUp('pad'));
 
   const bassIn = keep(new tone.Gain(1));
   /** Null in lite: distortion is off by default, so the node is never built. */
   const bassDrive = liteFx ? null : keep(new tone.Distortion({ distortion: 0.4, wet: 0, oversample: '2x' }));
   const bassFilter = keep(new tone.Filter({ type: 'lowpass', frequency: 750, Q: 0.5, rolloff: -24 }));
-  const bassSlap = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '16n', feedback: 0.18, wet: 0 }));
-  chain('bass', bassIn, ...[bassDrive, bassFilter, bassSlap].filter(Boolean), makeUp('bass'));
+  chain('bass', bassIn, ...[bassDrive, bassFilter].filter(Boolean), makeUp('bass'));
 
   const organIn = keep(new tone.Gain(1));
   /** Null in lite: chorus is off by default — the organ keeps only its room send. */
   const organChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 1.6, delayTime: 3.4, depth: 0.65, wet: 0 }));
   if (typeof organChorus?.start === 'function') organChorus.start();
-  const organVibrato = liteFx ? null : keep(new tone.Vibrato({ frequency: 5.2, depth: 0.18, wet: 0 }));
-  chain('organ', organIn, ...[organChorus, organVibrato].filter(Boolean), makeUp('organ'));
+  chain('organ', organIn, ...[organChorus].filter(Boolean), makeUp('organ'));
 
   const kalimbaIn = keep(new tone.Gain(1));
-  /** Null in lite: the delay is off by default, and the ScriptProcessor
-   * reverse burns an audio callback on every buffer even at wet 0 — both
-   * nodes are skipped entirely. */
+  /** Null in lite: the delay is off by default, so the node is skipped. */
   const kalimbaDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: 0.16, feedback: 0.22, wet: 0 }));
-  let kalimbaReverse = null;
-  const kalimbaMakeup = makeUp('kalimba');
-  if (liteFx) {
-    kalimbaIn.connect(kalimbaMakeup);
-  } else {
-    kalimbaIn.connect(kalimbaDelay);
-    kalimbaReverse = createTailReverse(tone);
-    nodes.push(kalimbaReverse);
-    kalimbaDelay.connect(kalimbaReverse.input);
-    kalimbaReverse.output.connect(kalimbaMakeup);
-  }
-  finish('kalimba', kalimbaMakeup, { darken: true });
+  chain('kalimba', kalimbaIn, ...[kalimbaDelay].filter(Boolean), makeUp('kalimba'));
 
   const synthIn = keep(new tone.Gain(1));
-  const synthDelay = liteFx ? null : keep(new tone.FeedbackDelay({ delayTime: '8n', feedback: 0.2, wet: 0 }));
   const synthChorus = liteFx ? null : keep(new tone.Chorus({ frequency: 1.8, delayTime: 3.5, depth: 0.7, wet: 0 }));
   if (typeof synthChorus?.start === 'function') synthChorus.start();
-  chain('synth', synthIn, ...[synthDelay, synthChorus].filter(Boolean), makeUp('synth'));
+  chain('synth', synthIn, ...[synthChorus].filter(Boolean), makeUp('synth'));
 
   /** Send taps sit after the audible gate: muting a voice also starves its
    * tail, and the send inherits level/makeup/darken like the dry path. */
@@ -546,13 +291,6 @@ export function createInstrumentBus(tone, lite) {
         const wet = blend([0, 0.34, 0.62], amount);
         padSend.gain.rampTo(sendLevel(wet, 'reverb'), 0.06);
       },
-      delay: (amount) => {
-        if (!padDelay) return;
-        const wet = blend([0, 0.22, 0.46], amount);
-        wetNow.pad.delay = wet;
-        padDelay.wet.rampTo(wet, 0.06);
-        punch('pad');
-      },
       chorus: (amount) => {
         if (!padChorus) return;
         const wet = blend([0, 0.28, 0.55], amount);
@@ -571,13 +309,6 @@ export function createInstrumentBus(tone, lite) {
         punch('bass');
       },
       cutoff: (amount) => bassFilter.frequency.rampTo(blend([8000, 900, 280], amount), 0.05),
-      slap: (amount) => {
-        if (!bassSlap) return;
-        const wet = blend([0, 0.18, 0.4], amount);
-        wetNow.bass.slap = wet;
-        bassSlap.wet.rampTo(wet, 0.05);
-        punch('bass');
-      },
     },
     organ: {
       chorus: (amount) => {
@@ -585,13 +316,6 @@ export function createInstrumentBus(tone, lite) {
         const wet = blend([0, 0.4, 0.7], amount);
         wetNow.organ.chorus = wet;
         organChorus.wet.rampTo(wet, 0.06);
-        punch('organ');
-      },
-      vibrato: (amount) => {
-        if (!organVibrato) return;
-        const wet = blend([0, 0.28, 0.55], amount);
-        wetNow.organ.vibrato = wet;
-        organVibrato.wet.rampTo(wet, 0.06);
         punch('organ');
       },
       room: (amount) => {
@@ -613,25 +337,12 @@ export function createInstrumentBus(tone, lite) {
         const wet = blend([0, 0.18, 0.4], amount);
         kalimbaSend.gain.rampTo(sendLevel(wet, 'reverb'), 0.05);
       },
-      reverse: (amount) => {
-        if (!kalimbaReverse) return;
-        const wet = kalimbaReverse.setWet(amount);
-        wetNow.kalimba.reverse = wet;
-        punch('kalimba');
-      },
     },
     synth: {
       room: (amount) => {
         if (!synthSend) return;
         const wet = blend([0, 0.28, 0.5], amount);
         synthSend.gain.rampTo(sendLevel(wet, 'room'), 0.06);
-      },
-      delay: (amount) => {
-        if (!synthDelay) return;
-        const wet = blend([0, 0.16, 0.36], amount);
-        wetNow.synth.delay = wet;
-        synthDelay.wet.rampTo(wet, 0.06);
-        punch('synth');
       },
       chorus: (amount) => {
         if (!synthChorus) return;
@@ -675,11 +386,11 @@ export function createInstrumentBus(tone, lite) {
 }
 
 /**
- * Drum-only distortion, cutoff and a small room. Not wired to the synth.
- * Lite (`reducedFx`) drops the waveshaper and the convolver — the last two
- * heavy nodes on the chain: a fixed highshelf stands in for the drive's
- * harmonics, and the makeup gain is baked at the default drive/room wets,
- * so the kit keeps its brightness and level with no FX controls to feed.
+ * Drum chain: highshelf, cutoff, a small room (full only). Not wired to the
+ * synth. The waveshaper is gone from both rigs — a fixed highshelf stands in
+ * for the drive's harmonics and the makeup keeps its old drive wet (0.4)
+ * baked in, so the kit keeps the brightness and level the distortion gave.
+ * Lite additionally drops the room convolver.
  */
 export function createDrumBus(tone, lite) {
   const liteFx = Boolean(lite?.reducedFx);
@@ -687,15 +398,18 @@ export function createDrumBus(tone, lite) {
   const output = new tone.Gain(1);
   const audible = new tone.Gain(1);
   const makeup = new tone.Gain(1);
-  const drive = liteFx ? null : new tone.Distortion({ distortion: 0.35, wet: 0, oversample: '2x' });
-  /** Lite only: cheap brightness to replace the drive's added harmonics. */
-  const air = liteFx ? new tone.Filter({ type: 'highshelf', frequency: 3000, gain: 1.5 }) : null;
+  /** Cheap brightness to replace the drive's added harmonics. */
+  const air = new tone.Filter({ type: 'highshelf', frequency: 3000, gain: 1.5 });
   const filter = new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
   const room = liteFx ? null : new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
-  const wetNow = { drive: 0, room: 0 };
-  const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow), 0.05);
+  /** The drive wet stays baked at its old default — the node is gone but its
+   * level compensation still belongs in the makeup math. */
+  const wetNow = { drive: 0.4, room: 0 };
+  /** 0.93 trims the baked lift to the measured level of the old clipped path
+   * (scripts/balance/drum-lite-check.mjs). */
+  const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow) * 0.93, 0.05);
   let head = input;
-  for (const node of [drive, air, filter, room]) {
+  for (const node of [air, filter, room]) {
     if (!node) continue;
     head.connect(node);
     head = node;
@@ -703,30 +417,17 @@ export function createDrumBus(tone, lite) {
   head.connect(makeup);
   makeup.connect(audible);
   audible.connect(output);
-  if (liteFx) {
-    // The default wet mix (drive 0.4, room 0.17) gets this makeup in the full
-    // rig; the dry lite chain bakes a slightly softer lift — measured against
-    // the full bus, matching its RMS without pushing the unclipped peaks as
-    // high (scripts/balance/drum-lite-check.mjs).
-    makeup.gain.value = makeupFromWets({ drive: 0.4, room: 0.17 }) * 0.93;
-  }
+  makeup.gain.value = makeupFromWets(wetNow) * 0.93;
   const apply = {
-    drive: (amount) => {
-      if (!drive) return;
-      drive.distortion = blend([0, 0.35, 0.7], amount);
-      const wet = blend([0, 0.4, 0.75], amount);
-      wetNow.drive = wet;
-      drive.wet.rampTo(wet, 0.05);
-      punch();
-    },
     cutoff: (amount) => {
       filter.frequency.rampTo(blend([14000, 4200, 900], amount), 0.05);
     },
     room: (amount) => {
-      if (!room) return;
       const wet = blend([0, 0.16, 0.34], amount);
+      // Track the wet even without the node — lite still counts it in the
+      // baked makeup so the kit keeps the level the room used to cost.
       wetNow.room = wet;
-      room.wet.rampTo(wet, 0.05);
+      room?.wet.rampTo(wet, 0.05);
       punch();
     },
   };
@@ -743,7 +444,7 @@ export function createDrumBus(tone, lite) {
       audible.gain.rampTo(heard ? 1 : 0, 0.03);
     },
     dispose() {
-      for (const node of [drive, air, filter, room, makeup, audible, input, output]) node?.dispose?.();
+      for (const node of [air, filter, room, makeup, audible, input, output]) node?.dispose?.();
     },
   };
 }

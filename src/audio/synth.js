@@ -697,7 +697,7 @@ export class TouchSynth {
       pad: createGlideVoice(
         this.#tone,
         {
-          oscillator: { type: 'fatsine', count: fat || 3, spread: 18 },
+          oscillator: { type: 'fatsine', count: fat || 3, spread: 12 },
           envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: padRelease },
           volume: -4,
         },

@@ -1,8 +1,9 @@
 /**
- * Lite drum-bus balance check. Renders the same 808 pattern through the full
- * drum bus (default drive/room wets applied) and through the lite bus, then
- * prints peak/RMS plus the air-band energy so the lite makeup can be tuned to
- * match the level and brightness the distortion added.
+ * Drum-bus balance check. Renders the same 808 pattern through the full drum
+ * bus (default wets applied — the highshelf stands in for the old distortion)
+ * and through the lite bus, then prints peak/RMS plus the air-band energy so
+ * the lite makeup can be tuned to match the level and brightness the
+ * distortion used to add.
  *
  * Usage: node scripts/balance/drum-lite-check.mjs [base-url]
  */
@@ -77,9 +78,10 @@ try {
         for (const track of Object.keys(PATTERN)) {
           for (const step of PATTERN[track]) drums.setStep(track, step, true);
         }
-        if (!lite) {
-          for (const [id, amount] of Object.entries(defaultFxState().drums)) drumsFx.setEffect(id, amount);
-        }
+        // Apply the same default state a real session would — in lite the
+        // room handler still counts the wet in the baked makeup even though
+        // the convolver itself is missing.
+        for (const [id, amount] of Object.entries(defaultFxState().drums)) drumsFx.setEffect(id, amount);
         drums.start();
         Tone.getTransport().bpm.value = 96;
         Tone.getTransport().start(0);
