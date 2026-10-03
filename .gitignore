@@ -5,3 +5,6 @@ npm-debug.log*
 
 # generated screenshot artifacts
 scripts/shots/
+
+# Windows redirect artifact (`>nul` creating a real file)
+nul

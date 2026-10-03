@@ -75,10 +75,17 @@ try {
     code: document.getElementById('host-code')?.textContent,
   })`);
   const fullInstFx = await hostFx(full, 'pad');
-  console.log('full host:', JSON.stringify({ ...fullUi, instFx: fullInstFx }));
+  const fullMaster = await full.evaluate(`(() => {
+    document.getElementById('btn-master')?.click();
+    const n = document.querySelectorAll('#host-master-sliders .fx-slider').length;
+    document.getElementById('host-master-sheet').hidden = true;
+    return n;
+  })()`);
+  console.log('full host:', JSON.stringify({ ...fullUi, instFx: fullInstFx, masterSliders: fullMaster }));
   if (fullUi.pillHidden !== true) errors.push('full host: lite pill visible');
   if (fullInstFx.fx.length !== 3) errors.push(`full host: expected 3 pad fx sliders, got ${JSON.stringify(fullInstFx)}`);
   if (fullUi.drumFx !== 3) errors.push(`full host: expected 3 drum fx sliders, got ${fullUi.drumFx}`);
+  if (fullMaster !== 3) errors.push(`full host: expected 3 master sliders, got ${fullMaster}`);
   if (!fullUi.qr) errors.push('full host: QR image was never painted');
   if (!/^[A-Z2-9]{4}$/.test(fullUi.code || '')) errors.push(`full host: bad session code "${fullUi.code}"`);
   await full.close();
@@ -93,6 +100,12 @@ try {
     drumFx: [...document.querySelectorAll('#host-drum-fx .fx-slider')].length,
     moreVisible: [...document.querySelectorAll('#instrument-row .inst-card__more')]
       .filter((b) => getComputedStyle(b).display !== 'none').length,
+    masterSliders: (() => {
+      document.getElementById('btn-master')?.click();
+      const n = document.querySelectorAll('#host-master-sliders .fx-slider').length;
+      document.getElementById('host-master-sheet').hidden = true;
+      return n;
+    })(),
   })`);
   console.log('lite host:', JSON.stringify(liteUi));
   if (liteUi.pillHidden !== false) errors.push('lite host: lite pill hidden');
@@ -106,6 +119,9 @@ try {
   }
   if (liteUi.drumFx !== 0) {
     errors.push(`lite host: expected no drum fx sliders, got ${liteUi.drumFx}`);
+  }
+  if (liteUi.masterSliders !== 1) {
+    errors.push(`lite host: expected only the volume master slider, got ${liteUi.masterSliders}`);
   }
   if (liteUi.moreVisible !== 5) errors.push(`lite host: MORE buttons must stay for volume/octave, got ${liteUi.moreVisible}`);
   // Kalimba must lose the ScriptProcessor reverse entirely.
@@ -150,6 +166,12 @@ try {
       isLite: document.getElementById('controller-screen')?.classList.contains('is-lite'),
       moreVisible: [...document.querySelectorAll('#controller-instruments .inst-card__more')]
         .filter((b) => getComputedStyle(b).display !== 'none').length,
+      masterSliders: (() => {
+        document.getElementById('controller-master')?.click();
+        const n = document.querySelectorAll('#controller-master-sliders .fx-slider').length;
+        document.getElementById('controller-master-sheet').hidden = true;
+        return n;
+      })(),
     };
   })()`);
   console.log('guest on lite host:', JSON.stringify(guestFx));
@@ -161,6 +183,7 @@ try {
   }
   if (guestFx.isLite !== true) errors.push('guest on lite host: missing .is-lite');
   if (guestFx.moreVisible !== 5) errors.push(`guest on lite host: MORE buttons must stay for volume/octave, got ${guestFx.moreVisible}`);
+  if (guestFx.masterSliders !== 1) errors.push(`guest on lite host: expected only the volume master slider, got ${guestFx.masterSliders}`);
   await guest.close();
   await lite.close();
 } finally {

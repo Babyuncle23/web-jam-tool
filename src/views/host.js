@@ -1080,42 +1080,21 @@ export async function createHostView({ lite } = {}) {
       row.append(name, input);
       rows.push(row);
     };
-    add(
-      'grit',
-      () => masterLabel('grit'),
-      Math.round(state.masterFx.grit * 100),
-      100,
-      1,
-      (value) => {
-        state.masterFx.grit = value / 100;
-        applyMasterFx();
-        publishHarmony();
-      },
-    );
-    add(
-      'wah',
-      () => masterLabel('wah'),
-      Math.round(state.masterFx.wah * 100),
-      100,
-      1,
-      (value) => {
-        state.masterFx.wah = value / 100;
-        applyMasterFx();
-        publishHarmony();
-      },
-    );
-    add(
-      'volume',
-      () => masterLabel('volume'),
-      Math.round(state.masterFx.volume * 100),
-      100,
-      1,
-      (value) => {
-        state.masterFx.volume = value / 100;
-        applyMasterFx();
-        publishHarmony();
-      },
-    );
+    // Lite builds no 8-bit/wah inserts — only the volume slider stays.
+    for (const key of lite ? ['volume'] : ['grit', 'wah', 'volume']) {
+      add(
+        key,
+        () => masterLabel(key),
+        Math.round(state.masterFx[key] * 100),
+        100,
+        1,
+        (value) => {
+          state.masterFx[key] = value / 100;
+          applyMasterFx();
+          publishHarmony();
+        },
+      );
+    }
     el.masterSliders.replaceChildren(...rows);
   }
 
@@ -2368,7 +2347,7 @@ export async function createHostView({ lite } = {}) {
     const partial = { engine };
     try {
       partial.bus = createInstrumentBus(engine.tone, lite);
-      partial.drumsFx = createDrumBus(engine.tone);
+      partial.drumsFx = createDrumBus(engine.tone, lite);
       partial.drums = new DrumMachine(engine);
       partial.synth = new TouchSynth(engine, partial.bus, {
         root: state.root,
@@ -2413,7 +2392,7 @@ export async function createHostView({ lite } = {}) {
         }
       }
 
-      /** Lite keeps the full kit — the FX cuts landed on the instruments. */
+      /** Lite still loads the full kit — only the drum FX chain is leaner. */
       const samples = partial.drums.loadSamples();
       const [sampleState] = await Promise.all([samples, partial.bus.ready, partial.drumsFx.ready, partial.sampler.ready]);
       for (const [id, octave] of Object.entries(state.octaves)) partial.synth.setInstrumentOctave(id, octave);
@@ -2441,7 +2420,7 @@ export async function createHostView({ lite } = {}) {
         'drums',
       );
       log(`Tone.js ${globalThis.Tone.version}, context ${engine.contextState} @ ${Math.round(engine.sampleRate / 100) / 10} kHz`, 'audio');
-      if (lite) log('lite mode — 24 kHz context, fewer voices, dry instruments, no reverb', 'audio');
+      if (lite) log('lite mode — 24 kHz context, fewer voices, dry instruments, EQ drums, no 8-bit/wah', 'audio');
       return sampleState;
     } catch (error) {
       disposePartial(partial);

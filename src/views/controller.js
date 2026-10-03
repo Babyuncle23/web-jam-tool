@@ -988,9 +988,8 @@ export async function createControllerView({ code, name } = {}) {
       row.append(name, input);
       rows.push(row);
     };
-    add('grit');
-    add('wah');
-    add('volume');
+    // A lite host has no 8-bit/wah inserts — only the volume slider stays.
+    for (const key of state.lite ? ['volume'] : ['grit', 'wah', 'volume']) add(key);
     el.masterSliders.replaceChildren(...rows);
   }
 

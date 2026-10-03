@@ -676,27 +676,43 @@ export function createInstrumentBus(tone, lite) {
 
 /**
  * Drum-only distortion, cutoff and a small room. Not wired to the synth.
- * Lite keeps the kit identical to full — the FX cuts landed on the
- * instrument bus instead.
+ * Lite (`reducedFx`) drops the waveshaper and the convolver — the last two
+ * heavy nodes on the chain: a fixed highshelf stands in for the drive's
+ * harmonics, and the makeup gain is baked at the default drive/room wets,
+ * so the kit keeps its brightness and level with no FX controls to feed.
  */
-export function createDrumBus(tone) {
+export function createDrumBus(tone, lite) {
+  const liteFx = Boolean(lite?.reducedFx);
   const input = new tone.Gain(1);
   const output = new tone.Gain(1);
   const audible = new tone.Gain(1);
   const makeup = new tone.Gain(1);
-  const drive = new tone.Distortion({ distortion: 0.35, wet: 0, oversample: '2x' });
+  const drive = liteFx ? null : new tone.Distortion({ distortion: 0.35, wet: 0, oversample: '2x' });
+  /** Lite only: cheap brightness to replace the drive's added harmonics. */
+  const air = liteFx ? new tone.Filter({ type: 'highshelf', frequency: 3000, gain: 1.5 }) : null;
   const filter = new tone.Filter({ type: 'lowpass', frequency: 14000, Q: 0.5, rolloff: -12 });
-  const room = new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
+  const room = liteFx ? null : new tone.Reverb({ decay: 0.9, wet: 0, preDelay: 0 });
   const wetNow = { drive: 0, room: 0 };
   const punch = () => makeup.gain.rampTo(makeupFromWets(wetNow), 0.05);
-  input.connect(drive);
-  drive.connect(filter);
-  filter.connect(room);
-  room.connect(makeup);
+  let head = input;
+  for (const node of [drive, air, filter, room]) {
+    if (!node) continue;
+    head.connect(node);
+    head = node;
+  }
+  head.connect(makeup);
   makeup.connect(audible);
   audible.connect(output);
+  if (liteFx) {
+    // The default wet mix (drive 0.4, room 0.17) gets this makeup in the full
+    // rig; the dry lite chain bakes a slightly softer lift — measured against
+    // the full bus, matching its RMS without pushing the unclipped peaks as
+    // high (scripts/balance/drum-lite-check.mjs).
+    makeup.gain.value = makeupFromWets({ drive: 0.4, room: 0.17 }) * 0.93;
+  }
   const apply = {
     drive: (amount) => {
+      if (!drive) return;
       drive.distortion = blend([0, 0.35, 0.7], amount);
       const wet = blend([0, 0.4, 0.75], amount);
       wetNow.drive = wet;
@@ -707,6 +723,7 @@ export function createDrumBus(tone) {
       filter.frequency.rampTo(blend([14000, 4200, 900], amount), 0.05);
     },
     room: (amount) => {
+      if (!room) return;
       const wet = blend([0, 0.16, 0.34], amount);
       wetNow.room = wet;
       room.wet.rampTo(wet, 0.05);
@@ -716,7 +733,7 @@ export function createDrumBus(tone) {
   return {
     input,
     output,
-    ready: room.ready ?? Promise.resolve(),
+    ready: room?.ready ?? Promise.resolve(),
     setEffect(id, value) {
       const amount = clampFx(value);
       apply[id]?.(amount);
@@ -726,13 +743,7 @@ export function createDrumBus(tone) {
       audible.gain.rampTo(heard ? 1 : 0, 0.03);
     },
     dispose() {
-      drive.dispose();
-      filter.dispose();
-      room.dispose();
-      makeup.dispose();
-      audible.dispose();
-      input.dispose();
-      output.dispose();
+      for (const node of [drive, air, filter, room, makeup, audible, input, output]) node?.dispose?.();
     },
   };
 }
@@ -770,9 +781,12 @@ export function masterHipassHz(amount) {
  * share one dry/wet gate and are never wet at once — the FX pad picks one by
  * which side of the Y middle the finger sits on. Both at 0 is a true bypass.
  * 8-bit stays at unity. Wah gets makeup because the bandpass would otherwise
- * duck the bus.
+ * duck the bus. Lite (`reducedFx`) ends the chain at the cutoff stage — the
+ * waveshaper and the bandpass are never built, and 8-bit/Wah controls are
+ * hidden on both host and guests.
  */
-export function createMasterFx(tone, bpm = 96) {
+export function createMasterFx(tone, bpm = 96, lite = null) {
+  const liteFx = Boolean(lite?.reducedFx);
   const input = new tone.Gain(1);
   const output = new tone.Gain(1);
   const live = new tone.Gain(1);
@@ -790,13 +804,14 @@ export function createMasterFx(tone, bpm = 96) {
   const hipass = new tone.Filter({ type: 'highpass', frequency: HIPASS_OPEN_HZ, Q: 0.7, rolloff: -24 });
   let cutAmount = 0;
   let hpAmount = 0;
-  const crushDry = new tone.Gain(1);
-  const crushWet = new tone.Gain(0);
-  const crusher = new tone.WaveShaper((value) => value, 2048);
-  const wahDry = new tone.Gain(1);
-  const wahWet = new tone.Gain(0);
-  const wahLift = new tone.Gain(1);
-  const wah = new tone.Filter({ type: 'bandpass', frequency: 800, Q: 5, rolloff: -12 });
+  /** Null in lite: the 8-bit and wah inserts do not exist there. */
+  const crushDry = liteFx ? null : new tone.Gain(1);
+  const crushWet = liteFx ? null : new tone.Gain(0);
+  const crusher = liteFx ? null : new tone.WaveShaper((value) => value, 2048);
+  const wahDry = liteFx ? null : new tone.Gain(1);
+  const wahWet = liteFx ? null : new tone.Gain(0);
+  const wahLift = liteFx ? null : new tone.Gain(1);
+  const wah = liteFx ? null : new tone.Filter({ type: 'bandpass', frequency: 800, Q: 5, rolloff: -12 });
   /** Crusher curve cache — applyMasterFx re-enters setCrush on every patch. */
   let crushGrit = -1;
 
@@ -811,20 +826,26 @@ export function createMasterFx(tone, bpm = 96) {
   cutoff.connect(cutWet);
   post.connect(hipass);
   hipass.connect(hpWet);
-  cutDry.connect(crushDry);
-  cutWet.connect(crushDry);
-  hpWet.connect(crushDry);
-  cutDry.connect(crusher);
-  cutWet.connect(crusher);
-  crusher.connect(crushWet);
-  crushDry.connect(wahDry);
-  crushWet.connect(wahDry);
-  crushDry.connect(wah);
-  crushWet.connect(wah);
-  wah.connect(wahLift);
-  wahLift.connect(wahWet);
-  wahDry.connect(output);
-  wahWet.connect(output);
+  if (liteFx) {
+    cutDry.connect(output);
+    cutWet.connect(output);
+    hpWet.connect(output);
+  } else {
+    cutDry.connect(crushDry);
+    cutWet.connect(crushDry);
+    hpWet.connect(crushDry);
+    cutDry.connect(crusher);
+    cutWet.connect(crusher);
+    crusher.connect(crushWet);
+    crushDry.connect(wahDry);
+    crushWet.connect(wahDry);
+    crushDry.connect(wah);
+    crushWet.connect(wah);
+    wah.connect(wahLift);
+    wahLift.connect(wahWet);
+    wahDry.connect(output);
+    wahWet.connect(output);
+  }
 
   let tempo = bpm;
   let division = '16n';
@@ -955,6 +976,7 @@ export function createMasterFx(tone, bpm = 96) {
       return value;
     },
     setCrush(amount) {
+      if (!crusher) return 0;
       const grit = clampFx(amount);
       if (grit !== crushGrit) {
         crushGrit = grit;
@@ -973,6 +995,7 @@ export function createMasterFx(tone, bpm = 96) {
       return grit;
     },
     setWah(amount) {
+      if (!wah) return 0;
       const value = clampFx(amount);
       if (value < 0.001) {
         wahWet.gain.value = 0;
@@ -989,7 +1012,7 @@ export function createMasterFx(tone, bpm = 96) {
     dispose() {
       release();
       for (const node of [input, output, live, grab, repeat, post, delay, cutDry, cutWet, cutoff, hpWet, hipass, crushDry, crushWet, crusher, wahDry, wahWet, wahLift, wah]) {
-        node.dispose?.();
+        node?.dispose?.();
       }
     },
   };

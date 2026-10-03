@@ -34,6 +34,17 @@ async function audioInfo(page) {
   })`);
 }
 
+/** The back button only fires on a ~700 ms hold or a second tap — a bare
+ * .click() never navigates. */
+async function holdBack(page) {
+  const el = await page.$('[data-action="back"]');
+  const box = await el.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await sleep(800);
+  await page.mouse.up();
+}
+
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: 'new',
@@ -61,7 +72,7 @@ try {
   console.log('lite #1:', JSON.stringify(lite1));
 
   // 2) back → full: the lite context must be replaced by a device-rate one.
-  await page.click('[data-action="back"]');
+  await holdBack(page);
   await pollExpr(page, '({ ok: document.body.dataset.view === "role" })');
   await page.evaluate(`(document.getElementById('role-lite').checked = false)`);
   await page.click('#btn-role-host');
@@ -72,7 +83,7 @@ try {
   console.log('full after lite:', JSON.stringify(full));
 
   // 3) back → lite again: reuse the cached lite context — no growth.
-  await page.click('[data-action="back"]');
+  await holdBack(page);
   await pollExpr(page, '({ ok: document.body.dataset.view === "role" })');
   await page.evaluate(`(document.getElementById('role-lite').checked = true)`);
   await page.click('#btn-role-host');

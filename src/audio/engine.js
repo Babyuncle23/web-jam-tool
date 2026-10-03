@@ -141,7 +141,7 @@ export class AudioEngine {
        * often and a weak CPU gets jitter headroom, at ~30 ms more latency. */
       const ahead = this.#lite?.wideLookAhead ? 0.05 : 0.02;
       if (Number(context.lookAhead) !== ahead) context.lookAhead = ahead;
-      this.#masterFx = createMasterFx(this.#tone, this.#bpm);
+      this.#masterFx = createMasterFx(this.#tone, this.#bpm, this.#lite);
       this.#compressor.connect(this.#masterFx.input);
       this.#masterFx.output.connect(this.#limiter);
       this.#master = new this.#tone.Gain(DEFAULT_MASTER_GAIN).connect(this.#compressor);
