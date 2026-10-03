@@ -233,6 +233,34 @@ body[data-view='controller'] {
   display: block;
 }
 
+/* While the QR library downloads, the box shows a spinner instead of a
+   blank white square — the QR used to pop in with no hint it was coming. */
+.qr-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px;
+  line-height: 1.2;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.qr-loading::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid rgb(var(--ink-rgb) / 0.18);
+  border-top-color: var(--ink);
+  animation: splash-spin 0.8s linear infinite;
+}
+
 .join-form {
   display: flex;
   flex-direction: column;
@@ -861,6 +889,12 @@ input[type='range'] {
 .inst-carousel__name {
   flex: 1 1 auto;
   cursor: default;
+}
+
+/* In the export sheet the format name is the action button, not a label. */
+.export-format .inst-carousel__name {
+  cursor: pointer;
+  justify-content: center;
 }
 
 .drum-sec__row {
@@ -1726,6 +1760,7 @@ input[type='range'] {
 .seq-row[data-track='clap'] { --row: #e07a3d; }
 .seq-row[data-track='tom'] { --row: #7a4ea3; }
 .seq-row[data-track='cowbell'] { --row: #3a6ea5; }
+.seq-row[data-track='rimshot'] { --row: #c14f8f; }
 
 .seq-row[data-track] .seq-row__label {
   background: var(--row-soft);
@@ -2614,6 +2649,13 @@ input[type='range'] {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+/* The pick chip stays transparent when the card is on, so the generic
+   is-on rule that dims a swatch onto --bg-elevated would erase the
+   instrument colour here — the square keeps --chip inside cards. */
+.inst-card .chip.is-on.has-swatch::before {
+  background: var(--chip, var(--sun));
 }
 
 .inst-card__mix {

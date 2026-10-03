@@ -36,8 +36,13 @@ async function renderShareQr(box) {
   const url = new URL(location.href);
   url.search = '';
   url.hash = '';
+  // Same trick as the host QR: the CDN script can take seconds, so the box
+  // shows a spinner instead of sitting blank.
+  box.classList.add('qr-loading');
+  box.textContent = 'QR';
   try {
     const QRCode = await loadQrLibrary();
+    box.classList.remove('qr-loading');
     box.replaceChildren();
     new QRCode(box, {
       text: url.toString(),
@@ -58,6 +63,7 @@ async function renderShareQr(box) {
       box.replaceChildren(img);
     }
   } catch {
+    box.classList.remove('qr-loading');
     box.textContent = url.toString();
   }
 }

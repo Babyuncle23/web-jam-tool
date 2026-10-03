@@ -38,6 +38,7 @@ export const TRACKS = [
   { id: 'openhat', label: 'Open Hat', shortLabel: 'oh', bank: 'extra' },
   { id: 'tom', label: 'Tom', shortLabel: 'tm', bank: 'extra' },
   { id: 'cowbell', label: 'Cowbell', shortLabel: 'cb', bank: 'extra' },
+  { id: 'rimshot', label: 'Rimshot', shortLabel: 'rs', bank: 'extra' },
 ];
 
 /**
@@ -65,6 +66,7 @@ export const SAMPLE_URLS = {
   tom: `${SAMPLE_CDN}/MT/MT25.WAV`,
   cowbell: `${SAMPLE_CDN}/CB/CB.WAV`,
   clap: `${SAMPLE_CDN}/CP/CP.WAV`,
+  rimshot: `${SAMPLE_CDN}/RS/RS.WAV`,
 };
 
 /**
@@ -81,6 +83,7 @@ const SAMPLE_GAIN = {
   tom: 0.78,
   cowbell: 0.62,
   clap: 0.45,
+  rimshot: 0.58,
 };
 
 /**
@@ -157,6 +160,48 @@ export const DRUM_PRESETS = {
     id: 'offbeat',
     label: 'Offbeat',
     pattern: { kick: [0, 8], snare: [4, 12], hat: [2, 6, 10, 14], clap: [12], openhat: [6, 14], tom: [10], cowbell: [] },
+  },
+  drill: {
+    id: 'drill',
+    label: 'Drill',
+    span: 32,
+    repeat: 2,
+    pattern: {
+      // UK drill: hats run the tresillo 3+3+2 (0,3,6 | 8,11,14 per bar)
+      // with a triplet roll closing each bar. The snare sits on beat 3
+      // with a pickup on the back half of bar two, kicks stagger around
+      // the backbeat, rimshot ticks answer the snare.
+      kick: [0, 6, 10, 16, 22, 27],
+      snare: [8, 24, 30],
+      hat: [
+        0, 3, 6, 8, 11, 14, { s: 15, d: 3 },
+        16, 19, 22, 24, 27, 30, { s: 31, d: 3 },
+      ],
+      clap: [],
+      openhat: [14, 26],
+      tom: [],
+      cowbell: [],
+      rimshot: [3, 19, 28],
+    },
+  },
+  dnb: {
+    id: 'dnb',
+    label: 'DnB',
+    title: 'Drum & Bass',
+    pattern: {
+      // One bar: kick only on the 1, backbeat snare on 2 and again on the
+      // 'and' after 3, ghost notes ride the clap voice in the 16th pockets
+      // (the grid has no velocity, so the ghost lane borrows the clap),
+      // hats on 8ths.
+      kick: [0],
+      snare: [4, 10],
+      hat: [0, 2, 4, 6, 8, 10, 12, 14],
+      clap: [7, 9, 13, 15],
+      openhat: [],
+      tom: [],
+      cowbell: [],
+      rimshot: [],
+    },
   },
   jersey: {
     id: 'jersey',
@@ -343,6 +388,20 @@ export class DrumMachine {
       resonance: 800,
       octaves: 0.4,
       volume: -20,
+    }).connect(this.#output);
+
+    /**
+     * Rimshot: a hard woody tick, not a ring — the shortest MetalSynth
+     * decay in the kit, tuned high with a small octave drop so it reads
+     * as a stick on the rim instead of a bell.
+     */
+    this.#voices.rimshot = new this.#tone.MetalSynth({
+      envelope: { attack: 0.001, decay: 0.035, release: 0.005 },
+      harmonicity: 6.4,
+      modulationIndex: 28,
+      resonance: 1800,
+      octaves: 0.5,
+      volume: -14,
     }).connect(this.#output);
 
     for (const [track, steps] of Object.entries(pattern)) {
@@ -657,6 +716,7 @@ export class DrumMachine {
     else if (track === 'tom') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('B2'), time));
     else if (track === 'cowbell') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G5'), time));
     else if (track === 'clap') this.#retriggerSynth(voice, time, () => voice.triggerAttack(time));
+    else if (track === 'rimshot') this.#retriggerSynth(voice, time, () => voice.triggerAttack(this.#pitched('G6'), time));
   }
 
   #tick(time, step) {

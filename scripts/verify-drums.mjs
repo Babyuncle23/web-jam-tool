@@ -69,7 +69,7 @@ try {
   const guestSees = await pollExpr(guest, `(() => {
     const on = document.querySelectorAll('#controller-sequencer .step.is-on').length;
     const rows = document.querySelectorAll('#controller-sequencer .seq-row[data-track]').length;
-    return { ok: on > 5 && rows === 7, on, rows };
+    return { ok: on > 5 && rows === 8, on, rows };
   })()`);
   console.log('guest sees host grid:', JSON.stringify(guestSees));
 

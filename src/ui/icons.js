@@ -45,6 +45,9 @@ const PATHS = {
     'M4.6 7.2v8.2c0 2 3.3 3.4 7.4 3.4s7.4-1.4 7.4-3.4V7.2z' +
     'M10.8 18.6h2.4v3.2h-2.4zM7.2 21.2h9.6v1.6H7.2z',
   cowbell: 'M9.4 1.6h5.2v3H9.4zM6.2 5h11.6l2.8 15.4H3.4zM8.2 14.6h7.6v2.4H8.2z',
+  rimshot:
+    'M12 22.4a10.4 10.4 0 1 1 0-20.8 10.4 10.4 0 0 1 0 20.8zM12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16z' +
+    'M0.65 2.35 2.35 0.65l6.5 6.5-1.7 1.7z',
   reverb:
     'M2 9.2h4.2L11.2 4.2v15.6L6.2 14.8H2z' +
     'M13.5 8.7c1.7 1 2.8 2.2 2.8 3.3s-1.1 2.3-2.8 3.3c-.5.3-1.1-.1-1.1-.7 1.1-.8 1.8-1.6 1.8-2.6s-.7-1.8-1.8-2.6c0-.6.6-1 1.1-.7z' +
@@ -98,7 +101,7 @@ const PATHS = {
 /** The loop icon's center pip — its own node so .is-on can paint it red. */
 const LOOP_DOT = 'M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 1 1 0-5z';
 
-const EVENODD = new Set(['kick', 'cowbell', 'bass', 'room', 'loop', 'erase', 'scissors']);
+const EVENODD = new Set(['kick', 'cowbell', 'rimshot', 'bass', 'room', 'loop', 'erase', 'scissors']);
 const FILLED = new Set(Object.keys(PATHS));
 
 function svgEl(name) {

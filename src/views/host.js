@@ -5,7 +5,7 @@
  */
 
 import { AudioEngine, DEFAULT_MASTER_GAIN } from '../audio/engine.js';
-import { buildLoopMidi, readRepeats, renderLoopWav, saveBlob } from '../audio/export-loop.js';
+import { buildLoopMidi, exportFile, mp3Bytes, readRepeats, renderLoopAudio, wavBytes } from '../audio/export-loop.js';
 import { DrumMachine, STEPS, TRACKS, DRUM_PRESETS, tileCells, repeatTargets, repeatSpanSteps } from '../audio/drums.js';
 import {
   INSTRUMENT_COLORS,
@@ -67,6 +67,8 @@ import { JamSocket, EVENTS, isLocalHostname } from '../network/socket.js';
 import { loadScript } from '../network/load-script.js';
 
 const QR_SRC = 'https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs@master/qrcode.min.js';
+const LAME_SRC = 'https://cdn.jsdelivr.net/npm/@breezystack/lamejs@1.2.7/dist/lamejs.iife.js';
+const EXPORT_FORMATS = ['wav', 'mp3'];
 const LOG_LIMIT = 6;
 const STEP_GAP = 3;
 
@@ -2631,7 +2633,27 @@ export async function createHostView({ lite } = {}) {
   el.exportClose?.addEventListener('click', () => {
     el.exportSheet.hidden = true;
   });
-  el.exportMidi?.addEventListener('click', () => {
+  /* Audio export format cycles through EXPORT_FORMATS on the ‹ › arrows;
+     the middle button is both the label and the action. `pendingExport`
+     holds rendered bytes when the share sheet lost its user activation —
+     the button then reads "Tap to save" and the next tap retries. */
+  let exportFormat = EXPORT_FORMATS[0];
+  let pendingExport = null;
+  function paintExportFormat() {
+    if (el.exportWav) el.exportWav.textContent = exportFormat.toUpperCase();
+  }
+  el.exportSheet?.addEventListener('click', (event) => {
+    const arrow = event.target.closest('[data-export-cycle]');
+    if (!arrow) return;
+    const index = EXPORT_FORMATS.indexOf(exportFormat);
+    const next = (index + Number(arrow.dataset.exportCycle) + EXPORT_FORMATS.length) % EXPORT_FORMATS.length;
+    exportFormat = EXPORT_FORMATS[next];
+    pendingExport = null;
+    paintExportFormat();
+  });
+  paintExportFormat();
+
+  el.exportMidi?.addEventListener('click', async () => {
     const repeats = readRepeats(el.exportRepeats.value);
     if (!repeats) {
       showExportError('Use a whole number of repeats from 1 to 128.');
@@ -2639,9 +2661,22 @@ export async function createHostView({ lite } = {}) {
     }
     showExportError('');
     const bytes = buildLoopMidi({ ...exportSnapshot(), repeats });
-    saveBlob(bytes, 'jam-loop.mid', 'audio/midi');
+    await exportFile(bytes, 'jam-loop.mid', 'audio/midi');
   });
   el.exportWav?.addEventListener('click', async () => {
+    // The share sheet lost its activation on the first try: this tap is a
+    // fresh gesture, so save the already-rendered bytes — no re-render.
+    if (pendingExport) {
+      const pending = pendingExport;
+      const result = await exportFile(pending.bytes, pending.filename, pending.mime);
+      if (result === 'retry') {
+        el.exportWav.textContent = 'Tap to save';
+        return;
+      }
+      pendingExport = null;
+      paintExportFormat();
+      return;
+    }
     const repeats = readRepeats(el.exportRepeats.value);
     if (!repeats) {
       showExportError('Use a whole number of repeats from 1 to 128.');
@@ -2651,22 +2686,41 @@ export async function createHostView({ lite } = {}) {
       showExportError('Tone.js is not loaded yet.');
       return;
     }
+    const format = exportFormat;
     showExportError('');
     setControlEnabled(el.exportWav, false);
-    const previous = el.exportWav.textContent;
     el.exportWav.textContent = 'Rendering…';
     try {
-      const wav = await renderLoopWav(globalThis.Tone, {
+      const rendered = await renderLoopAudio(globalThis.Tone, {
         ...exportSnapshot(),
         repeats,
         includeSamples: el.exportSamples ? !el.exportSamples.checked : false,
       });
-      saveBlob(wav, 'jam-loop.wav', 'audio/wav');
+      let bytes;
+      let filename;
+      let mime;
+      if (format === 'mp3') {
+        el.exportWav.textContent = 'Encoding…';
+        await loadScript(LAME_SRC, 30000);
+        bytes = mp3Bytes(rendered);
+        filename = 'jam-loop.mp3';
+        mime = 'audio/mpeg';
+      } else {
+        bytes = wavBytes(rendered);
+        filename = 'jam-loop.wav';
+        mime = 'audio/wav';
+      }
+      const result = await exportFile(bytes, filename, mime);
+      if (result === 'retry') {
+        pendingExport = { bytes, filename, mime };
+        el.exportWav.textContent = 'Tap to save';
+        return;
+      }
     } catch (error) {
-      showExportError(error?.message || 'Could not render the WAV.');
+      showExportError(error?.message || `Could not export the ${format.toUpperCase()}.`);
     } finally {
       setControlEnabled(el.exportWav, true);
-      el.exportWav.textContent = previous;
+      if (!pendingExport) paintExportFormat();
     }
   });
 
@@ -3096,12 +3150,20 @@ export async function createHostView({ lite } = {}) {
      sheet re-renders the same link at 512px so a camera can scan it across
      the room. */
   async function paintJoinQr(url) {
+    // The library can take seconds on a cold CDN — mark the boxes while it
+    // downloads so the empty white square doesn't read as broken.
+    for (const box of [el.qr, el.shareQr]) {
+      if (!box) continue;
+      box.classList.add('qr-loading');
+      box.textContent = 'QR';
+    }
     try {
       await loadScript(QR_SRC, 15000);
       const QRCode = globalThis.QRCode;
       if (!QRCode) throw new Error('QR library failed to load');
       for (const [box, size] of [[el.qr, 168], [el.shareQr, 512]]) {
         if (!box) continue;
+        box.classList.remove('qr-loading');
         box.replaceChildren();
         new QRCode(box, {
           text: url,
@@ -3123,6 +3185,7 @@ export async function createHostView({ lite } = {}) {
         }
       }
     } catch (error) {
+      for (const box of [el.qr, el.shareQr]) box?.classList.remove('qr-loading');
       el.qr.textContent = 'QR unavailable';
       log(error.message, 'qr');
     }
@@ -3251,6 +3314,9 @@ export async function createHostView({ lite } = {}) {
     paintIconButton(el.fxSheetClose, 'done', 'Done');
     document.querySelectorAll('#host-screen [data-inst-cycle]').forEach((arrow) => {
       arrow.replaceChildren(chipIcon(Number(arrow.dataset.instCycle) < 0 ? 'prev' : 'next'));
+    });
+    document.querySelectorAll('#host-export-sheet [data-export-cycle]').forEach((arrow) => {
+      arrow.replaceChildren(chipIcon(Number(arrow.dataset.exportCycle) < 0 ? 'prev' : 'next'));
     });
     paintTransport(Boolean(audio?.engine.transportRunning));
   }

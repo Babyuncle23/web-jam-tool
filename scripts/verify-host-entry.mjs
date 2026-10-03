@@ -74,6 +74,8 @@ try {
   });
   await page.goto(`${BASE}/?role=host&lite=0`, { waitUntil: 'domcontentloaded' });
   await sleep(4000);
+  // Back needs a hold or a confirming second tap — a bare click only arms it.
+  await page.click('[data-action="back"]');
   await page.click('[data-action="back"]');
   const backed = await page.evaluate(`({ view: document.body.dataset.view })`);
   console.log('after back:', JSON.stringify(backed));

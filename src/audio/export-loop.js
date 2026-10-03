@@ -21,6 +21,7 @@ const DRUM_NOTES = {
   openhat: 46,
   tom: 45,
   cowbell: 56,
+  rimshot: 37,
 };
 const INSTRUMENT_CHANNEL = {
   pad: 0,
@@ -158,7 +159,7 @@ export function buildLoopMidi({
   return new Uint8Array([...header, ...chunk('MTrk', track)]);
 }
 
-function wavBytes(audioBuffer) {
+export function wavBytes(audioBuffer) {
   const raw = typeof audioBuffer.get === 'function' ? audioBuffer.get() : audioBuffer;
   const channels = raw.numberOfChannels;
   const rate = raw.sampleRate;
@@ -198,10 +199,11 @@ function wavBytes(audioBuffer) {
 }
 
 /**
- * Offline render of `repeats` loops. Same bus order as the live host:
- * instruments and drums into the master gain, compressor, stutter/cutoff/8-bit/wah, limiter.
+ * Offline render of `repeats` loops as a ToneAudioBuffer. Same bus order
+ * as the live host: instruments and drums into the master gain,
+ * compressor, stutter/cutoff/8-bit/wah, limiter.
  */
-export async function renderLoopWav(tone, spec) {
+export async function renderLoopAudio(tone, spec) {
   const times = readRepeats(spec.repeats);
   if (!times) throw new Error('Repeats must be a whole number from 1 to 128.');
   const seconds = loopSeconds(spec.bpm, spec.steps) * times;
@@ -276,7 +278,98 @@ export async function renderLoopWav(tone, spec) {
     tone.getTransport().start(0);
     return { drums, synth, bus, drumsFx, masterFx, limiter, compressor, master, players };
   }, seconds, 2, 44100);
-  return wavBytes(rendered);
+  return rendered;
+}
+
+export async function renderLoopWav(tone, spec) {
+  return wavBytes(await renderLoopAudio(tone, spec));
+}
+
+function toInt16(data) {
+  const out = new Int16Array(data.length);
+  for (let i = 0; i < data.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, data[i] || 0));
+    out[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return out;
+}
+
+/**
+ * MP3 encode of the rendered buffer through lamejs. The library is not in
+ * the bundle — the caller lazy-loads the CDN script first, so this expects
+ * `globalThis.lamejs` to be ready and says so when it is not.
+ */
+export function mp3Bytes(audioBuffer, kbps = 192) {
+  const lame = globalThis.lamejs;
+  if (!lame?.Mp3Encoder) throw new Error('MP3 encoder is not loaded yet.');
+  const raw = typeof audioBuffer.get === 'function' ? audioBuffer.get() : audioBuffer;
+  const channels = Math.min(2, Math.max(1, raw.numberOfChannels));
+  const encoder = new lame.Mp3Encoder(channels, raw.sampleRate, kbps);
+  const left = toInt16(raw.getChannelData(0));
+  const right = channels > 1 ? toInt16(raw.getChannelData(1)) : null;
+  const parts = [];
+  let size = 0;
+  const push = (data) => {
+    if (!data?.length) return;
+    const bytes = new Uint8Array(data);
+    parts.push(bytes);
+    size += bytes.length;
+  };
+  const CHUNK = 1152 * 64;
+  for (let i = 0; i < left.length; i += CHUNK) {
+    const slice = left.subarray(i, i + CHUNK);
+    push(right ? encoder.encodeBuffer(slice, right.subarray(i, i + CHUNK)) : encoder.encodeBuffer(slice));
+  }
+  push(encoder.flush());
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/**
+ * Save on desktop, share sheet on phones. The <a download> click is a
+ * no-op on most mobile browsers, so when the platform can send files
+ * (navigator.share level 2 — secure contexts only) the file goes out
+ * through the system sheet instead: "Save to Files" on iOS, the share
+ * targets on Android. HTTP LAN sessions and desktop browsers fall back
+ * to the anchor download.
+ */
+export async function exportFile(bytes, filename, mime) {
+  const file = typeof File === 'function' ? new File([bytes], filename, { type: mime }) : null;
+  // Share only on phones/tablets — desktop Chrome also answers canShare,
+  // and a share pane there would replace the instant download users have.
+  const mobile =
+    /android|iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (mobile) {
+    if (file && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+        return 'shared';
+      } catch (error) {
+        if (error?.name === 'AbortError') return 'aborted';
+        // Most likely the render outlived the tap's user activation — the
+        // caller keeps the bytes and arms a "tap to save" retry instead of
+        // silently clicking the anchor, which is dead on mobile anyway.
+        return 'retry';
+      }
+    }
+    // No file sharing (plain http on a LAN): open the blob so the file can
+    // be saved from the preview — better than the ignored anchor click.
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    const tab = window.open(url, '_blank');
+    if (tab) {
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return 'opened';
+    }
+    URL.revokeObjectURL(url);
+  }
+  saveBlob(bytes, filename, mime);
+  return 'downloaded';
 }
 
 export function saveBlob(bytes, filename, mime) {
