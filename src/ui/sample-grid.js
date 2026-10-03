@@ -454,7 +454,11 @@ export function createSampleGrid(
       const label = document.createElement('span');
       label.className = 'sampler-pad__label';
       label.textContent = cell.label || 'SOLO';
-      pad.append(label);
+      const hold = document.createElement('span');
+      hold.className = 'sampler-pad__hold';
+      hold.textContent = 'HOLD';
+      hold.setAttribute('aria-hidden', 'true');
+      pad.append(label, hold);
     } else {
       pad.classList.add('sampler-pad--empty');
       pad.setAttribute('aria-hidden', 'true');

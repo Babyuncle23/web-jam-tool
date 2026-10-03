@@ -1,4 +1,5 @@
-// Quick check: gate pads (BEAT, SCR 105, OMG) carry a HOLD pill, one-shots don't.
+// Quick check: gate pads (BEAT, SCR 105, OMG) and SOLO carry a HOLD pill,
+// one-shots and empty cells don't.
 import puppeteer from 'puppeteer-core';
 
 const URL = 'http://127.0.0.1:43117';
@@ -39,7 +40,7 @@ const result = await host.evaluate(() => {
 });
 console.log(JSON.stringify(result, null, 2));
 
-const expected = { boombap: true, scratch105: true, omg: true };
+const expected = { boombap: true, scratch105: true, omg: true, solo: true };
 const ok = result.every(
   (p) => (p.hold === 'HOLD' && p.holdVisible) === Boolean(expected[p.sample]),
 );

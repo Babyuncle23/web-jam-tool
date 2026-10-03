@@ -1118,6 +1118,8 @@ export class PerformanceRecorder {
   #hitSeq = 0;
   /** Gate pads still held: sampleId → [{ voiceId, onAbs, on }] — the 'up' is written on release. */
   #openHits = new Map();
+  /** Events a loop shrink cut off the grid — a regrow restores them verbatim. */
+  #dropped = [];
   /** Take base → loop snapshot at its first note-on, for per-take undo. */
   #takePre = new Map();
   /** Takes that closed while others were still open: { base, events }. */
@@ -1166,7 +1168,8 @@ export class PerformanceRecorder {
    */
   setLoopSteps(steps) {
     const next = normalizeLoopSteps(steps);
-    if (next === this.#loopSteps) return this.#loopSteps;
+    const previous = this.#loopSteps;
+    if (next === previous) return previous;
     this.#loopSteps = next;
     const sounding = new Set();
     for (const event of this.#events) {
@@ -1174,18 +1177,22 @@ export class PerformanceRecorder {
     }
     // Shrinking must not strand a note-on without its note-off: an 'up' that
     // fell beyond the new end wraps back into the loop instead of dropping.
+    // What the shrink cuts is stashed, not lost — a later regrow (2→4→2→4
+    // bars) puts the clipped bars back exactly as they were.
     this.#events = this.#events.filter((event) => {
-      if (event.type === 'on') return event.step < next;
-      if (!sounding.has(event.voiceId)) return false;
-      if (event.step >= next) {
-        const starts = (this.#byVoice.get(event.voiceId)?.ons ?? [])
-          .filter((item) => item.step < next)
-          .map((item) => item.step);
-        const start = Math.min(...starts);
-        event.step = event.step % next;
-        if (event.step === start) event.step = (start + 1) % next;
+      if (event.type === 'on' ? event.step < next : sounding.has(event.voiceId)) {
+        if (event.type === 'up' && event.step >= next) {
+          const starts = (this.#byVoice.get(event.voiceId)?.ons ?? [])
+            .filter((item) => item.step < next)
+            .map((item) => item.step);
+          const start = Math.min(...starts);
+          event.step = event.step % next;
+          if (event.step === start) event.step = (start + 1) % next;
+        }
+        return true;
       }
-      return true;
+      this.#dropped.push(event);
+      return false;
     });
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
     this.#byVoice.clear();
@@ -1202,6 +1209,24 @@ export class PerformanceRecorder {
       const kept = members.filter((id) => this.#byVoice.has(id));
       if (kept.length) this.#chordTakes.set(finger, kept);
       else this.#chordTakes.delete(finger);
+    }
+    // A regrow returns stashed voices whole: one comes back only when every
+    // one of its events fits the new length, so a partial regrow never
+    // resurrects a strip cut in half.
+    if (next > previous && this.#dropped.length) {
+      const byVoice = new Map();
+      for (const event of this.#dropped) {
+        const list = byVoice.get(event.voiceId) || [];
+        list.push(event);
+        byVoice.set(event.voiceId, list);
+      }
+      const rest = [];
+      for (const events of byVoice.values()) {
+        if (events.every((event) => event.step < next)) {
+          for (const event of events) this.#put(event);
+        } else rest.push(...events);
+      }
+      this.#dropped = rest;
     }
     this.#syncTick();
     // Dropped or moved events can no longer stop a voice that is still
@@ -1934,6 +1959,9 @@ export class PerformanceRecorder {
   }
 
   restoreEvents(events) {
+    // Voices mid-note right now keep playing if the restore brings them back
+    // unchanged — an undo must not silence notes it did not touch.
+    const sounding = this.#soundingVoices();
     this.#disarmLoop();
     this.#events = [];
     this.#byKey.clear();
@@ -1945,13 +1973,11 @@ export class PerformanceRecorder {
     this.#chordGen.clear();
     this.#line.clear();
     this.#openHits.clear();
-    this.#synth.releaseMatching(`loop:${this.#playerId}:`);
-    this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     for (const event of events || []) {
-      const step = Math.max(0, Math.min(this.#loopSteps - 1, Math.round(Number(event.step) || 0)));
-      this.#put({
+      const original = Math.round(Number(event.step) || 0);
+      const step = Math.max(0, Math.min(this.#loopSteps - 1, original));
+      const next = {
         voiceId: String(event.voiceId),
-        step,
         type: event.type === 'up' ? 'up' : 'on',
         x: event.x,
         y: event.y,
@@ -1963,20 +1989,61 @@ export class PerformanceRecorder {
         group: event.group || undefined,
         sample: event.sample,
         frac: Number.isFinite(Number(event.frac)) ? Number(event.frac) : undefined,
-      });
+      };
+      // Steps past the live loop end (a snapshot taken at a longer length)
+      // park in the stash — a regrow puts them back, no collapse onto the
+      // last step.
+      if (original >= this.#loopSteps) {
+        this.#dropped.push({ ...next, step: original });
+        continue;
+      }
+      this.#put({ ...next, step });
     }
     this.#rebaseTakeStashes();
+    for (const [voiceId, sig] of sounding) {
+      const entry = this.#byVoice.get(voiceId);
+      if (entry && this.#voiceSig(entry) === sig) continue;
+      this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
+      this.#synth.releaseMatching(`loop:${this.#playerId}:${voiceId}~`);
+      this.#synth.releaseMatching(`loop:${this.#playerId}:${voiceId}@`);
+      this.#sampler?.release(`loop:${this.#playerId}:${voiceId}`);
+    }
+  }
+
+  /** voiceId → signature for voices sounding on the current loop step. */
+  #soundingVoices() {
+    const transport = this.#tone.getTransport();
+    const ticksPerStep = (transport.PPQ || 192) / 4;
+    let step = Math.round(transport.ticks / ticksPerStep) % this.#loopSteps;
+    if (step < 0) step += this.#loopSteps;
+    const map = new Map();
+    for (const [voiceId, entry] of this.#byVoice) {
+      if (!entry.ons.length || !entry.up) continue;
+      const start = Math.min(...entry.ons.map((event) => event.step));
+      if (!this.#soundsAt(start, entry.up.step, step)) continue;
+      map.set(voiceId, this.#voiceSig(entry));
+    }
+    return map;
+  }
+
+  /** Everything that decides what a sounding voice does next — and how it rings. */
+  #voiceSig(entry) {
+    const ons = entry.ons
+      .map((event) => `${event.step}~${event.degree ?? ''}~${event.midi ?? ''}~${event.sample ?? ''}~${event.x ?? ''}`)
+      .sort();
+    return `${ons.join('|')}→${entry.up ? `${entry.up.step}~${entry.up.frac ?? ''}` : ''}`;
   }
 
   /**
    * A note that was not recorded. One step long, written into the step index
-   * like every other loop event.
+   * like every other loop event. Pass `duration` for longer strips.
    */
-  addNote({ step, x, y, instrument, mode = 'single', direction = 'down', degree, midi, sample } = {}) {
+  addNote({ step, x, y, instrument, mode = 'single', direction = 'down', degree, midi, sample, duration } = {}) {
     const voiceId = `placed:${this.#playerId}:${this.#placed}`;
     this.#placed += 1;
     const start = Math.max(0, Math.min(this.#loopSteps - 1, Math.round(Number(step) || 0)));
-    const end = (start + 1) % this.#loopSteps;
+    const span = Math.max(1, Math.min(this.#loopSteps - 1, Math.round(Number(duration) || 1)));
+    const end = (start + span) % this.#loopSteps;
     const next = {
       x,
       y: Number.isFinite(Number(y)) ? Number(y) : 0.55,
@@ -1992,11 +2059,11 @@ export class PerformanceRecorder {
     return voiceId;
   }
 
-  /** Slide one recorded note in time and pitch. Pass `duration` to resize it. */
+  /** Slide one recorded note in time and pitch. Pass `duration` to resize it, `sample` to re-lane a hit. */
   moveNote(voiceId, change = {}) {
     const segment = segmentVoice(voiceId);
     if (segment) return this.#moveSegment(segment, change);
-    const { step, x, degree, midi, duration: durationArg } = change;
+    const { step, x, degree, midi, duration: durationArg, sample } = change;
     const entry = this.#byVoice.get(voiceId);
     const ons = entry?.ons ?? [];
     if (!ons.length) return false;
@@ -2014,6 +2081,7 @@ export class PerformanceRecorder {
     const nextX = Number.isFinite(Number(x)) ? Number(x) : template.x;
     const nextDegree = degree === undefined ? template.degree : storedDegree(degree);
     const nextMidi = midi === undefined ? template.midi : storedMidi(midi);
+    const nextSample = sample === undefined ? template.sample : String(sample);
     this.#forgetVoice(voiceId);
     this.#put({
       voiceId,
@@ -2027,7 +2095,7 @@ export class PerformanceRecorder {
       degree: nextDegree,
       midi: nextMidi,
       group: template.group,
-      sample: template.sample,
+      sample: nextSample,
     });
     this.#put({
       voiceId,
@@ -2041,7 +2109,7 @@ export class PerformanceRecorder {
       degree: nextDegree,
       midi: nextMidi,
       group: template.group,
-      sample: template.sample,
+      sample: nextSample,
     });
     return true;
   }
@@ -2062,7 +2130,7 @@ export class PerformanceRecorder {
     this.#synth.release(`loop:${this.#playerId}:${voiceId}`);
   }
 
-  #moveSegment({ base, step: fromStep }, { step, x, degree, midi, duration: durationArg } = {}) {
+  #moveSegment({ base, step: fromStep }, { step, x, degree, midi, duration: durationArg, sample } = {}) {
     const entry = this.#byVoice.get(base);
     const ons = entry?.ons ?? [];
     const index = ons.findIndex((event) => event.step === fromStep);
@@ -2076,6 +2144,7 @@ export class PerformanceRecorder {
     if (x != null) target.x = Number(x);
     if (degree !== undefined) target.degree = storedDegree(degree);
     if (midi !== undefined) target.midi = storedMidi(midi);
+    if (sample !== undefined) target.sample = String(sample);
     if (!Number.isFinite(Number(durationArg))) return true;
     const duration = Math.max(1, Math.min(this.#loopSteps - 1, Math.round(Number(durationArg))));
     const end = (start + duration) % this.#loopSteps;
@@ -2096,6 +2165,8 @@ export class PerformanceRecorder {
   removeNote(voiceId) {
     this.#notesCache = null;
     const segment = segmentVoice(voiceId);
+    // A deliberate delete must not come back on a later regrow.
+    this.#dropped = this.#dropped.filter((event) => event.voiceId !== (segment?.base ?? voiceId));
     if (segment) {
       const removed = [];
       this.#events = this.#events.filter((event) => {
@@ -2149,6 +2220,7 @@ export class PerformanceRecorder {
   /** Drop every note of one instrument. Other instruments and the drum grid stay. */
   clearInstrument(instrument) {
     const id = storedInstrument(instrument);
+    this.#dropped = this.#dropped.filter((event) => storedInstrument(event.instrument) !== id);
     const voiceIds = new Set(
       this.#events.filter((event) => storedInstrument(event.instrument) === id).map((event) => event.voiceId),
     );
@@ -2163,6 +2235,9 @@ export class PerformanceRecorder {
     // Erasing mid-hold: forget the open gate too, or the release would
     // write an 'up' for events that no longer exist.
     this.#openHits.delete(id);
+    this.#dropped = this.#dropped.filter(
+      (event) => !(storedInstrument(event.instrument) === SAMPLER_INSTRUMENT && event.sample === id),
+    );
     const voiceIds = new Set(
       this.#events
         .filter((event) => storedInstrument(event.instrument) === SAMPLER_INSTRUMENT && event.sample === id)
@@ -2186,6 +2261,7 @@ export class PerformanceRecorder {
     this.#chordGen.clear();
     this.#line.clear();
     this.#openHits.clear();
+    this.#dropped = [];
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
     this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     this.#rebaseTakeStashes();

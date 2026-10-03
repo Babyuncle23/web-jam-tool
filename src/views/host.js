@@ -58,7 +58,7 @@ import {
 } from '../audio/effects.js';
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
-import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/piano-roll.js';
+import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/piano-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
@@ -165,6 +165,7 @@ export async function createHostView({ lite } = {}) {
     noteUndoAll: document.getElementById('host-undo-all'),
     noteRedo: document.getElementById('host-redo'),
     noteClear: document.getElementById('host-note-clear'),
+    noteDuplicate: document.getElementById('host-note-duplicate'),
     instPrev: document.getElementById('host-inst-prev'),
     instName: document.getElementById('host-inst-name'),
     instNext: document.getElementById('host-inst-next'),
@@ -1530,6 +1531,9 @@ export async function createHostView({ lite } = {}) {
 
   function paintRollInstrument() {
     const view = rollInstrument();
+    // A view change always drops the select-and-move mode — a selection is
+    // only meaningful on the rows it was made on.
+    setSelectMode(false);
     if (view === SAMPLER_INSTRUMENT) {
       el.instName.style.setProperty('--chip', INSTRUMENT_COLORS.sampler || '#e2b43a');
       paintIconButton(el.instName, 'sampler', 'Samples');
@@ -1550,6 +1554,10 @@ export async function createHostView({ lite } = {}) {
     // and the mode/pad selection stays where the user left it.
     state.instrument = normalizeInstrument(instrument);
     state.fxFor = state.instrument;
+    // The roll follows the picked instrument — a pinned sampler view and a
+    // group selection both belong to the old view.
+    state.rollView = null;
+    setSelectMode(false);
     paintInstruments(el.instruments, state.instrument);
     paintInstrumentMini();
     paintSecValues();
@@ -1804,7 +1812,7 @@ export async function createHostView({ lite } = {}) {
     });
   }
 
-  function writePlacedNotes(recorder, { step, instrument, x, y, degree, midi, sample }) {
+  function writePlacedNotes(recorder, { step, instrument, x, y, degree, midi, sample, duration }) {
     if (!recorder) return;
     recorder.addNote({
       step,
@@ -1815,6 +1823,7 @@ export async function createHostView({ lite } = {}) {
       degree,
       midi,
       sample,
+      duration,
     });
   }
 
@@ -1852,9 +1861,10 @@ export async function createHostView({ lite } = {}) {
     if (!jobs.length) return;
     rememberEdit(editorId, [...targets]);
     for (const { recorder, note, change } of jobs) {
-      // Sample strips only move along the beat — a lane drag never retunes.
+      // Sample strips move along the beat — and a vertical drag re-lanes the
+      // hit onto another pad.
       if (note.instrument === SAMPLER_INSTRUMENT) {
-        recorder.moveNote(change.voiceId, { step: change.step });
+        recorder.moveNote(change.voiceId, { step: change.step, sample: change.lane });
         continue;
       }
       const sounding = pitchesFor(note)[0];
@@ -1871,6 +1881,93 @@ export async function createHostView({ lite } = {}) {
       });
     }
     refreshLoops();
+  }
+
+  /** New lengths for one or several strips — one gesture, one undo entry. */
+  function resizeShared(editorId, changes) {
+    if (!audio || !changes?.length) return;
+    const jobs = [];
+    const targets = new Set();
+    for (const change of changes) {
+      const ownerId = ownerOfVoice(change.voiceId);
+      if (ownerId == null) continue;
+      const recorder = audio.loops.get(ownerId);
+      const note = recorder.notes().find((item) => item.voiceId === change.voiceId);
+      if (!note) continue;
+      targets.add(ownerId);
+      jobs.push({ recorder, note, change });
+    }
+    if (!jobs.length) return;
+    rememberEdit(editorId, [...targets]);
+    for (const { recorder, note, change } of jobs) {
+      recorder.moveNote(change.voiceId, {
+        step: note.step,
+        x: note.x,
+        degree: note.degree,
+        duration: change.duration,
+      });
+    }
+    refreshLoops();
+  }
+
+  /**
+   * Copy selected strips into the next bar(s) at the same in-bar position:
+   * a selection spanning N bars repeats N bars ahead (phrase-duplicate).
+   * When the next bars do not exist, the copy lands right after its
+   * original — or wraps to the loop start if even that is full.
+   * Returns the fresh voiceIds so the caller can light the copies.
+   */
+  function duplicateShared(editorId, voiceIds) {
+    if (!audio || !voiceIds?.length) return null;
+    const jobs = [];
+    const targets = new Set();
+    for (const voiceId of voiceIds) {
+      const ownerId = ownerOfVoice(voiceId);
+      if (ownerId == null) continue;
+      const recorder = audio.loops.get(ownerId);
+      const note = recorder.notes().find((item) => item.voiceId === voiceId);
+      if (!note) continue;
+      const steps = recorder.loopSteps;
+      let duration = (note.endStep ?? note.step + 1) - note.step;
+      if (duration <= 0) duration += steps;
+      duration = Math.max(1, Math.min(steps, Math.round(duration)));
+      targets.add(ownerId);
+      jobs.push({ recorder, note, steps, duration });
+    }
+    if (!jobs.length) return null;
+    // The selection's bar footprint decides how far ahead the copies go.
+    let loBar = Infinity;
+    let hiBar = -1;
+    for (const { note, steps, duration } of jobs) {
+      loBar = Math.min(loBar, Math.floor(note.step / 16));
+      hiBar = Math.max(hiBar, Math.floor(Math.min(steps - 1, note.step + duration - 1) / 16));
+    }
+    const offset = (hiBar - loBar + 1) * 16;
+    rememberEdit(editorId, [...targets]);
+    const created = [];
+    for (const { recorder, note, steps, duration } of jobs) {
+      let step = note.step + offset;
+      if (step + duration > steps) step = note.step + duration <= steps ? note.step + duration : 0;
+      const id = recorder.addNote({
+        step,
+        x: note.x,
+        y: note.y,
+        instrument: note.instrument,
+        mode: 'single',
+        degree: note.degree,
+        midi: note.midi,
+        sample: note.sample,
+        duration: Math.min(duration, steps - 1),
+      });
+      if (id) created.push(id);
+    }
+    // A guest editor learns its fresh copies on the next loopNotes push.
+    if (created.length && editorId !== 'host') {
+      pendingAdded.set(editorId, (pendingAdded.get(editorId) ?? []).concat(created));
+    }
+    refreshLoops();
+    log('notes duplicated', 'loop');
+    return created;
   }
 
   function syncHostHistory() {
@@ -1933,19 +2030,11 @@ export async function createHostView({ lite } = {}) {
       selectMode,
       onMoveGroup: (changes) => moveSharedGroup('host', changes),
       onResize: (voiceId, change) => {
-        const ownerId = ownerOfVoice(voiceId);
-        if (ownerId == null) return;
-        const recorder = audio.loops.get(ownerId);
-        const note = recorder?.notes().find((item) => item.voiceId === voiceId);
-        if (!note) return;
-        rememberEdit('host', [ownerId]);
-        recorder.moveNote(voiceId, {
-          step: note.step,
-          x: note.x,
-          degree: note.degree,
-          duration: change.duration,
-        });
-        refreshLoops();
+        resizeShared('host', [{ voiceId, duration: change.duration }]);
+      },
+      onResizeGroup: (changes) => resizeShared('host', changes),
+      onSelection: (selected) => {
+        setControlEnabled(el.noteDuplicate, selectMode && Boolean(selected?.size));
       },
       focusMidi: rollFocusMidi(),
       inScale: (midi) => midiInScale(midi, state.root, state.scale),
@@ -2016,6 +2105,9 @@ export async function createHostView({ lite } = {}) {
     publishDrums();
     if (audio) {
       for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
+      // A shrink can cut hits off the grid — the pad marks follow at once,
+      // not on the next edit.
+      samplerUi.refreshErase();
       shareLoop();
     }
     setIconLabel(el.bars, barCountLabel(next));
@@ -2029,6 +2121,8 @@ export async function createHostView({ lite } = {}) {
 
   /** Bumps on every shareLoop: guests skip repaints on identical echoes. */
   let loopVersion = 0;
+  /** peerId → voiceIds a guest duplicate just created — selects them client-side. */
+  const pendingAdded = new Map();
 
   /** Every player's loop, broadcast as one map so all editors see all notes. */
   function shareLoop() {
@@ -2045,12 +2139,15 @@ export async function createHostView({ lite } = {}) {
         recording: Boolean(recorder?.isRecording),
       };
     }
+    const addedFor = pendingAdded.size ? Object.fromEntries(pendingAdded) : undefined;
+    pendingAdded.clear();
     socket.broadcastState({
       loopNotes: {
         v: ++loopVersion,
         noteSteps: state.noteSteps,
         players,
         canUndoAll: globalPast.length > 0,
+        addedFor,
       },
     });
     syncPadMarks();
@@ -2119,8 +2216,9 @@ export async function createHostView({ lite } = {}) {
       if (lazy) queueHostRoll();
       else paintHostRoll();
     }
-    // Hits may have appeared/vanished under the open edit layer.
-    if (state.samplerEdit) samplerUi.refreshErase();
+    // Hits may have appeared/vanished — the pad marks track the loops even
+    // while the erase layer is hidden (the class also dims empty pads).
+    samplerUi.refreshErase();
     syncHostHistory();
     queueLoopPush();
   }
@@ -2226,22 +2324,36 @@ export async function createHostView({ lite } = {}) {
     el.fxSheet.hidden = true;
   });
   let selectMode = false;
-  document.getElementById('host-select-move')?.addEventListener('click', () => {
-    selectMode = !selectMode;
+  function setSelectMode(on) {
+    selectMode = Boolean(on);
     const button = document.getElementById('host-select-move');
-    button.classList.toggle('is-on', selectMode);
-    button.setAttribute('aria-pressed', selectMode ? 'true' : 'false');
+    button?.classList.toggle('is-on', selectMode);
+    button?.setAttribute('aria-pressed', selectMode ? 'true' : 'false');
     setRollSelectMode(el.noteTape, selectMode);
+    setControlEnabled(el.noteDuplicate, false);
+  }
+  document.getElementById('host-select-move')?.addEventListener('click', () => {
+    setSelectMode(!selectMode);
   });
 
   el.notes.addEventListener('click', () => {
     if (!audio) return;
     el.notesSheet.hidden = false;
+    // The sheet opens on the instrument under your fingers — sampler pads
+    // land on the lane view.
+    state.rollView = state.padMode === 'sampler' ? SAMPLER_INSTRUMENT : null;
+    setSelectMode(false);
+    paintRollInstrument();
     paintHostRoll();
     revealRoll();
   });
   el.notesClose.addEventListener('click', () => {
     el.notesSheet.hidden = true;
+  });
+  el.noteDuplicate?.addEventListener('click', () => {
+    const created = duplicateShared('host', [...rollSelection(el.noteTape)]);
+    // The copies are the new selection — the originals drop out.
+    if (created?.length) selectRollNotes(el.noteTape, created);
   });
   el.noteUndo.addEventListener('click', () => undoOwn('host'));
   el.noteUndoAll.addEventListener('click', () => undoAll('host'));
@@ -2827,6 +2939,12 @@ export async function createHostView({ lite } = {}) {
     if (Array.isArray(data.moveGroup) && data.moveGroup.length && audio) {
       moveSharedGroup(data.peerId, data.moveGroup);
     }
+    if (Array.isArray(data.duplicateNotes) && data.duplicateNotes.length && audio) {
+      duplicateShared(data.peerId, data.duplicateNotes.map(String));
+    }
+    if (Array.isArray(data.resizeGroup) && data.resizeGroup.length && audio) {
+      resizeShared(data.peerId, data.resizeGroup);
+    }
     if (data.moveNote && audio) {
       const move = data.moveNote;
       const voiceId = String(move?.voiceId ?? '');
@@ -2839,6 +2957,7 @@ export async function createHostView({ lite } = {}) {
           degree: move.degree,
           midi: move.midi,
           duration: move.duration,
+          sample: move.sample,
         });
         refreshLoops();
       }
@@ -2856,6 +2975,7 @@ export async function createHostView({ lite } = {}) {
           degree: add.degree,
           midi: add.midi,
           sample: add.sample,
+          duration: add.duration,
         });
         ensureTransport();
         refreshLoops();

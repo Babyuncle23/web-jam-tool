@@ -13,7 +13,7 @@ import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, re
 import { JamSocket, EVENTS } from '../network/socket.js';
 import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
-import { renderPianoRoll, scrollRollToMidi, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
+import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
 import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -63,6 +63,7 @@ export async function createControllerView({ code, name } = {}) {
     noteUndoAll: document.getElementById('controller-undo-all'),
     noteRedo: document.getElementById('controller-redo'),
     noteClear: document.getElementById('controller-note-clear'),
+    noteDuplicate: document.getElementById('controller-note-duplicate'),
     instPrev: document.getElementById('controller-inst-prev'),
     instName: document.getElementById('controller-inst-name'),
     instNext: document.getElementById('controller-inst-next'),
@@ -386,9 +387,10 @@ export async function createControllerView({ code, name } = {}) {
         socket.sendControl({
           moveGroup: changes.map((change) => {
             const note = state.marks.find((item) => item.voiceId === change.voiceId);
-            // Sample strips only move along the beat — no pitch fields.
+            // Sample strips move along the beat — a vertical drag re-lanes
+            // the hit onto another pad.
             if (note?.instrument === SAMPLER_INSTRUMENT) {
-              return { voiceId: change.voiceId, step: change.step };
+              return { voiceId: change.voiceId, step: change.step, lane: change.lane };
             }
             const sounding = note ? pitchesFor(note)[0] : change.midi;
             const prefer = change.midi > sounding ? 'up' : change.midi < sounding ? 'down' : undefined;
@@ -415,6 +417,14 @@ export async function createControllerView({ code, name } = {}) {
             duration: change.duration,
           },
         });
+      },
+      onResizeGroup: (changes) => {
+        socket.sendControl({
+          resizeGroup: changes.map((change) => ({ voiceId: change.voiceId, duration: change.duration })),
+        });
+      },
+      onSelection: (selected) => {
+        setControlEnabled(el.noteDuplicate, guestSelectMode && Boolean(selected?.size));
       },
       focusMidi: rollFocusMidi(),
       inScale: (midi) => midiInScale(midi, state.root, state.scale),
@@ -1287,11 +1297,15 @@ export async function createControllerView({ code, name } = {}) {
         }
         state.marks = marks;
         syncPadMarks();
-        if (state.samplerEdit) samplerUi.refreshErase();
+        samplerUi.refreshErase();
         if (!el.notesSheet.hidden) {
           if (Object.values(players).some((entry) => entry?.recording)) queueGuestNotes();
           else paintGuestNotes();
         }
+        // A duplicate lights its fresh copies once they land — the strips
+        // pick up is-selected whenever they render.
+        const added = pack.addedFor?.[state.peerId];
+        if (added?.length) selectRollNotes(el.noteTape, added);
       }
     }
     updateKey();
@@ -1407,6 +1421,10 @@ export async function createControllerView({ code, name } = {}) {
     // fingers stay on the instrument they started on (fingerInstruments pins
     // it), and the mode/pad selection stays where the user left it.
     state.instrument = normalizeInstrument(instrument);
+    // The roll follows the picked instrument — a pinned sampler view and a
+    // group selection both belong to the old view.
+    state.rollView = null;
+    setGuestSelectMode(false);
     // The More sheet follows the playing instrument until a card reopens it.
     state.fxFor = state.instrument;
     socket.sendControl({ instrument: state.instrument });
@@ -1424,6 +1442,9 @@ export async function createControllerView({ code, name } = {}) {
 
   function paintRollInstrument() {
     const view = rollInstrument();
+    // A view change always drops the select-and-move mode — a selection is
+    // only meaningful on the rows it was made on.
+    setGuestSelectMode(false);
     if (view === SAMPLER_INSTRUMENT) {
       el.instName.style.setProperty('--chip', INSTRUMENT_COLORS.sampler || '#e2b43a');
       paintIconButton(el.instName, 'sampler', 'Samples');
@@ -1498,12 +1519,16 @@ export async function createControllerView({ code, name } = {}) {
     socket.sendControl({ loop: next ? 'record' : 'stop' });
   }
 
-  document.getElementById('controller-select-move')?.addEventListener('click', () => {
-    guestSelectMode = !guestSelectMode;
+  function setGuestSelectMode(on) {
+    guestSelectMode = Boolean(on);
     const button = document.getElementById('controller-select-move');
-    button.classList.toggle('is-on', guestSelectMode);
-    button.setAttribute('aria-pressed', guestSelectMode ? 'true' : 'false');
+    button?.classList.toggle('is-on', guestSelectMode);
+    button?.setAttribute('aria-pressed', guestSelectMode ? 'true' : 'false');
     setRollSelectMode(el.noteTape, guestSelectMode);
+    setControlEnabled(el.noteDuplicate, false);
+  }
+  document.getElementById('controller-select-move')?.addEventListener('click', () => {
+    setGuestSelectMode(!guestSelectMode);
   });
 
   el.transport.addEventListener('click', () => {
@@ -1570,8 +1595,15 @@ export async function createControllerView({ code, name } = {}) {
     if (!state.audioReady) return;
     socket.sendControl({ erase: 'show' });
     el.notesSheet.hidden = false;
+    // The sheet opens on the pad under your fingers — sampler lands on lanes.
+    state.rollView = state.padMode === 'sampler' ? SAMPLER_INSTRUMENT : null;
+    setGuestSelectMode(false);
+    paintRollInstrument();
     paintGuestNotes();
     revealRoll();
+  });
+  el.noteDuplicate?.addEventListener('click', () => {
+    socket.sendControl({ duplicateNotes: [...rollSelection(el.noteTape)] });
   });
   el.notesClose.addEventListener('click', () => {
     el.notesSheet.hidden = true;

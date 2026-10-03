@@ -1,4 +1,5 @@
 import { midiToName } from '../audio/synth.js';
+import { sampleMode } from '../audio/sampler.js';
 import { markScrollEdges } from './scroll-edges.js';
 import { pressable } from './quiet-touch.js';
 
@@ -22,10 +23,11 @@ const OCTAVE = 12;
  * Pitches outside the current scale are dimmed and do not accept new notes.
  * A drag moves one note. The whole selection moves only while select and move is on.
  * Notes owned by other players render dashed and edit like any other note.
- * A mouse drag on empty space draws a selection marquee only in that mode.
+ * An empty-space drag draws a selection marquee in that mode — mouse or touch.
+ * A strip or resize drag near the sheet edge auto-scrolls it into view.
  * The playhead is a div, not a frame loop.
  */
-export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onPlace, onAudition, onZoom, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
+export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onResizeGroup, onPlace, onAudition, onZoom, onSelection, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
   const laneMode = Array.isArray(lanes) && lanes.length > 0;
   const stepPx = Math.max(6, Number(requestedStep) || Number(scrollEl.__stepPx) || ROLL_STEP_PX);
   scrollEl.__stepPx = stepPx;
@@ -42,8 +44,8 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   }
   const safeSteps = Math.max(16, steps);
   // Lane mode (sampler hits): rows are the pad lanes top→bottom, no pitch
-  // grid. Row index doubles as the stored "midi" so the move math below is
-  // unchanged; vertical drags are clamped to zero there anyway.
+  // grid. Row index doubles as the stored "midi" so a vertical drag moves a
+  // hit between lanes with the same math as a pitch drag.
   const rows = laneMode ? lanes.map((_, index) => index) : buildRows(notes, pitchesFor, focusMidi);
   const rowOf = new Map(rows.map((midi, index) => [midi, index]));
 
@@ -57,6 +59,8 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   scrollEl.__onDelete = onDelete || null;
   scrollEl.__onMove = onMove || null;
   scrollEl.__onMoveGroup = onMoveGroup || onMove || null;
+  scrollEl.__onResizeGroup = onResizeGroup || null;
+  scrollEl.__onSelection = onSelection || null;
   scrollEl.__inScale = laneMode ? null : inScale || null;
   scrollEl.__instrument = selectionKey;
   scrollEl.__selectMode = Boolean(selectMode);
@@ -81,6 +85,7 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   if (liveGrid) {
     patchRollNotes(liveGrid, scrollEl, notes, { steps: safeSteps, pitchesFor, colorFor, onResize, owner });
     markScrollEdges(scrollEl, 'both');
+    scrollEl.__onSelection?.(scrollEl.__selected);
     return { notes: notes.length, steps: safeSteps };
   }
   scrollEl.__frame = frame;
@@ -183,6 +188,7 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
   marquee.className = 'roll__marquee';
   marquee.hidden = true;
   grid.append(playhead, marquee);
+  orderStrips(grid, scrollEl);
 
   keys.style.height = `${rows.length * ROW_PX}px`;
   sheet.append(corner, ruler, keys, grid);
@@ -194,7 +200,29 @@ export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, 
     scrollEl.scrollTop = previousTop;
   }
   markScrollEdges(scrollEl, 'both');
+  scrollEl.__onSelection?.(scrollEl.__selected);
   return { notes: notes.length, steps: safeSteps };
+}
+
+/**
+ * Paint order IS the z-order (all strips share one z-index): strips that
+ * start on the same step stack longest-first so a short note never hides
+ * under a longer neighbour, and same-length ties put the viewed
+ * instrument's strips on top.
+ */
+function orderStrips(grid, scrollEl) {
+  const own = scrollEl.__instrument;
+  const strips = [...grid.querySelectorAll('.roll__note')];
+  strips.sort((a, b) => {
+    const stepA = Number(a.dataset.step);
+    const stepB = Number(b.dataset.step);
+    if (stepA !== stepB) return stepA - stepB;
+    const durA = Number(a.dataset.duration) || 1;
+    const durB = Number(b.dataset.duration) || 1;
+    if (durA !== durB) return durB - durA;
+    return Number(a.dataset.instrument === own) - Number(b.dataset.instrument === own);
+  });
+  for (const strip of strips) grid.append(strip);
 }
 
 /** Everything one strip paints — an identical signature keeps the element. */
@@ -246,7 +274,8 @@ function makeStrip(scrollEl, note, midi, row, duration, { steps, stepPx, colorFo
     'aria-label',
     lane ? `${lane.label} hit, delete or drag` : `${midiToName(midi)}, delete, move, or drag the right edge`,
   );
-  if (!lane) {
+  // One-shot hits are fixed at one step; gate pads stretch like notes.
+  if (!lane || sampleMode(lane.id) === 'gate') {
     const grip = document.createElement('span');
     grip.className = 'roll__resize';
     grip.setAttribute('aria-hidden', 'true');
@@ -306,6 +335,7 @@ function patchRollNotes(grid, scrollEl, notes, { steps, pitchesFor, colorFor, on
     hint.textContent = scrollEl.__lanes ? 'Tap a cell to place a hit' : 'Tap a cell to place a note';
     grid.append(hint);
   }
+  orderStrips(grid, scrollEl);
 }
 
 /** Put one pitch row in the middle of the roll. Used when Notes opens. */
@@ -336,6 +366,19 @@ export function setRollSelectMode(scrollEl, on) {
   if (on) return;
   scrollEl.__selected = new Set();
   scrollEl.querySelectorAll('.roll__note.is-selected').forEach((item) => item.classList.remove('is-selected'));
+  scrollEl.__onSelection?.(scrollEl.__selected);
+}
+
+/** The currently selected voiceIds — for duplicate and toolbar state. */
+export function rollSelection(scrollEl) {
+  return new Set(scrollEl?.__selected ?? []);
+}
+
+/** Replace the selection — a duplicate lights its fresh copies, not the source. */
+export function selectRollNotes(scrollEl, voiceIds) {
+  if (!scrollEl) return;
+  scrollEl.__selected = new Set(voiceIds || []);
+  paintSelection(scrollEl);
 }
 
 /** Ring the notes an undo/redo press would touch; null clears the preview. */
@@ -506,10 +549,20 @@ function bindPan(scrollEl) {
       if (!drag || event.pointerId !== drag.id) return;
       const dx = event.clientX - drag.x;
       const dy = event.clientY - drag.y;
-      if (drag.mouse && scrollEl.__selectMode) {
+      // Select mode turns the empty-space drag into a marquee on mouse AND
+      // touch — panning is still on two fingers and the scrollbars.
+      if (scrollEl.__selectMode) {
         const grid = scrollEl.querySelector('.roll__grid');
-        const now = gridPoint(grid, event);
-        paintMarquee(grid, drag.local, now);
+        drag.mx = event.clientX;
+        drag.my = event.clientY;
+        if (!drag.scroller) {
+          drag.scroller = edgeScroller(scrollEl, () => {
+            const g = scrollEl.querySelector('.roll__grid');
+            if (g && drag?.local) paintMarquee(g, drag.local, gridPoint(g, { clientX: drag.mx, clientY: drag.my }));
+          });
+        }
+        drag.scroller.update(event.clientX, event.clientY);
+        paintMarquee(grid, drag.local, gridPoint(grid, event));
         event.preventDefault();
         return;
       }
@@ -555,14 +608,14 @@ function bindPan(scrollEl) {
     }
     if (!drag || event.pointerId !== drag.id) return;
     const moved = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
-    const mouse = drag.mouse;
     const local = drag.local;
     const panned = drag.panned;
+    drag.scroller?.stop();
     drag = null;
     const grid = scrollEl.querySelector('.roll__grid');
     const marquee = grid?.querySelector('.roll__marquee');
     if (marquee) marquee.hidden = true;
-    if (mouse && scrollEl.__selectMode && moved > 6 && grid && local) {
+    if (scrollEl.__selectMode && moved > 6 && grid && local) {
       const now = gridPoint(grid, event);
       const rect = boxBetween(local, now);
       const ids = [];
@@ -632,30 +685,123 @@ function bindResize(grip, strip, note, duration, steps, onResize) {
     } catch {
       // Capture is optional. The drag still listens on the window.
     }
+    // With a group selected, the grip drags every selected strip by the same
+    // step delta — one gesture, one undo entry.
+    const members = () => {
+      const selected = rollEl?.__selected;
+      if (!rollEl?.__selectMode || !selected?.has(strip.dataset.voice) || selected.size < 2) return [strip];
+      return [...rollEl.querySelectorAll('.roll__note')].filter(
+        (item) => selected.has(item.dataset.voice) && item.dataset.instrument === rollEl.__instrument,
+      );
+    };
     const startX = event.clientX;
+    const startLeft = rollEl ? rollEl.scrollLeft : 0;
+    let lastX = startX;
+    const scroller = edgeScroller(rollEl, () => applyWidth({ clientX: lastX }));
     let dragged = false;
     let nextDuration = duration;
+    const applyWidth = (point) => {
+      const dx = point.clientX - startX + (rollEl ? rollEl.scrollLeft - startLeft : 0);
+      const stepPx = stepSize(grip.closest('.roll'));
+      nextDuration = Math.max(1, Math.min(steps - 1, duration + Math.round(dx / stepPx)));
+      const delta = nextDuration - duration;
+      for (const item of members()) {
+        const base = Number(item.dataset.duration) || 1;
+        const next = Math.max(1, Math.min(steps - 1, base + delta));
+        item.style.width = `${Math.max(stepPx - 2, next * stepPx - 2)}px`;
+      }
+    };
     const move = (ev) => {
       if (ev.pointerId !== event.pointerId || swallowed()) return;
-      const dx = ev.clientX - startX;
+      const dx = ev.clientX - startX + (rollEl ? rollEl.scrollLeft - startLeft : 0);
       if (!dragged && Math.abs(dx) < 6) return;
       dragged = true;
       ev.preventDefault();
-      const stepPx = stepSize(grip.closest('.roll'));
-      nextDuration = Math.max(1, Math.min(steps - 1, duration + Math.round(dx / stepPx)));
-      strip.style.width = `${Math.max(stepPx - 2, nextDuration * stepPx - 2)}px`;
+      lastX = ev.clientX;
+      scroller.update(ev.clientX, ev.clientY);
+      applyWidth(ev);
     };
     const up = (ev) => {
       if (ev.pointerId !== event.pointerId) return;
+      scroller.stop();
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
-      if (!swallowed() && dragged && nextDuration !== duration) onResize?.(note.voiceId, { duration: nextDuration });
+      if (swallowed() || !dragged) return;
+      const delta = nextDuration - duration;
+      const group = members();
+      if (group.length > 1 && delta) {
+        const changes = [];
+        for (const item of group) {
+          const base = Number(item.dataset.duration) || 1;
+          const next = Math.max(1, Math.min(steps - 1, base + delta));
+          if (next !== base) changes.push({ voiceId: item.dataset.voice, duration: next });
+        }
+        if (changes.length) {
+          if (rollEl?.__onResizeGroup) rollEl.__onResizeGroup(changes);
+          else for (const change of changes) onResize?.(change.voiceId, { duration: change.duration });
+          return;
+        }
+      }
+      // A rejected group drag leaves no repaint — put the widths back.
+      const stepPx = stepSize(rollEl);
+      for (const item of group) {
+        const base = Number(item.dataset.duration) || 1;
+        item.style.width = `${Math.max(stepPx - 2, base * stepPx - 2)}px`;
+      }
+      if (group.length === 1 && nextDuration !== duration) onResize?.(note.voiceId, { duration: nextDuration });
     };
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', up);
   });
+}
+
+/**
+ * Drag near the sheet edge scrolls it — the destination stays in view while
+ * the pointer creeps past the visible strip. Velocity grows as the pointer
+ * sinks into a ~28 px edge band; stops when the gesture ends.
+ */
+function edgeScroller(scrollEl, onScroll) {
+  const EDGE = 28;
+  const MAX = 14;
+  if (!scrollEl) return { update() {}, stop() {} };
+  let raf = 0;
+  let x = 0;
+  let y = 0;
+  const tick = () => {
+    raf = 0;
+    const rect = scrollEl.getBoundingClientRect();
+    const vx =
+      x < rect.left + EDGE
+        ? (-MAX * (rect.left + EDGE - x)) / EDGE
+        : x > rect.right - EDGE
+          ? (MAX * (x - rect.right + EDGE)) / EDGE
+          : 0;
+    const vy =
+      y < rect.top + EDGE
+        ? (-MAX * (rect.top + EDGE - y)) / EDGE
+        : y > rect.bottom - EDGE
+          ? (MAX * (y - rect.bottom + EDGE)) / EDGE
+          : 0;
+    if (vx) scrollEl.scrollLeft += vx;
+    if (vy) scrollEl.scrollTop += vy;
+    if (vx || vy) {
+      onScroll?.();
+      raf = requestAnimationFrame(tick);
+    }
+  };
+  return {
+    update(px, py) {
+      x = px;
+      y = py;
+      if (!raf) raf = requestAnimationFrame(tick);
+    },
+    stop() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    },
+  };
 }
 
 function midiAtEvent(scrollEl, event) {
@@ -723,20 +869,24 @@ function bindStrip(strip, scrollEl, steps) {
     const swallowed = () => scrollEl.__pinching || (scrollEl.__pinchStamp || 0) > startedAt;
     const startX = event.clientX;
     const startY = event.clientY;
+    // Auto-scroll adds the scrolled distance to the gesture delta so the
+    // strip stays glued to a pointer that never moved.
+    const startLeft = scrollEl.scrollLeft;
+    const startTop = scrollEl.scrollTop;
+    let lastX = startX;
+    let lastY = startY;
+    const scroller = edgeScroller(scrollEl, () => apply({ clientX: lastX, clientY: lastY }));
     let dragged = false;
-    const move = (ev) => {
-      if (ev.pointerId !== event.pointerId || swallowed()) return;
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (!dragged && Math.hypot(dx, dy) < 8) return;
-      if (!dragged && selectMode && !scrollEl.__selected.has(voice)) setSelected(scrollEl, [voice]);
-      dragged = true;
-      ev.preventDefault();
+    const apply = (point) => {
+      const dx = point.clientX - startX + (scrollEl.scrollLeft - startLeft);
+      const dy = point.clientY - startY + (scrollEl.scrollTop - startTop);
       const stepPx = stepSize(scrollEl);
       const deltaStep = Math.round(dx / stepPx);
-      // Lane mode is rhythm-only: a hit stays on its pad's row.
-      const deltaMidi = scrollEl.__lanes ? 0 : Math.round(-dy / ROW_PX);
-      const shift = `translate(${deltaStep * stepPx}px, ${-deltaMidi * ROW_PX}px)`;
+      // Row indices grow downward; pitch midis shrink. Lane strips store the
+      // row index as their "midi", so the sign flips between the two modes.
+      const deltaRow = Math.round(dy / ROW_PX);
+      const deltaMidi = scrollEl.__lanes ? deltaRow : -deltaRow;
+      const shift = `translate(${deltaStep * stepPx}px, ${deltaRow * ROW_PX}px)`;
       if (!selectMode) {
         strip.style.transform = shift;
         return;
@@ -746,13 +896,27 @@ function bindStrip(strip, scrollEl, steps) {
         item.style.transform = scrollEl.__selected.has(item.dataset.voice) ? shift : '';
       });
     };
+    const move = (ev) => {
+      if (ev.pointerId !== event.pointerId || swallowed()) return;
+      const dx = ev.clientX - startX + (scrollEl.scrollLeft - startLeft);
+      const dy = ev.clientY - startY + (scrollEl.scrollTop - startTop);
+      if (!dragged && Math.hypot(dx, dy) < 8) return;
+      if (!dragged && selectMode && !scrollEl.__selected.has(voice)) setSelected(scrollEl, [voice]);
+      dragged = true;
+      ev.preventDefault();
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+      scroller.update(lastX, lastY);
+      apply(ev);
+    };
     const up = (ev) => {
       if (ev.pointerId !== event.pointerId) return;
+      scroller.stop();
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
+      const dx = ev.clientX - startX + (scrollEl.scrollLeft - startLeft);
+      const dy = ev.clientY - startY + (scrollEl.scrollTop - startTop);
       if (ev.type === 'pointercancel' || !dragged || swallowed()) {
         scrollEl.querySelectorAll('.roll__note').forEach((item) => {
           item.style.transform = '';
@@ -769,7 +933,8 @@ function bindStrip(strip, scrollEl, steps) {
       }
       const stepPx = stepSize(scrollEl);
       const deltaStep = Math.round(dx / stepPx);
-      const deltaMidi = scrollEl.__lanes ? 0 : Math.round(-dy / ROW_PX);
+      const deltaRow = Math.round(dy / ROW_PX);
+      const deltaMidi = scrollEl.__lanes ? deltaRow : -deltaRow;
       const grid = scrollEl.querySelector('.roll__grid');
       const members = selectMode
         ? [...grid.querySelectorAll('.roll__note')].filter((item) => scrollEl.__selected.has(item.dataset.voice))
@@ -783,10 +948,17 @@ function bindStrip(strip, scrollEl, steps) {
         const duration = Number(item.dataset.duration) || 1;
         const nextStep = step + deltaStep;
         const nextMidi = midi + deltaMidi;
-        if (nextStep < 0 || nextStep >= steps || nextStep + duration > steps) ok = false;
+        // A strip may hang over the loop edge — reject only a drag that
+        // leaves it completely outside the grid.
+        if (nextStep + duration <= 0 || nextStep >= steps) ok = false;
         if (!rows.includes(nextMidi)) ok = false;
         if (scrollEl.__inScale && !scrollEl.__inScale(nextMidi)) ok = false;
-        changes.push({ voiceId: item.dataset.voice, step: nextStep, midi: nextMidi });
+        changes.push({
+          voiceId: item.dataset.voice,
+          step: nextStep,
+          midi: nextMidi,
+          lane: scrollEl.__lanes?.[nextMidi]?.id,
+        });
       }
       members.forEach((item) => {
         item.style.transform = '';
@@ -838,6 +1010,7 @@ function paintSelection(scrollEl) {
   scrollEl.querySelectorAll('.roll__note').forEach((item) => {
     item.classList.toggle('is-selected', selected.has(item.dataset.voice));
   });
+  scrollEl.__onSelection?.(selected);
 }
 
 function setSelected(scrollEl, ids) {

@@ -26,7 +26,7 @@
   --text-on-color: #f2ead4;
   /* Real shadows stay near-black on a dark surface — not light "ink". */
   --shadow-rgb: 7 9 4;
-  --row-blocked: #272d1f;
+  --row-blocked: #151a0e;
   --sampler-hit: #574a78;
   --radius: 16px;
   --tap: 52px;
@@ -1495,14 +1495,17 @@ input[type='range'] {
 }
 
 .roll__row.is-blocked {
-  background: var(--row-blocked);
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 7px, rgb(var(--ink-rgb) / 0.06) 7px 9px),
+    var(--row-blocked);
   border-bottom: none;
 }
 
 .roll__ruler {
   position: sticky;
   top: 0;
-  z-index: 3;
+  /* Above every strip — a dragged or selected note slides under the ruler. */
+  z-index: 4;
   height: 26px;
   background: var(--bg-panel);
   border-bottom: 2px solid var(--ink);
@@ -1535,6 +1538,9 @@ input[type='range'] {
 .roll__grid {
   position: relative;
   background: var(--bg-elevated);
+  /* Strips stay inside the note field — a drag or a wrap-around tail never
+     paints over the time ruler or the keys column. */
+  overflow: hidden;
 }
 
 .roll__empty {
@@ -2177,6 +2183,12 @@ input[type='range'] {
 .sampler-pad.is-lit .sampler-pad__hold {
   background: rgba(255, 246, 228, 0.22);
   color: var(--text-on-color);
+}
+
+/* Amber SOLO: light pill + dark text keeps the hint readable. */
+.sampler-pad--solo.is-lit .sampler-pad__hold {
+  background: rgba(255, 246, 228, 0.35);
+  color: var(--on-accent);
 }
 
 /* Trigger flash from loop playback or remote hits — lighter than the hold. */
