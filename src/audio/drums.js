@@ -83,7 +83,7 @@ const SAMPLE_GAIN = {
   tom: 0.78,
   cowbell: 0.62,
   clap: 0.45,
-  rimshot: 0.58,
+  rimshot: 0.45,
 };
 
 /**
@@ -401,7 +401,7 @@ export class DrumMachine {
       modulationIndex: 28,
       resonance: 1800,
       octaves: 0.5,
-      volume: -14,
+      volume: -16,
     }).connect(this.#output);
 
     for (const [track, steps] of Object.entries(pattern)) {

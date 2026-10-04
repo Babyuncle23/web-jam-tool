@@ -1194,6 +1194,19 @@ export class PerformanceRecorder {
       this.#dropped.push(event);
       return false;
     });
+    if (next > previous) {
+      // An 'up' that fires before its voice's last 'on' wrapped the old
+      // seam: in the longer loop the same span ends at previous + step —
+      // a chord that stopped on the loop edge must not ring across the
+      // added bars. (up === on is a degenerate one-step strip: leave it.)
+      const lastOn = new Map();
+      for (const event of this.#events) {
+        if (event.type === 'on') lastOn.set(event.voiceId, event.step);
+      }
+      for (const event of this.#events) {
+        if (event.type === 'up' && event.step < (lastOn.get(event.voiceId) ?? -1)) event.step += previous;
+      }
+    }
     this.#byKey = new Map(this.#events.map((event) => [`${event.voiceId}:${event.step}:${event.type}`, event]));
     this.#byVoice.clear();
     for (const event of this.#events) this.#indexEvent(event);

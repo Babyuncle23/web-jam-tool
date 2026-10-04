@@ -3412,6 +3412,63 @@ input[type='range'] {
     font-size: 13px;
   }
 
+  /* Stage sheets split like the host screen: the editor grid owns the left
+     column at full height, its controls ride a right rail. The editor is
+     sticky so an open Advanced panel scrolls only the rail. */
+  .fx-sheet--stage .fx-sheet__card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(196px, 30%);
+    column-gap: 10px;
+  }
+
+  .fx-sheet--stage .fx-sheet__card > * {
+    grid-column: 2;
+    min-width: 0;
+    align-self: start;
+  }
+
+  .fx-sheet--stage .roll,
+  .fx-sheet--stage .sequencer {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    position: sticky;
+    top: 0;
+    height: calc(100dvh - 12px - env(safe-area-inset-bottom));
+    min-height: 0;
+    max-height: none;
+  }
+
+  #host-notes-sheet .fx-sheet__card,
+  #controller-notes-sheet .fx-sheet__card {
+    grid-template-rows: min-content minmax(0, 1fr);
+  }
+
+  #host-drums-sheet .fx-sheet__card,
+  #controller-drums-sheet .fx-sheet__card {
+    grid-template-rows: repeat(5, min-content) minmax(0, 1fr);
+  }
+
+  .fx-sheet--stage .stage-head {
+    flex-wrap: wrap;
+  }
+
+  .fx-sheet--stage .stage-bar {
+    align-content: flex-start;
+  }
+
+  /* The rail is ~1/3 of the card: buttons go two-up, the mode toggle keeps
+     a full row. These must restate the id-scoped portrait flex values. */
+  #host-notes-sheet .stage-bar .btn,
+  #controller-notes-sheet .stage-bar .btn,
+  .fx-sheet--stage .stage-bar .btn {
+    flex: 1 1 40%;
+  }
+
+  #host-notes-sheet .stage-bar .select-move,
+  #controller-notes-sheet .stage-bar .select-move {
+    flex: 1 1 100%;
+  }
+
   .splash {
     top: 0;
     padding: 8px;
