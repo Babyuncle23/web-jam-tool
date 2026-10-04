@@ -449,7 +449,10 @@ export class DrumMachine {
       Array.from({ length: next }, (_, i) => i),
       '16n',
     );
-    if (wasRunning) this.#sequence.start();
+    // start(0), not start(): the pattern index must stay the absolute
+    // transport step or the drum grid, the bar readout and the note loop
+    // drift apart by however far the transport had already run.
+    if (wasRunning) this.#sequence.start(0);
     return next;
   }
 

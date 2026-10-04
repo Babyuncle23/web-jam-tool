@@ -1294,7 +1294,7 @@ export class PerformanceRecorder {
     const transport = this.#tone.getTransport();
     const ticksPerStep = (transport.PPQ || 192) / 4;
     const pos = transport.ticks / ticksPerStep;
-    let step = Math.round(pos) % this.#loopSteps;
+    let step = Math.floor(pos) % this.#loopSteps;
     if (step < 0) step += this.#loopSteps;
     const voiceId = `hit:${this.#playerId}:${this.#hitSeq}`;
     this.#hitSeq += 1;
@@ -1316,7 +1316,7 @@ export class PerformanceRecorder {
       // captureRelease at the real release position, kept as step + frac.
       let opens = this.#openHits.get(String(sample));
       if (!opens) this.#openHits.set(String(sample), (opens = []));
-      opens.push({ voiceId, onAbs: Math.round(pos), on: event });
+      opens.push({ voiceId, onAbs: Math.floor(pos), on: event });
     } else {
       this.#put({ ...event, step: (step + 1) % this.#loopSteps, type: 'up' });
     }
@@ -1362,7 +1362,10 @@ export class PerformanceRecorder {
     if (!this.#recording) return false;
     const transport = this.#tone.getTransport();
     const ticksPerStep = (transport.PPQ || 192) / 4;
-    let step = Math.round(transport.ticks / ticksPerStep) % this.#loopSteps;
+    const pos = transport.ticks / ticksPerStep;
+    // A press lands on the displayed step (floor — the bar readout floors
+    // too); a release snaps to the nearest boundary to keep the held length.
+    let step = (event.type === 'up' ? Math.round(pos) : Math.floor(pos)) % this.#loopSteps;
     if (step < 0) step += this.#loopSteps;
 
     if (event.type === 'down') {
