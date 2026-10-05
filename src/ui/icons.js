@@ -96,12 +96,26 @@ const PATHS = {
     'M4.4 17.8a1.8 1.8 0 1 1 3.6 0 1.8 1.8 0 0 1-3.6 0z' +
     'M8.9 8.8l13.1 11.3c.7.6.3 1.6-.6 1.5l-11.3-9.6z' +
     'M8.9 15.2L22 3.9c.7-.6.3-1.6-.6-1.5l-11.3 9.6z',
+  /* Help-sheet gesture glyphs: a touch ring, a filling timer, squeeze
+     chevrons, a four-way move and a loupe. */
+  tap:
+    'M12 2.4a9.6 9.6 0 1 0 0 19.2 9.6 9.6 0 0 0 0-19.2zM12 5.4a6.6 6.6 0 1 1 0 13.2 6.6 6.6 0 0 1 0-13.2z' +
+    'M12 9.6a2.4 2.4 0 1 1 0 4.8 2.4 2.4 0 0 1 0-4.8z',
+  hold:
+    'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 4.8a7.2 7.2 0 1 1 0 14.4 7.2 7.2 0 0 1 0-14.4z' +
+    'M12 12V4.8a7.2 7.2 0 0 1 6.2 10.8z',
+  pinch: 'M9.6 5.4 4.8 12l4.8 6.6-1.9 1.4L2 12l5.7-8zM14.4 5.4 19.2 12l-4.8 6.6 1.9 1.4L22 12l-5.7-8z',
+  drag: 'M12 1.8 15.6 5.6h-2.4v5h5V8.4L22.2 12l-3.8 3.6v-2.4h-5v5h2.4L12 22.2l-3.6-3.6h2.4v-5h-5v2.4L1.8 12l3.8-3.6v2.4h5v-5H8.4z',
+  zoom:
+    'M10.4 2.4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM10.4 5a5.4 5.4 0 1 1 0 10.8 5.4 5.4 0 0 1 0-10.8z' +
+    'M16.1 14.8l5 5-1.7 1.7-5-5z',
+  help: 'M12 2.2a9.8 9.8 0 1 0 0 19.6 9.8 9.8 0 0 0 0-19.6zM12 6.4c-2 0-3.6 1.3-3.6 3h2.4c0-.5.5-.9 1.2-.9s1.2.4 1.2 1c0 1.5-2.6 1.7-2.6 3.9v.8h2.4c0-1.3 2.6-1.9 2.6-4.7 0-1.9-1.6-3.1-3.6-3.1zM10.8 15.9h2.4v2.5h-2.4z',
 };
 
 /** The loop icon's center pip — its own node so .is-on can paint it red. */
 const LOOP_DOT = 'M12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 1 1 0-5z';
 
-const EVENODD = new Set(['kick', 'cowbell', 'rimshot', 'bass', 'room', 'loop', 'erase', 'scissors']);
+const EVENODD = new Set(['kick', 'cowbell', 'rimshot', 'bass', 'room', 'loop', 'erase', 'scissors', 'tap', 'hold', 'zoom', 'help']);
 const FILLED = new Set(Object.keys(PATHS));
 
 function svgEl(name) {

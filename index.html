@@ -123,6 +123,7 @@
             </div>
           </div>
           <div class="topbar__actions">
+            <button class="btn btn--icon" type="button" data-action="help" title="Gestures and help" aria-label="Gestures and help">?</button>
             <button id="btn-export" class="btn btn--ghost" type="button">Export</button>
             <button id="btn-transport" class="btn btn--primary" type="button" disabled>Play</button>
           </div>
@@ -174,7 +175,15 @@
 
         <div class="host-tools">
           <div class="tempo-panel">
-            <button id="btn-bars" class="btn btn--ghost tempo-panel__bars" type="button">2 bars</button>
+            <button
+              id="btn-bars"
+              class="btn btn--ghost tempo-panel__bars"
+              type="button"
+              title="Tap resizes the loop — hold to copy the current bars into the new ones"
+              aria-label="Loop length — tap cycles 1, 2, 4 bars; holding a longer size copies the bars in play"
+            >
+              2 bars
+            </button>
             <div class="tool-row tempo-panel__bpm" id="bpm-presets" data-group="bpm">
               <span class="tool-row__label">BPM</span>
               <button class="chip" type="button" data-bpm="80">80</button>
@@ -318,9 +327,9 @@
           <div id="host-drum-adv" class="drum-adv" hidden>
             <div class="tool-row" id="host-drum-length">
               <span class="tool-row__label">Loop</span>
-              <button class="chip" type="button" data-steps="16">1 bar</button>
-              <button class="chip is-picked" type="button" data-steps="32">2 bars</button>
-              <button class="chip" type="button" data-steps="64">4 bars</button>
+              <button class="chip" type="button" data-steps="16" title="Tap resizes — hold a longer size to copy the bars">1 bar</button>
+              <button class="chip is-picked" type="button" data-steps="32" title="Tap resizes — hold a longer size to copy the bars">2 bars</button>
+              <button class="chip" type="button" data-steps="64" title="Tap resizes — hold a longer size to copy the bars">4 bars</button>
             </div>
             <div class="tool-row" id="host-drum-write">
               <span class="tool-row__label">Add</span>
@@ -436,6 +445,7 @@
         <span class="pill" id="controller-status" data-state="offline">not connected</span>
         <span class="pill" id="controller-key">C · Major</span>
         <button id="controller-transport" class="btn btn--icon" type="button" disabled aria-label="Play / stop" aria-pressed="false"></button>
+        <button class="btn btn--icon" type="button" data-action="help" title="Gestures and help" aria-label="Gestures and help">?</button>
       </header>
 
       <div class="play-bar" id="controller-play-bar">
@@ -583,9 +593,9 @@
           <div id="controller-drum-adv" class="drum-adv" hidden>
             <div class="tool-row" id="controller-drum-length">
               <span class="tool-row__label">Loop</span>
-              <button class="chip" type="button" data-steps="16">1 bar</button>
-              <button class="chip is-picked" type="button" data-steps="32">2 bars</button>
-              <button class="chip" type="button" data-steps="64">4 bars</button>
+              <button class="chip" type="button" data-steps="16" title="Tap resizes — hold a longer size to copy the bars">1 bar</button>
+              <button class="chip is-picked" type="button" data-steps="32" title="Tap resizes — hold a longer size to copy the bars">2 bars</button>
+              <button class="chip" type="button" data-steps="64" title="Tap resizes — hold a longer size to copy the bars">4 bars</button>
             </div>
             <div class="tool-row" id="controller-drum-write">
               <span class="tool-row__label">Add</span>
@@ -645,6 +655,17 @@
           Too many players are connected right now. Please wait — this page retries automatically until a slot frees up.
         </p>
         <button id="server-full-retry" class="btn btn--primary btn--xl" type="button">Try again now</button>
+      </div>
+    </div>
+
+    <!-- One sheet for both roles: it sits outside the screens so a view reset never detaches it. -->
+    <div id="help-sheet" class="fx-sheet" hidden>
+      <div class="fx-sheet__card help-card">
+        <div class="stage-head">
+          <h2>Hints</h2>
+          <button id="help-close" class="btn btn--primary" type="button">Done</button>
+        </div>
+        <div id="help-body" class="help-body"></div>
       </div>
     </div>
 

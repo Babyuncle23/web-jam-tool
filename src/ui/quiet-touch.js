@@ -23,6 +23,55 @@ export function setControlEnabled(el, enabled) {
   el.tabIndex = on ? 0 : -1;
 }
 
+/**
+ * One control, two gestures: a click (tap, keyboard, the synthesized tap)
+ * calls onTap; a press held past `ms` fires onHold once and eats the click
+ * the release still produces, so the tap path never double-fires. Dragging
+ * off or a cancelled press aborts — same contract as the clear-all hold.
+ * `arm` is the feedback class added on pointerdown (or a function returning
+ * one — return '' to say this press has no hold action worth previewing).
+ * Returns a cancel() for view teardown.
+ */
+export function bindHoldTap(el, { ms = 600, onTap, onHold, arm = 'is-arming' } = {}) {
+  let timer = 0;
+  let held = false;
+  let armed = '';
+  const off = () => el.disabled || el.getAttribute('aria-disabled') === 'true';
+  const disarm = () => {
+    if (armed) {
+      el.classList.remove(armed);
+      armed = '';
+    }
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = 0;
+  };
+  el.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || timer || off()) return;
+    held = false;
+    armed = typeof arm === 'function' ? arm() : arm;
+    if (armed) el.classList.add(armed);
+    timer = setTimeout(() => {
+      timer = 0;
+      held = true;
+      disarm();
+      onHold?.();
+    }, ms);
+  });
+  for (const type of ['pointerup', 'pointerleave', 'pointercancel']) {
+    el.addEventListener(type, disarm);
+  }
+  el.addEventListener('click', (event) => {
+    if (held) {
+      held = false;
+      event.stopPropagation();
+      return;
+    }
+    if (!off()) onTap?.(event);
+  });
+  return disarm;
+}
+
 function softenButtons(root) {
   for (const button of [...root.querySelectorAll('button')]) {
     const div = document.createElement('div');

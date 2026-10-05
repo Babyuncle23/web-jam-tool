@@ -15,7 +15,7 @@ import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
 import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
-import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
+import { pressable, setControlEnabled, bindHoldTap } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 
 /** Two-level compare for `{ instrument: { fxId: level } }` state patches. */
@@ -756,10 +756,15 @@ export async function createControllerView({ code, name } = {}) {
       paintGuestDrumEditRows();
     }
   });
-  el.drumLengthRow?.addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-steps]');
-    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
-    socket.sendControl({ drumLength: Number(chip.dataset.steps) });
+  /* Tap picks the loop length; a held grow asks the host to stamp the bars
+     in play over the added span (its 'duplicate' flag) — the amber fill only
+     previews when the hold would actually copy. */
+  el.drumLengthRow?.querySelectorAll('[data-steps]').forEach((chip) => {
+    bindHoldTap(chip, {
+      arm: () => (Number(chip.dataset.steps) > state.drums.steps ? 'is-arming--dup' : ''),
+      onTap: () => socket.sendControl({ drumLength: Number(chip.dataset.steps) }),
+      onHold: () => socket.sendControl({ drumLength: Number(chip.dataset.steps), duplicate: true }),
+    });
   });
   el.drumPitch?.addEventListener('pointerdown', () => {
     guestPitchDrag = true;
@@ -1697,7 +1702,8 @@ export async function createControllerView({ code, name } = {}) {
      the mode chips and Rec. Rotating back restores the buttons. */
   const landscapeMq = matchMedia('(orientation: landscape) and (max-height: 560px) and (pointer: coarse)');
   const backButton = el.screen.querySelector('.controller-bar [data-action="back"]');
-  const chromeHomes = [el.transport, backButton]
+  const helpButton = el.screen.querySelector('.controller-bar [data-action="help"]');
+  const chromeHomes = [el.transport, backButton, helpButton]
     .filter(Boolean)
     .map((node) => ({ node, parent: node.parentNode, next: node.nextSibling }));
 
@@ -1706,6 +1712,8 @@ export async function createControllerView({ code, name } = {}) {
     if (landscapeMq.matches) {
       el.playBar.insertBefore(el.transport, el.loop ?? null);
       if (backButton) el.playBar.insertBefore(backButton, el.playBar.firstChild);
+      // '?' rides along — the controller bar is gone, help must stay reachable.
+      if (helpButton) el.playBar.insertBefore(helpButton, backButton?.nextSibling ?? el.playBar.firstChild);
     } else {
       for (const { node, parent, next } of chromeHomes) parent.insertBefore(node, next);
     }

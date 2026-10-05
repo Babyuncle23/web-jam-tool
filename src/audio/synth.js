@@ -499,51 +499,13 @@ function segmentVoice(voiceId) {
 }
 
 /**
- * PolySynth parks future events on context.setTimeout, and a release that is
- * processed while its attack is still parked silently finds no voice — the
- * parked attack then rings forever. Clamp every time to now so a release can
- * never outrun the attack it is meant to end.
+ * A release that lands before the attack it is meant to end can never find
+ * the note — and a parked attack then rings forever. Clamp every time to now
+ * so a release can never outrun its attack.
  */
 function capNow(tone, time) {
   const now = tone.now();
   return Number.isFinite(time) ? Math.min(time, now) : now;
-}
-
-function createSustainedVoice(tone, SynthClass, options, destination, polyphony) {
-  const synth = new tone.PolySynth(SynthClass, options).connect(destination);
-  synth.maxPolyphony = polyphony;
-  const releaseTime = options.envelope?.release ?? 0.2;
-  return {
-    kind: 'sustain',
-    trigger(frequencies, time, velocity) {
-      const base = capNow(tone, time);
-      for (const frequency of frequencies) {
-        synth.triggerAttack(frequency, base, velocity);
-      }
-    },
-    release(frequencies, time) {
-      if (frequencies?.length) synth.triggerRelease(frequencies, capNow(tone, time));
-    },
-    choke(frequencies, time) {
-      if (!frequencies?.length) return;
-      const when = capNow(tone, time);
-      synth.set({ envelope: { release: CHOKE_RELEASE } });
-      synth.triggerRelease(frequencies, when);
-      synth.set({ envelope: { release: releaseTime } });
-    },
-    silence() {
-      try {
-        synth.releaseAll();
-      } catch {
-        // The voice was already quiet.
-      }
-    },
-    warmUp() {},
-    dispose() {
-      synth.releaseAll();
-      synth.dispose();
-    },
-  };
 }
 
 /**
@@ -553,13 +515,16 @@ function createSustainedVoice(tone, SynthClass, options, destination, polyphony)
 function createMonoVoice(tone, options, destination) {
   const synth = new tone.Synth(options).connect(destination);
   let on = false;
+  /** Source.start asserts strictly increasing start times — nudge same-tick retriggers. */
+  let lastAttack = 0;
   return {
     kind: 'mono',
     trigger(frequencies, time, velocity) {
       const when = capNow(tone, time);
       const frequency = frequencies.find((value) => value > 0);
       if (!(frequency > 0)) return;
-      synth.triggerAttack(frequency, when, velocity);
+      lastAttack = Math.max(when, lastAttack + 0.0001);
+      synth.triggerAttack(frequency, lastAttack, velocity);
       on = true;
     },
     release(_frequencies, time) {
@@ -584,13 +549,17 @@ function createMonoVoice(tone, options, destination) {
 }
 
 /**
- * One oscillator per held finger. A new pitch retriggers that finger.
- * Voices are allocated once, never on instrument change.
+ * One voice per held finger note. A new pitch retriggers that finger, and a
+ * slot is free the moment it is released — not when its tail ends — so a
+ * slide can never outrun the pool the way a Tone.PolySynth does (its voices
+ * stay checked out until the release finishes, then extra notes are dropped).
+ * When the pool is truly exhausted, the newest attack steals a voice instead
+ * of going silent. Voices are allocated once, never on instrument change.
  */
-function createGlideVoice(tone, options, destination, polyphony) {
+function createPooledVoice(tone, SynthClass, options, destination, polyphony) {
   const free = [];
   const pool = Array.from({ length: polyphony }, () => {
-    const synth = new tone.Synth(options).connect(destination);
+    const synth = new SynthClass(options).connect(destination);
     const slot = { synth, on: false };
     free.push(slot);
     return slot;
@@ -615,6 +584,17 @@ function createGlideVoice(tone, options, destination, polyphony) {
     free.push(slot);
   }
 
+  /** Pool empty: cut the top note of the longest-held finger so this one sounds. */
+  function stealSlot(when) {
+    for (const slots of held.values()) {
+      const slot = slots.pop();
+      if (!slot) continue;
+      releaseSlot(slot, when);
+      return free.pop();
+    }
+    return null;
+  }
+
   return {
     kind: 'sustain',
     trigger(frequencies, time, velocity, { id = 'default' } = {}) {
@@ -626,9 +606,14 @@ function createGlideVoice(tone, options, destination, polyphony) {
       slots = [];
       held.set(id, slots);
       frequencies.forEach((frequency) => {
-        const slot = free.pop();
+        const slot = free.pop() ?? stealSlot(when);
         if (!slot || !(frequency > 0)) return;
-        slot.synth.triggerAttack(frequency, when, velocity);
+        // Source.start asserts each start is strictly later than the last;
+        // the audio clock stays flat across a tick, so a same-tick retrigger
+        // needs a nudge or the throw kills the rest of the chord.
+        const at = Math.max(when, (slot.at ?? 0) + 0.0001);
+        slot.at = at;
+        slot.synth.triggerAttack(frequency, at, velocity);
         slot.on = true;
         slots.push(slot);
       });
@@ -687,15 +672,16 @@ export class TouchSynth {
     const inputs = bus.inputs;
     /** Lite halves the voice pools; the smallest one still fits a 9th chord. */
     const poly = lite?.lowPolyphony
-      ? { pad: 8, organ: 8, kalimba: 4, synth: 6 }
+      ? { pad: 8, organ: 8, kalimba: 5, synth: 6 }
       : { pad: 16, organ: 16, kalimba: 8, synth: 12 };
     /** Lite runs one oscillator per note instead of a detuned fat stack. */
     const fat = lite?.singleFat ? 1 : 0;
     /** Lite cuts the pad tail: a released voice still burns an oscillator. */
     const padRelease = lite?.shortTails ? 1.4 : 2.2;
     this.#voices = {
-      pad: createGlideVoice(
+      pad: createPooledVoice(
         this.#tone,
+        this.#tone.Synth,
         {
           oscillator: { type: 'fatsine', count: fat || 3, spread: 12 },
           envelope: { attack: 0.42, decay: 0.5, sustain: 0.72, release: padRelease },
@@ -713,7 +699,7 @@ export class TouchSynth {
         },
         inputs.bass,
       ),
-      organ: createSustainedVoice(
+      organ: createPooledVoice(
         this.#tone,
         this.#tone.Synth,
         {
@@ -724,7 +710,7 @@ export class TouchSynth {
         inputs.organ,
         poly.organ,
       ),
-      kalimba: createSustainedVoice(
+      kalimba: createPooledVoice(
         this.#tone,
         this.#tone.FMSynth,
         {
@@ -739,8 +725,9 @@ export class TouchSynth {
         inputs.kalimba,
         poly.kalimba,
       ),
-      synth: createGlideVoice(
+      synth: createPooledVoice(
         this.#tone,
+        this.#tone.Synth,
         {
           oscillator: { type: 'triangle' },
           envelope: { attack: 0.005, decay: 0.4, sustain: 0.55, release: 0.5 },
@@ -1116,6 +1103,8 @@ export class PerformanceRecorder {
   #placed = 0;
   /** Unique voice ids for recorded sample hits (`hit:player:n`). */
   #hitSeq = 0;
+  /** Unique voice ids for hold-grown copies (`dup:player:n`). */
+  #dupSeq = 0;
   /** Gate pads still held: sampleId → [{ voiceId, onAbs, on }] — the 'up' is written on release. */
   #openHits = new Map();
   /** Events a loop shrink cut off the grid — a regrow restores them verbatim. */
@@ -1164,9 +1153,10 @@ export class PerformanceRecorder {
   /**
    * Grow or set the note loop. Existing notes stay on their steps and the
    * repeat becomes the new length, so a longer loop does not retrigger them
-   * every old bar.
+   * every old bar. `duplicate` is the held-press grow: the old bars are
+   * stamped into the added span instead of recalling the stash.
    */
-  setLoopSteps(steps) {
+  setLoopSteps(steps, { duplicate = false } = {}) {
     const next = normalizeLoopSteps(steps);
     const previous = this.#loopSteps;
     if (next === previous) return previous;
@@ -1225,8 +1215,13 @@ export class PerformanceRecorder {
     }
     // A regrow returns stashed voices whole: one comes back only when every
     // one of its events fits the new length, so a partial regrow never
-    // resurrects a strip cut in half.
-    if (next > previous && this.#dropped.length) {
+    // resurrects a strip cut in half. A held grow stamps copies over the new
+    // span instead — and the stash is dropped: its voices sit on the same
+    // steps the copies now own and would double up on the next regrow.
+    if (next > previous && duplicate) {
+      this.#dropped = [];
+      this.#stampLoopCopies(previous, next);
+    } else if (next > previous && this.#dropped.length) {
       const byVoice = new Map();
       for (const event of this.#dropped) {
         const list = byVoice.get(event.voiceId) || [];
@@ -1248,6 +1243,47 @@ export class PerformanceRecorder {
     this.#synth.releaseMatching(`loop:${this.#playerId}:`);
     this.#sampler?.releaseMatching(`loop:${this.#playerId}:`);
     return this.#loopSteps;
+  }
+
+  /**
+   * The held grow: stamp every finished voice once per extra old-length
+   * block (2→4 bars copies once, 1→4 stamps three times). Copies get fresh
+   * voice ids — and each chord member a fresh shared group — so they edit,
+   * move and chop independently of the originals. Voices with no 'up' are
+   * open takes (a finger still down): a copy could never get its note-off,
+   * so it would sit as a mute strip forever — skip those.
+   */
+  #stampLoopCopies(from, to) {
+    const entries = [...this.#byVoice.values()];
+    const groups = new Map();
+    const members = new Map();
+    for (const entry of entries) {
+      if (!entry.up) continue;
+      const events = [...entry.ons, entry.up];
+      const sourceGroup = events.find((event) => event.group)?.group;
+      for (let offset = from; offset < to; offset += from) {
+        let group;
+        let voiceId;
+        if (sourceGroup) {
+          const key = `${sourceGroup}+${offset}`;
+          group = groups.get(key);
+          if (!group) {
+            group = `dup:${this.#playerId}:${this.#dupSeq}`;
+            this.#dupSeq += 1;
+            groups.set(key, group);
+          }
+          const index = members.get(group) ?? 0;
+          members.set(group, index + 1);
+          voiceId = `${group}~${index}`;
+        } else {
+          voiceId = `dup:${this.#playerId}:${this.#dupSeq}`;
+          this.#dupSeq += 1;
+        }
+        for (const event of events) {
+          this.#put({ ...event, voiceId, group, step: (event.step + offset) % to });
+        }
+      }
+    }
   }
 
   get events() {

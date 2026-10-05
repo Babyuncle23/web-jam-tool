@@ -61,7 +61,7 @@ import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
 import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/piano-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
-import { pressable, setControlEnabled } from '../ui/quiet-touch.js';
+import { pressable, setControlEnabled, bindHoldTap } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
 import { JamSocket, EVENTS, isLocalHostname } from '../network/socket.js';
 import { loadScript } from '../network/load-script.js';
@@ -695,9 +695,13 @@ export async function createHostView({ lite } = {}) {
     drumGrid.render();
   }
 
-  /** Copy the leading bars over the rest of the loop when repeat allows it. */
-  function tileDrumRepeat() {
-    const span = repeatSpanSteps(state.drumRepeat, state.drumSteps);
+  /**
+   * Copy the leading bars over the rest of the loop when repeat allows it.
+   * A forced span says "the held grow": stamp the bars that just fit,
+   * ignoring the repeat mode's own span (or its off state).
+   */
+  function tileDrumRepeat(forcedSpan) {
+    const span = forcedSpan || repeatSpanSteps(state.drumRepeat, state.drumSteps);
     if (!span) return;
     for (const track of TRACKS) {
       const row = state.grid[track.id];
@@ -750,11 +754,8 @@ export async function createHostView({ lite } = {}) {
     if (el.drumAdvPanel) el.drumAdvPanel.hidden = !on;
     if (!on) setDrumWrite('single');
   });
-  el.drumLengthRow?.addEventListener('click', (event) => {
-    const chip = event.target.closest('[data-steps]');
-    if (!chip || chip.getAttribute('aria-disabled') === 'true') return;
-    setSharedLength(Number(chip.dataset.steps));
-  });
+  /* The Loop-length chips bind tap/hold below, next to the bars button —
+     that is where setSharedLength lives. */
 
   function setDrumRepeat(mode) {
     const next = mode === 'off' || mode === '0' || mode === 0 ? 'off' : Math.min(2, Math.max(1, Number(mode) || 1));
@@ -1625,7 +1626,8 @@ export async function createHostView({ lite } = {}) {
      Rotating back moves the buttons home. */
   const landscapeMq = matchMedia('(orientation: landscape) and (max-height: 560px) and (pointer: coarse)');
   const backButton = el.topbar?.querySelector('[data-action="back"]');
-  const chromeHomes = [el.transport, backButton]
+  const helpButton = el.topbar?.querySelector('[data-action="help"]');
+  const chromeHomes = [el.transport, backButton, helpButton]
     .filter(Boolean)
     .map((node) => ({ node, parent: node.parentNode, next: node.nextSibling }));
 
@@ -1634,6 +1636,8 @@ export async function createHostView({ lite } = {}) {
     if (landscapeMq.matches) {
       el.playBar.insertBefore(el.transport, el.loop ?? null);
       if (backButton) el.playBar.insertBefore(backButton, el.playBar.firstChild);
+      // '?' rides along — the topbar is gone, help must stay reachable.
+      if (helpButton) el.playBar.insertBefore(helpButton, backButton?.nextSibling ?? el.playBar.firstChild);
     } else {
       for (const { node, parent, next } of chromeHomes) parent.insertBefore(node, next);
     }
@@ -2085,13 +2089,19 @@ export async function createHostView({ lite } = {}) {
     }
   }
 
-  /** The loop and the drum machine share one length: 1, 2 or 4 bars. */
-  function setSharedLength(length) {
+  /**
+   * The loop and the drum machine share one length: 1, 2 or 4 bars.
+   * `duplicate` is the held-press grow — the bars in play are stamped over
+   * the added span (drums tiled, note loops copied) instead of leaving the
+   * new half to the remembered stash; `editor` owns the undo entry.
+   */
+  function setSharedLength(length, { duplicate = false, editor = 'host' } = {}) {
     const next = normalizeLoopSteps(length);
     if (next === state.noteSteps && next === state.drumSteps) {
       paintDrumLength();
       return next;
     }
+    const previous = state.noteSteps;
     state.noteSteps = next;
     state.drumSteps = audio?.drums.setLength(next) ?? next;
     fitDrumRows(next);
@@ -2099,18 +2109,31 @@ export async function createHostView({ lite } = {}) {
       const preset = DRUM_PRESETS[state.drumPreset];
       applyPattern(preset.pattern, preset.span);
     } else {
-      tileDrumRepeat();
+      tileDrumRepeat(duplicate && next > previous ? previous : 0);
       renderSequencer();
     }
     paintDrumEditRows();
     paintDrumLength();
     publishDrums();
     if (audio) {
-      for (const recorder of audio.loops.values()) recorder.setLoopSteps(next);
+      // The stamped copy is an edit like any other: undo peels it off while
+      // the loop stays at its new length. An all-empty grow pushes nothing —
+      // a dead entry would eat an undo silently.
+      if (duplicate && next > previous) {
+        const targets = snapshotOf(audio.loops.keys());
+        if (targets.some((target) => target.events?.length)) pushEdit(editor, targets);
+      }
+      let copied = false;
+      for (const recorder of audio.loops.values()) {
+        const before = recorder.length;
+        recorder.setLoopSteps(next, { duplicate });
+        copied ||= recorder.length > before;
+      }
       // A shrink can cut hits off the grid — the pad marks follow at once,
       // not on the next edit.
       samplerUi.refreshErase();
       shareLoop();
+      if (copied) log('bars copied into the grown loop', 'loop');
     }
     setIconLabel(el.bars, barCountLabel(next));
     paintBar(audio?.engine.transportRunning ? litStep % Math.max(1, next) : parkedLoopStep());
@@ -2119,7 +2142,25 @@ export async function createHostView({ lite } = {}) {
     return next;
   }
 
-  el.bars.addEventListener('click', () => setSharedLength(nextLoopSteps(state.noteSteps)));
+  /* Tap cycles 2 → 4 → 1 bars. Holding through a grow stamps the current
+     bars into the added ones instead of recalling what the longer loop had;
+     a held shrink is just the shrink. The amber fill only previews when the
+     hold would actually copy. */
+  const cancelBarsHold = bindHoldTap(el.bars, {
+    arm: () => (nextLoopSteps(state.noteSteps) > normalizeLoopSteps(state.noteSteps) ? 'is-arming--dup' : ''),
+    onTap: () => setSharedLength(nextLoopSteps(state.noteSteps)),
+    onHold: () => setSharedLength(nextLoopSteps(state.noteSteps), { duplicate: true }),
+  });
+  const cancelLengthHolds = [];
+  el.drumLengthRow?.querySelectorAll('[data-steps]').forEach((chip) => {
+    cancelLengthHolds.push(
+      bindHoldTap(chip, {
+        arm: () => (Number(chip.dataset.steps) > state.drumSteps ? 'is-arming--dup' : ''),
+        onTap: () => setSharedLength(Number(chip.dataset.steps)),
+        onHold: () => setSharedLength(Number(chip.dataset.steps), { duplicate: true }),
+      }),
+    );
+  });
 
   /** Bumps on every shareLoop: guests skip repaints on identical echoes. */
   let loopVersion = 0;
@@ -2942,7 +2983,9 @@ export async function createHostView({ lite } = {}) {
       log(`${data.name ?? 'guest'} · drums ${DRUM_PRESETS[data.drumPreset].label}`, 'drums');
     }
     if (data.drumRepeat !== undefined) setDrumRepeat(data.drumRepeat);
-    if (Number.isFinite(Number(data.drumLength))) setSharedLength(Number(data.drumLength));
+    if (Number.isFinite(Number(data.drumLength))) {
+      setSharedLength(Number(data.drumLength), { duplicate: data.duplicate === true, editor: data.peerId || 'host' });
+    }
     if (Number.isFinite(Number(data.drumPitch))) setDrumPitch(Number(data.drumPitch));
     if (Number.isFinite(Number(data.bpm))) setSharedBpm(Number(data.bpm));
     // Sampler pads — hits record into the peer's loop, previews never do.
@@ -3512,6 +3555,9 @@ export async function createHostView({ lite } = {}) {
       clearTimeout(rollPaintTimer);
       // A clear-hold pending past destroy would fire clearAllLoops on a null audio.
       clearTimeout(clearHold);
+      // Same for a length-button hold armed but not yet fired.
+      cancelBarsHold();
+      for (const cancel of cancelLengthHolds) cancel();
       drumGrid.destroy();
       hostPad.destroy();
       samplerUi.destroy();

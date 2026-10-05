@@ -7,6 +7,7 @@
 import { markPageEdges } from './ui/scroll-edges.js';
 import { installQuietTouch } from './ui/quiet-touch.js';
 import { initRoleExtras } from './ui/install-share.js';
+import { renderHelp } from './ui/help.js';
 import { loadScript } from './network/load-script.js';
 import { socketServerUrl } from './network/socket.js';
 import { LITE } from './audio/effects.js';
@@ -33,6 +34,23 @@ document.getElementById('btn-ai-disclosure')?.addEventListener('click', () => {
 });
 document.getElementById('ai-disclosure-close')?.addEventListener('click', () => {
   aiSheet.hidden = true;
+});
+
+/* The '?' buttons live inside the cloned screens, so the open is delegated
+   like the back button; the sheet itself sits outside them and stays put. */
+const helpSheet = document.getElementById('help-sheet');
+renderHelp(document.getElementById('help-body'));
+document.addEventListener('click', (event) => {
+  if (event.target.closest('[data-action="help"]')) helpSheet.hidden = false;
+});
+document.getElementById('help-close')?.addEventListener('click', () => {
+  helpSheet.hidden = true;
+});
+helpSheet?.addEventListener('click', (event) => {
+  if (event.target === helpSheet) helpSheet.hidden = true;
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !helpSheet?.hidden) helpSheet.hidden = true;
 });
 
 if ('serviceWorker' in navigator) {
