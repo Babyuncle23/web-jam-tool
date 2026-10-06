@@ -3,7 +3,7 @@
  * - "Bar —" idle label, "Bar X / N" while playing, beat dots lit.
  * - #btn-bars cycles 2 → 4 → 1 → 2 bars and the readout total follows.
  * - Drum ruler: one mark per bar, mirror marks labelled "N ← 1" under repeat.
- * - Piano-roll ruler: bar numbers and bar lines land on every 16th step.
+ * - Note-roll ruler: bar numbers and bar lines land on every 16th step.
  * - Screenshots land in scripts/shots for eyeballing.
  */
 import puppeteer from 'puppeteer-core';
@@ -189,7 +189,7 @@ try {
   })()`);
   console.log('back to 2 bars:', JSON.stringify(backTwo));
 
-  // 8. Piano-roll ruler: bar numbers 1,2 and a heavy line every 16 steps.
+  // 8. Note-roll ruler: bar numbers 1,2 and a heavy line every 16 steps.
   await clickSelector(host, '#btn-notes');
   await pollExpr(host, `({ ok: !document.getElementById('host-notes-sheet').hidden })`);
   const roll = await pollExpr(host, `(() => {

@@ -1,5 +1,5 @@
 /**
- * Octave-after-edit probe: a note moved in the piano roll must stay
+ * Octave-after-edit probe: a note moved in the note roll must stay
  * scale-relative — an octave change has to reach it like a recorded take.
  *
  * Scenario: record one chord on the pad, then a raw socket.io "guest" sends

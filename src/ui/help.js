@@ -15,12 +15,13 @@ export const HELP_SECTIONS = [
       { icon: 'bars', keys: 'tap · hold', text: 'Tap resizes the loop. Holding while it grows copies the bars in play into the new ones — notes and drums alike.' },
       { icon: 'prev', keys: 'hold', text: 'The back arrow leaves the session on a hold — or on two quick taps.' },
       { icon: 'undo', keys: 'hold', text: 'Undo and redo light up the notes they would touch while held.' },
-      { icon: 'sampler', keys: 'hold', text: 'A pad’s SOLO mutes the mix while held; gate pads play for as long as you press.' },
-      { icon: 'detail', keys: 'hold', text: 'On the FX pad, holding the right edge catches stutter — ¼ to 1/32 picks the rate.' },
+      { icon: 'sampler', keys: 'hold', text: 'A pad’s SOLO mutes everything else while held; gate pads play for as long as you press.' },
+      { icon: 'detail', keys: 'hold', text: 'On the FX pad, holding right of the first lane catches stutter — ¼ to 1/32 picks the rate.' },
+      { icon: 'cutoff', keys: 'drag', text: 'On that pad, height rides the filter: up cuts lows, down cuts highs, the middle bypasses.' },
     ],
   },
   {
-    title: 'Piano roll',
+    title: 'Note roll',
     items: [
       { icon: 'tap', keys: 'tap', text: 'An empty cell writes a note. Tapping a note deletes it.' },
       { icon: 'drag', keys: 'drag', text: 'A strip moves it; its right edge resizes it.' },

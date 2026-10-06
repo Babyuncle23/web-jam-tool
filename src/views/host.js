@@ -58,7 +58,7 @@ import {
 } from '../audio/effects.js';
 import { TouchPad, TouchPadRenderer } from '../ui/touch-pad.js';
 import { paintIconButton, chipIcon, setIconLabel } from '../ui/icons.js';
-import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/piano-roll.js';
+import { renderNoteRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode, setRollUndoPreview } from '../ui/note-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
 import { pressable, setControlEnabled, bindHoldTap } from '../ui/quiet-touch.js';
@@ -2015,7 +2015,7 @@ export async function createHostView({ lite } = {}) {
     const view = rollInstrument();
     const lanes =
       view === SAMPLER_INSTRUMENT ? SAMPLE_BANK.map(({ id, label }) => ({ id, label })) : undefined;
-    renderPianoRoll(el.noteTape, {
+    renderNoteRoll(el.noteTape, {
       notes: allLoopNotes(),
       steps: state.noteSteps,
       stepPx: hostNoteStepPx(),

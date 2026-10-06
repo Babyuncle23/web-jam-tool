@@ -269,7 +269,7 @@ function storedDegree(degree) {
   return Math.min(48, Math.max(-24, Math.round(number)));
 }
 
-/** Exact piano-roll pitch. Scale degree is not a substitute for C versus D#. */
+/** Exact note pitch. Scale degree is not a substitute for C versus D#. */
 function storedMidi(midi) {
   if (midi == null || midi === '') return undefined;
   const number = Number(midi);

@@ -27,7 +27,7 @@ const OCTAVE = 12;
  * A strip or resize drag near the sheet edge auto-scrolls it into view.
  * The playhead is a div, not a frame loop.
  */
-export function renderPianoRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onResizeGroup, onPlace, onAudition, onZoom, onSelection, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
+export function renderNoteRoll(scrollEl, { notes, steps, pitchesFor, colorFor, onDelete, onMove, onMoveGroup, onResize, onResizeGroup, onPlace, onAudition, onZoom, onSelection, inScale, focusMidi, instrument, selectMode, stepPx: requestedStep, owner, lanes }) {
   const laneMode = Array.isArray(lanes) && lanes.length > 0;
   const stepPx = Math.max(6, Number(requestedStep) || Number(scrollEl.__stepPx) || ROLL_STEP_PX);
   scrollEl.__stepPx = stepPx;

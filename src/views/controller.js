@@ -13,7 +13,7 @@ import { TRACKS, DRUM_PRESETS, STEPS as DRUM_STEPS, tileCells, repeatTargets, re
 import { JamSocket, EVENTS } from '../network/socket.js';
 import { chipIcon, paintIconButton, setIconLabel } from '../ui/icons.js';
 import { createDrumGrid } from '../ui/drum-grid.js';
-import { renderPianoRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode } from '../ui/piano-roll.js';
+import { renderNoteRoll, rollSelection, scrollRollToMidi, selectRollNotes, setRollPlayhead, setRollSelectMode } from '../ui/note-roll.js';
 import { createSampleGrid } from '../ui/sample-grid.js';
 import { pressable, setControlEnabled, bindHoldTap } from '../ui/quiet-touch.js';
 import { markPageEdges, markScrollEdges } from '../ui/scroll-edges.js';
@@ -369,7 +369,7 @@ export async function createControllerView({ code, name } = {}) {
     const view = rollInstrument();
     const lanes =
       view === SAMPLER_INSTRUMENT ? SAMPLE_BANK.map(({ id, label }) => ({ id, label })) : undefined;
-    renderPianoRoll(el.noteTape, {
+    renderNoteRoll(el.noteTape, {
       notes: state.marks,
       steps: state.noteSteps,
       stepPx: guestNoteStepPx(),

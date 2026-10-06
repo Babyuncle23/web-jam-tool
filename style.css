@@ -743,16 +743,10 @@ input[type='range'] {
   pointer-events: none;
 }
 
-/* Only a painted QR earns the badge — over the loading spinner it's noise.
-   A soft periodic nudge keeps hinting that the stamp is tappable. */
+/* Only a painted QR earns the badge — over the loading spinner it's noise. */
 .qr-card__stamp:has(#host-qr img) .qr-card__zoom {
   opacity: 1;
   transform: scale(1);
-  animation: qr-zoom-nudge 2.6s ease-in-out 0.35s infinite;
-}
-
-@keyframes qr-zoom-nudge {
-  50% { transform: scale(1.14); }
 }
 
 #host-qr {
@@ -2684,7 +2678,7 @@ input[type='range'] {
   inset: 8px 10px auto;
 }
 
-/* Lane rows in the note roll: pad names instead of piano keys. */
+/* Lane rows in the note roll: pad names instead of pitch labels. */
 .roll__key--lane {
   justify-content: center;
   padding-left: 0;
