@@ -225,6 +225,14 @@ body[data-view='controller'] {
   border: 3px solid var(--ink);
   border-radius: 12px;
   line-height: 0;
+  color: var(--on-accent);
+}
+
+/* The role-screen QR paints at 132px — claim that square up front so the
+   card doesn't jump when the image lands. */
+.share-block__qr.qr-loading {
+  width: 154px;
+  height: 154px;
 }
 
 .share-block__qr img,
@@ -234,8 +242,12 @@ body[data-view='controller'] {
 }
 
 /* While the QR library downloads, the box shows a spinner instead of a
-   blank white square — the QR used to pop in with no hint it was coming. */
+   blank white square — the QR used to pop in with no hint it was coming.
+   Every QR box is a white card, so the spinner and label use --on-accent:
+   the light --ink ring read as a static blank on white. */
 .qr-loading {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -244,7 +256,7 @@ body[data-view='controller'] {
   min-height: 56px;
   padding: 10px;
   line-height: 1.2;
-  color: var(--ink);
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -256,9 +268,34 @@ body[data-view='controller'] {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 3px solid rgb(var(--ink-rgb) / 0.18);
-  border-top-color: var(--ink);
+  border: 3px solid rgb(28 20 12 / 0.15);
+  border-top-color: var(--on-accent);
   animation: splash-spin 0.8s linear infinite;
+}
+
+/* A slow sweep crosses the placeholder — the card keeps moving even if the
+   spinner stalls, so a cold connect never looks frozen. */
+.qr-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 32%, rgb(28 20 12 / 0.1) 50%, transparent 68%);
+  animation: qr-sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes qr-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+/* Session placeholders pulse until the real code/link land — together with
+   the QR sweep the header clearly reads as "still loading". */
+.is-pending {
+  animation: pending-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  50% { opacity: 0.35; }
 }
 
 .join-form {
@@ -587,6 +624,14 @@ input[type='range'] {
   border-color: var(--danger);
 }
 
+/* "connecting…" pulses so a cold backend wake-up reads as progress, not a
+   frozen label. */
+.pill[data-state='pending'] {
+  color: var(--accent-dim);
+  border-color: var(--accent-dim);
+  animation: pending-pulse 1.4s ease-in-out infinite;
+}
+
 /* ---------- Экран хоста ---------- */
 
 .screen--host {
@@ -670,12 +715,61 @@ input[type='range'] {
   display: none;
 }
 
+/* The stamp wrapper anchors the expand badge to the QR's corner — the badge
+   is the "tap to enlarge" hint a plain thumbnail doesn't have. */
+.qr-card__stamp {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.qr-card__zoom {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--sun);
+  color: var(--on-accent);
+  border: 2px solid var(--bg-panel);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+
+/* Only a painted QR earns the badge — over the loading spinner it's noise.
+   A soft periodic nudge keeps hinting that the stamp is tappable. */
+.qr-card__stamp:has(#host-qr img) .qr-card__zoom {
+  opacity: 1;
+  transform: scale(1);
+  animation: qr-zoom-nudge 2.6s ease-in-out 0.35s infinite;
+}
+
+@keyframes qr-zoom-nudge {
+  50% { transform: scale(1.14); }
+}
+
 #host-qr {
   background: #fff;
   padding: 4px;
   border-radius: 10px;
   line-height: 0;
   flex: 0 0 auto;
+  color: var(--on-accent);
+}
+
+/* The loading placeholder holds the final stamp size from first paint —
+   no collapsed sliver, no layout jump when the QR lands. */
+#host-qr.qr-loading {
+  width: 80px;
+  height: 80px;
+  line-height: 1.2;
 }
 
 /* qrcode.js paints a <canvas> first and swaps it for an <img>. Size the
@@ -1166,6 +1260,10 @@ input[type='range'] {
 @media (max-width: 899px) {
   .topbar {
     min-width: 0;
+    /* Slimmer header chrome keeps the QR, code and Invite label on the row. */
+    gap: 6px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   /* On a phone only the room code stays: every status is already surfaced
@@ -1205,6 +1303,11 @@ input[type='range'] {
     height: 56px !important;
   }
 
+  #host-qr.qr-loading {
+    width: 64px;
+    height: 64px;
+  }
+
   .topbar__code {
     font-size: 18px;
     letter-spacing: 0.1em;
@@ -1228,6 +1331,54 @@ input[type='range'] {
     padding-right: 8px;
   }
 
+}
+
+/* Tight phones (≈420px and under): the stamp shrinks a notch and buttons
+   squeeze so the QR, code and Invite label all stay visible on one row. */
+@media (max-width: 420px) {
+  .topbar {
+    gap: 4px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  #host-qr img,
+  #host-qr canvas,
+  #host-qr table {
+    width: 48px !important;
+    height: 48px !important;
+  }
+
+  #host-qr.qr-loading {
+    width: 56px;
+    height: 56px;
+  }
+
+  .topbar > .btn--icon,
+  .topbar__actions .btn--icon {
+    width: 38px;
+  }
+
+  .topbar__actions {
+    gap: 4px;
+  }
+
+  .topbar__actions .btn {
+    padding: 0 7px;
+    font-size: 12px;
+  }
+}
+
+/* Narrow phones: a slimmer quiet zone lets the invite QR keep its width —
+   at 28px padding it clamped well below the intended 72vw. */
+@media (max-width: 560px) {
+  .share-qr {
+    padding: 16px;
+  }
+
+  .share-qr.qr-loading {
+    width: calc(var(--qr-edge) + 38px);
+  }
 }
 
 /* Desktop: header + play bar on top, pad fills the left column, the right
@@ -1266,6 +1417,11 @@ input[type='range'] {
   #host-qr table {
     width: 104px !important;
     height: 104px !important;
+  }
+
+  #host-qr.qr-loading {
+    width: 112px;
+    height: 112px;
   }
 
   .topbar__actions .btn {
@@ -3069,19 +3225,38 @@ input[type='range'] {
 }
 
 .share-qr {
+  /* The QR edge is a var so the box, the painted image and the loading
+     placeholder all agree on the same size. */
+  --qr-edge: min(72vw, 60dvh, 320px);
   background: #fff;
   padding: 28px;
   border: 3px solid var(--ink);
   border-radius: 16px;
   line-height: 0;
+  color: var(--on-accent);
+  /* Edge + padding could outgrow the card on a narrow phone — clamp instead
+     of letting the QR clip under the card's overflow. */
+  max-width: 100%;
 }
 
 #host-qr-big img,
 #host-qr-big canvas,
 #host-qr-big table {
-  width: min(72vw, 60dvh, 320px) !important;
-  height: min(72vw, 60dvh, 320px) !important;
+  width: var(--qr-edge) !important;
+  max-width: 100%;
+  /* Square source: auto height keeps the aspect when max-width clamps. */
+  height: auto !important;
+  aspect-ratio: 1;
   display: block;
+}
+
+/* Same trick as the header stamp: the loading box pre-claims the painted
+   size so the sheet doesn't reflow when the QR lands. */
+.share-qr.qr-loading {
+  width: calc(var(--qr-edge) + 62px);
+  max-width: 100%;
+  aspect-ratio: 1;
+  line-height: 1.2;
 }
 
 .share-sheet__code {
@@ -3585,13 +3760,11 @@ input[type='range'] {
   .share-qr {
     grid-row: 3 / span 3;
     padding: 16px;
+    --qr-edge: min(30vw, 52dvh, 320px);
   }
 
-  #host-qr-big img,
-  #host-qr-big canvas,
-  #host-qr-big table {
-    width: min(30vw, 52dvh, 320px) !important;
-    height: min(30vw, 52dvh, 320px) !important;
+  .share-qr.qr-loading {
+    width: calc(var(--qr-edge) + 38px);
   }
 
   .roll {

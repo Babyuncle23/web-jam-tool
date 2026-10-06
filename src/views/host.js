@@ -3242,6 +3242,10 @@ export async function createHostView({ lite } = {}) {
     el.joinUrl.textContent = joinUrl;
     el.joinUrl.title = joinUrl;
     el.joinUrlBig.textContent = joinUrl;
+    // Real values landed — stop the placeholder pulse in the header/sheet.
+    for (const node of [el.code, el.codeBig, el.joinUrl, el.joinUrlBig]) {
+      node?.classList.remove('is-pending');
+    }
   }
 
   /** After a reconnect the server has already dropped the room: open a new one. */

@@ -25,7 +25,7 @@
         <span class="brand__dot" aria-hidden="true"></span>
         <h1 class="brand__title">DoggoJam</h1>
         <p class="brand__subtitle">
-          The host holds the sound. Guests play with a finger on the phone XY pad. Same local network, no app to install.
+          The host holds the sound. Guests play with a finger on the phone XY pad. Scan the QR, no app to install.
         </p>
       </div>
 
@@ -105,14 +105,17 @@
             role="button"
             tabindex="0"
             aria-label="Show the guest QR code"
-            title="Show a big QR to invite guests"
+            title="Tap to enlarge the QR guests scan"
           >
-            <div id="host-qr" role="img" aria-label="QR code: open the guest controller"></div>
+            <div class="qr-card__stamp">
+              <div id="host-qr" class="qr-loading" role="img" aria-label="QR code: open the guest controller">QR</div>
+              <span class="qr-card__zoom" aria-hidden="true">⤢</span>
+            </div>
             <div class="qr-card__meta">
               <p class="topbar__eyebrow">Session · scan the QR</p>
-              <p class="topbar__code" id="host-code">····</p>
-              <p class="topbar__link" id="host-join-url">—</p>
-              <span class="qr-card__invite">Invite ⤢</span>
+              <p class="topbar__code is-pending" id="host-code">····</p>
+              <p class="topbar__link is-pending" id="host-join-url">—</p>
+              <span class="qr-card__invite">Invite</span>
               <div class="topbar__status">
                 <span class="pill" id="host-socket-status" data-state="offline">socket: offline</span>
                 <span class="pill" id="host-audio-status" data-state="offline">audio: off</span>
@@ -418,10 +421,10 @@
       <div id="host-share-sheet" class="fx-sheet" hidden>
         <div class="fx-sheet__card share-sheet">
           <h2>Invite guests</h2>
-          <p class="seq-hint">Guests scan the code or open the link — same Wi-Fi, no app to install.</p>
-          <div id="host-qr-big" class="share-qr" role="img" aria-label="QR code: open the guest controller"></div>
-          <p class="share-sheet__code" id="host-code-big">····</p>
-          <p class="share-sheet__link" id="host-join-url-big">—</p>
+          <p class="seq-hint">Guests scan the code or open the link — no app to install.</p>
+          <div id="host-qr-big" class="share-qr qr-loading" role="img" aria-label="QR code: open the guest controller">QR</div>
+          <p class="share-sheet__code is-pending" id="host-code-big">····</p>
+          <p class="share-sheet__link is-pending" id="host-join-url-big">—</p>
           <button id="host-share-close" class="btn btn--primary btn--xl" type="button">Done</button>
         </div>
       </div>
